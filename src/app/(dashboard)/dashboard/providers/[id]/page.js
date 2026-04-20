@@ -4,8 +4,27 @@ import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal } from "@/shared/components";
-import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS, THINKING_CONFIG } from "@/shared/constants/providers";
+import {
+  Card,
+  Button,
+  Badge,
+  Input,
+  Modal,
+  CardSkeleton,
+  OAuthModal,
+  Toggle,
+  Select,
+  EditConnectionModal,
+} from "@/shared/components";
+import {
+  OAUTH_PROVIDERS,
+  APIKEY_PROVIDERS,
+  getProviderAlias,
+  isOpenAICompatibleProvider,
+  isAnthropicCompatibleProvider,
+  AI_PROVIDERS,
+  THINKING_CONFIG,
+} from "@/shared/constants/providers";
 import { getModelsByProviderId } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
@@ -26,7 +45,6 @@ export default function ProviderDetailPage() {
   const [providerNode, setProviderNode] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
   const [showOAuthModal, setShowOAuthModal] = useState(false);
-  const [showIFlowCookieModal, setShowIFlowCookieModal] = useState(false);
   const [showAddApiKeyModal, setShowAddApiKeyModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showEditNodeModal, setShowEditNodeModal] = useState(false);
@@ -51,27 +69,33 @@ export default function ProviderDetailPage() {
   const providerInfo = providerNode
     ? {
         id: providerNode.id,
-        name: providerNode.name || (providerNode.type === "anthropic-compatible" ? "Anthropic Compatible" : "OpenAI Compatible"),
-        color: providerNode.type === "anthropic-compatible" ? "#D97757" : "#10A37F",
+        name:
+          providerNode.name ||
+          (providerNode.type === "anthropic-compatible"
+            ? "Anthropic Compatible"
+            : "OpenAI Compatible"),
+        color:
+          providerNode.type === "anthropic-compatible" ? "#D97757" : "#10A37F",
         textIcon: providerNode.type === "anthropic-compatible" ? "AC" : "OC",
         apiType: providerNode.apiType,
         baseUrl: providerNode.baseUrl,
         type: providerNode.type,
       }
-    : (OAUTH_PROVIDERS[providerId] || APIKEY_PROVIDERS[providerId] || FREE_PROVIDERS[providerId] || FREE_TIER_PROVIDERS[providerId]);
-  const isOAuth = !!OAUTH_PROVIDERS[providerId] || !!FREE_PROVIDERS[providerId];
-  const isFreeNoAuth = !!FREE_PROVIDERS[providerId]?.noAuth;
+    : OAUTH_PROVIDERS[providerId] || APIKEY_PROVIDERS[providerId];
+  const isOAuth = !!OAUTH_PROVIDERS[providerId];
+  const isFreeNoAuth = false;
   const models = getModelsByProviderId(providerId);
   const providerAlias = getProviderAlias(providerId);
-  
+
   const isOpenAICompatible = isOpenAICompatibleProvider(providerId);
   const isAnthropicCompatible = isAnthropicCompatibleProvider(providerId);
   const isCompatible = isOpenAICompatible || isAnthropicCompatible;
-  const thinkingConfig = AI_PROVIDERS[providerId]?.thinkingConfig || THINKING_CONFIG.extended;
-  
+  const thinkingConfig =
+    AI_PROVIDERS[providerId]?.thinkingConfig || THINKING_CONFIG.extended;
+
   const providerStorageAlias = isCompatible ? providerId : providerAlias;
   const providerDisplayAlias = isCompatible
-    ? (providerNode?.prefix || providerId)
+    ? providerNode?.prefix || providerId
     : providerAlias;
 
   // Define callbacks BEFORE the useEffect that uses them
@@ -92,48 +116,66 @@ export default function ProviderDetailPage() {
     if (providerId !== "kilocode") return;
     fetch("/api/providers/kilo/free-models")
       .then((res) => res.json())
-      .then((data) => { if (data.models?.length) setKiloFreeModels(data.models); })
+      .then((data) => {
+        if (data.models?.length) setKiloFreeModels(data.models);
+      })
       .catch(() => {});
   }, [providerId]);
 
   const fetchConnections = useCallback(async () => {
     try {
-      const [connectionsRes, nodesRes, proxyPoolsRes, settingsRes] = await Promise.all([
-        fetch("/api/providers", { cache: "no-store" }),
-        fetch("/api/provider-nodes", { cache: "no-store" }),
-        fetch("/api/proxy-pools?isActive=true", { cache: "no-store" }),
-        fetch("/api/settings", { cache: "no-store" }),
-      ]);
+      const [connectionsRes, nodesRes, proxyPoolsRes, settingsRes] =
+        await Promise.all([
+          fetch("/api/providers", { cache: "no-store" }),
+          fetch("/api/provider-nodes", { cache: "no-store" }),
+          fetch("/api/proxy-pools?isActive=true", { cache: "no-store" }),
+          fetch("/api/settings", { cache: "no-store" }),
+        ]);
       const connectionsData = await connectionsRes.json();
       const nodesData = await nodesRes.json();
       const proxyPoolsData = await proxyPoolsRes.json();
       const settingsData = settingsRes.ok ? await settingsRes.json() : {};
       if (connectionsRes.ok) {
-        const filtered = (connectionsData.connections || []).filter(c => c.provider === providerId);
+        const filtered = (connectionsData.connections || []).filter(
+          (c) => c.provider === providerId,
+        );
         setConnections(filtered);
       }
       if (proxyPoolsRes.ok) {
         setProxyPools(proxyPoolsData.proxyPools || []);
       }
       // Load per-provider strategy override
-      const override = (settingsData.providerStrategies || {})[providerId] || {};
+      const override =
+        (settingsData.providerStrategies || {})[providerId] || {};
       setProviderStrategy(override.fallbackStrategy || null);
-      setProviderStickyLimit(override.stickyRoundRobinLimit != null ? String(override.stickyRoundRobinLimit) : "1");
+      setProviderStickyLimit(
+        override.stickyRoundRobinLimit != null
+          ? String(override.stickyRoundRobinLimit)
+          : "1",
+      );
       // Load per-provider thinking config
-      const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
+      const thinkingCfg =
+        (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
       if (nodesRes.ok) {
-        let node = (nodesData.nodes || []).find((entry) => entry.id === providerId) || null;
+        let node =
+          (nodesData.nodes || []).find((entry) => entry.id === providerId) ||
+          null;
 
         // Newly created compatible nodes can be briefly unavailable on one worker.
         // Retry a few times before showing "Provider not found".
         if (!node && isCompatible) {
           for (let attempt = 0; attempt < 3; attempt += 1) {
             await new Promise((resolve) => setTimeout(resolve, 150));
-            const retryRes = await fetch("/api/provider-nodes", { cache: "no-store" });
+            const retryRes = await fetch("/api/provider-nodes", {
+              cache: "no-store",
+            });
             if (!retryRes.ok) continue;
             const retryData = await retryRes.json();
-            node = (retryData.nodes || []).find((entry) => entry.id === providerId) || null;
+            node =
+              (retryData.nodes || []).find(
+                (entry) => entry.id === providerId,
+              ) || null;
             if (node) break;
           }
         }
@@ -197,7 +239,7 @@ export default function ProviderDetailPage() {
 
   const handleRoundRobinToggle = (enabled) => {
     const strategy = enabled ? "round-robin" : null;
-    const sticky = enabled ? (providerStickyLimit || "1") : providerStickyLimit;
+    const sticky = enabled ? providerStickyLimit || "1" : providerStickyLimit;
     if (enabled && !providerStickyLimit) setProviderStickyLimit("1");
     setProviderStrategy(strategy);
     saveProviderStrategy(strategy, sticky);
@@ -241,12 +283,18 @@ export default function ProviderDetailPage() {
 
   // Fetch suggested models from provider's public API (if configured)
   useEffect(() => {
-    const fetcher = (OAUTH_PROVIDERS[providerId] || APIKEY_PROVIDERS[providerId] || FREE_PROVIDERS[providerId] || FREE_TIER_PROVIDERS[providerId])?.modelsFetcher;
+    const fetcher = (
+      OAUTH_PROVIDERS[providerId] || APIKEY_PROVIDERS[providerId]
+    )?.modelsFetcher;
     if (!fetcher) return;
     fetchSuggestedModels(fetcher).then(setSuggestedModels);
   }, [providerId]);
 
-  const handleSetAlias = async (modelId, alias, providerAliasOverride = providerAlias) => {
+  const handleSetAlias = async (
+    modelId,
+    alias,
+    providerAliasOverride = providerAlias,
+  ) => {
     const fullModel = `${providerAliasOverride}/${modelId}`;
     try {
       const res = await fetch("/api/models/alias", {
@@ -267,9 +315,12 @@ export default function ProviderDetailPage() {
 
   const handleDeleteAlias = async (alias) => {
     try {
-      const res = await fetch(`/api/models/alias?alias=${encodeURIComponent(alias)}`, {
-        method: "DELETE",
-      });
+      const res = await fetch(
+        `/api/models/alias?alias=${encodeURIComponent(alias)}`,
+        {
+          method: "DELETE",
+        },
+      );
       if (res.ok) {
         await fetchAliases();
       }
@@ -283,7 +334,7 @@ export default function ProviderDetailPage() {
     try {
       const res = await fetch(`/api/providers/${id}`, { method: "DELETE" });
       if (res.ok) {
-        setConnections(connections.filter(c => c.id !== id));
+        setConnections(connections.filter((c) => c.id !== id));
       }
     } catch (error) {
       console.log("Error deleting connection:", error);
@@ -293,11 +344,6 @@ export default function ProviderDetailPage() {
   const handleOAuthSuccess = () => {
     fetchConnections();
     setShowOAuthModal(false);
-  };
-
-  const handleIFlowCookieSuccess = () => {
-    fetchConnections();
-    setShowIFlowCookieModal(false);
   };
 
   const handleSaveApiKey = async (formData) => {
@@ -340,7 +386,9 @@ export default function ProviderDetailPage() {
         body: JSON.stringify({ isActive }),
       });
       if (res.ok) {
-        setConnections(prev => prev.map(c => c.id === id ? { ...c, isActive } : c));
+        setConnections((prev) =>
+          prev.map((c) => (c.id === id ? { ...c, isActive } : c)),
+        );
       }
     } catch (error) {
       console.log("Error updating connection status:", error);
@@ -350,7 +398,10 @@ export default function ProviderDetailPage() {
   const handleSwapPriority = async (index1, index2) => {
     // Optimistic update state
     const newConnections = [...connections];
-    [newConnections[index1], newConnections[index2]] = [newConnections[index2], newConnections[index1]];
+    [newConnections[index1], newConnections[index2]] = [
+      newConnections[index2],
+      newConnections[index1],
+    ];
     setConnections(newConnections);
 
     try {
@@ -372,15 +423,19 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const selectedConnections = connections.filter((conn) => selectedConnectionIds.includes(conn.id));
-  const allSelected = connections.length > 0 && selectedConnectionIds.length === connections.length;
+  const selectedConnections = connections.filter((conn) =>
+    selectedConnectionIds.includes(conn.id),
+  );
+  const allSelected =
+    connections.length > 0 &&
+    selectedConnectionIds.length === connections.length;
 
   const toggleSelectConnection = (connectionId) => {
-    setSelectedConnectionIds((prev) => (
+    setSelectedConnectionIds((prev) =>
       prev.includes(connectionId)
         ? prev.filter((id) => id !== connectionId)
-        : [...prev, connectionId]
-    ));
+        : [...prev, connectionId],
+    );
   };
 
   const toggleSelectAllConnections = () => {
@@ -397,12 +452,18 @@ export default function ProviderDetailPage() {
   };
 
   useEffect(() => {
-    setSelectedConnectionIds((prev) => prev.filter((id) => connections.some((conn) => conn.id === id)));
+    setSelectedConnectionIds((prev) =>
+      prev.filter((id) => connections.some((conn) => conn.id === id)),
+    );
   }, [connections]);
 
   const selectedProxySummary = (() => {
     if (selectedConnections.length === 0) return "";
-    const poolIds = new Set(selectedConnections.map((conn) => conn.providerSpecificData?.proxyPoolId || "__none__"));
+    const poolIds = new Set(
+      selectedConnections.map(
+        (conn) => conn.providerSpecificData?.proxyPoolId || "__none__",
+      ),
+    );
     if (poolIds.size === 1) {
       const onlyId = [...poolIds][0];
       if (onlyId === "__none__") return "All selected currently unbound";
@@ -414,8 +475,16 @@ export default function ProviderDetailPage() {
 
   const openBulkProxyModal = () => {
     if (selectedConnections.length === 0) return;
-    const uniquePoolIds = [...new Set(selectedConnections.map((conn) => conn.providerSpecificData?.proxyPoolId || "__none__"))];
-    setBulkProxyPoolId(uniquePoolIds.length === 1 ? uniquePoolIds[0] : "__none__");
+    const uniquePoolIds = [
+      ...new Set(
+        selectedConnections.map(
+          (conn) => conn.providerSpecificData?.proxyPoolId || "__none__",
+        ),
+      ),
+    ];
+    setBulkProxyPoolId(
+      uniquePoolIds.length === 1 ? uniquePoolIds[0] : "__none__",
+    );
     setShowBulkProxyModal(true);
   };
 
@@ -460,51 +529,60 @@ export default function ProviderDetailPage() {
     }
   };
 
-
-  const isSelected = (connectionId) => selectedConnectionIds.includes(connectionId);
+  const isSelected = (connectionId) =>
+    selectedConnectionIds.includes(connectionId);
 
   const connectionsList = (
     <div className="flex flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]">
-      {connections
-        .map((conn, index) => (
-          <div key={conn.id} className="flex items-stretch">
-            <div className="flex-1 min-w-0">
-              <ConnectionRow
-                connection={conn}
-                proxyPools={proxyPools}
-                isOAuth={isOAuth}
-                isFirst={index === 0}
-                isLast={index === connections.length - 1}
-                onMoveUp={() => handleSwapPriority(index, index - 1)}
-                onMoveDown={() => handleSwapPriority(index, index + 1)}
-                onToggleActive={(isActive) => handleUpdateConnectionStatus(conn.id, isActive)}
-                onUpdateProxy={async (proxyPoolId) => {
-                  try {
-                    const res = await fetch(`/api/providers/${conn.id}`, {
-                      method: "PUT",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ proxyPoolId: proxyPoolId || null }),
-                    });
-                    if (res.ok) {
-                      setConnections(prev => prev.map(c =>
+      {connections.map((conn, index) => (
+        <div key={conn.id} className="flex items-stretch">
+          <div className="flex-1 min-w-0">
+            <ConnectionRow
+              connection={conn}
+              proxyPools={proxyPools}
+              isOAuth={isOAuth}
+              isFirst={index === 0}
+              isLast={index === connections.length - 1}
+              onMoveUp={() => handleSwapPriority(index, index - 1)}
+              onMoveDown={() => handleSwapPriority(index, index + 1)}
+              onToggleActive={(isActive) =>
+                handleUpdateConnectionStatus(conn.id, isActive)
+              }
+              onUpdateProxy={async (proxyPoolId) => {
+                try {
+                  const res = await fetch(`/api/providers/${conn.id}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ proxyPoolId: proxyPoolId || null }),
+                  });
+                  if (res.ok) {
+                    setConnections((prev) =>
+                      prev.map((c) =>
                         c.id === conn.id
-                          ? { ...c, providerSpecificData: { ...c.providerSpecificData, proxyPoolId: proxyPoolId || null } }
-                          : c
-                      ));
-                    }
-                  } catch (error) {
-                    console.log("Error updating proxy:", error);
+                          ? {
+                              ...c,
+                              providerSpecificData: {
+                                ...c.providerSpecificData,
+                                proxyPoolId: proxyPoolId || null,
+                              },
+                            }
+                          : c,
+                      ),
+                    );
                   }
-                }}
-                onEdit={() => {
-                  setSelectedConnection(conn);
-                  setShowEditModal(true);
-                }}
-                onDelete={() => handleDelete(conn.id)}
-              />
-            </div>
+                } catch (error) {
+                  console.log("Error updating proxy:", error);
+                }
+              }}
+              onEdit={() => {
+                setSelectedConnection(conn);
+                setShowEditModal(true);
+              }}
+              onDelete={() => handleDelete(conn.id)}
+            />
           </div>
-        ))}
+        </div>
+      ))}
     </div>
   );
 
@@ -513,11 +591,13 @@ export default function ProviderDetailPage() {
     ...proxyPools.map((pool) => ({ value: pool.id, label: pool.name })),
   ];
 
-  const bulkHint = selectedConnectionIds.length === 0
-    ? "Select one or more connections, then click Proxy Action."
-    : selectedProxySummary;
+  const bulkHint =
+    selectedConnectionIds.length === 0
+      ? "Select one or more connections, then click Proxy Action."
+      : selectedProxySummary;
 
-  const canApplyBulkProxy = selectedConnectionIds.length > 0 && !bulkUpdatingProxy;
+  const canApplyBulkProxy =
+    selectedConnectionIds.length > 0 && !bulkUpdatingProxy;
 
   const bulkActionModal = (
     <Modal
@@ -535,13 +615,24 @@ export default function ProviderDetailPage() {
         />
 
         <p className="text-xs text-text-muted">{bulkHint}</p>
-        <p className="text-xs text-text-muted">Selecting None will unbind selected connections from proxy pool.</p>
+        <p className="text-xs text-text-muted">
+          Selecting None will unbind selected connections from proxy pool.
+        </p>
 
         <div className="flex gap-2">
-          <Button onClick={handleBulkApplyProxyPool} fullWidth disabled={!canApplyBulkProxy}>
+          <Button
+            onClick={handleBulkApplyProxyPool}
+            fullWidth
+            disabled={!canApplyBulkProxy}
+          >
             {bulkUpdatingProxy ? "Applying..." : "Apply"}
           </Button>
-          <Button onClick={closeBulkProxyModal} variant="ghost" fullWidth disabled={bulkUpdatingProxy}>
+          <Button
+            onClick={closeBulkProxyModal}
+            variant="ghost"
+            fullWidth
+            disabled={bulkUpdatingProxy}
+          >
             Cancel
           </Button>
         </div>
@@ -559,8 +650,11 @@ export default function ProviderDetailPage() {
         body: JSON.stringify({ model: `${providerStorageAlias}/${modelId}` }),
       });
       const data = await res.json();
-      setModelTestResults((prev) => ({ ...prev, [modelId]: data.ok ? "ok" : "error" }));
-      setModelsTestError(data.ok ? "" : (data.error || "Model not reachable"));
+      setModelTestResults((prev) => ({
+        ...prev,
+        [modelId]: data.ok ? "ok" : "error",
+      }));
+      setModelsTestError(data.ok ? "" : data.error || "Model not reachable");
     } catch {
       setModelTestResults((prev) => ({ ...prev, [modelId]: "error" }));
       setModelsTestError("Network error");
@@ -599,7 +693,8 @@ export default function ProviderDetailPage() {
         const modelId = fullModel.slice(prefix.length);
         // Only show if not already in hardcoded list
         // For passthroughModels, include all aliases (model IDs may contain slashes like "anthropic/claude-3")
-        if (providerInfo.passthroughModels) return !models.some((m) => m.id === modelId);
+        if (providerInfo.passthroughModels)
+          return !models.some((m) => m.id === modelId);
         return !models.some((m) => m.id === modelId) && alias === modelId;
       })
       .map(([alias, fullModel]) => ({
@@ -614,7 +709,7 @@ export default function ProviderDetailPage() {
           const fullModel = `${providerStorageAlias}/${model.id}`;
           const oldFormatModel = `${providerId}/${model.id}`;
           const existingAlias = Object.entries(modelAliases).find(
-            ([, m]) => m === fullModel || m === oldFormatModel
+            ([, m]) => m === fullModel || m === oldFormatModel,
           )?.[0];
           return (
             <ModelRow
@@ -624,10 +719,16 @@ export default function ProviderDetailPage() {
               alias={existingAlias}
               copied={copied}
               onCopy={copy}
-              onSetAlias={(alias) => handleSetAlias(model.id, alias, providerStorageAlias)}
+              onSetAlias={(alias) =>
+                handleSetAlias(model.id, alias, providerStorageAlias)
+              }
               onDeleteAlias={() => handleDeleteAlias(existingAlias)}
               testStatus={modelTestResults[model.id]}
-              onTest={connections.length > 0 || isFreeNoAuth ? () => handleTestModel(model.id) : undefined}
+              onTest={
+                connections.length > 0 || isFreeNoAuth
+                  ? () => handleTestModel(model.id)
+                  : undefined
+              }
               isTesting={testingModelId === model.id}
               isFree={model.isFree}
             />
@@ -646,7 +747,11 @@ export default function ProviderDetailPage() {
             onSetAlias={() => {}}
             onDeleteAlias={() => handleDeleteAlias(model.alias)}
             testStatus={modelTestResults[model.id]}
-            onTest={connections.length > 0 || isFreeNoAuth ? () => handleTestModel(model.id) : undefined}
+            onTest={
+              connections.length > 0 || isFreeNoAuth
+                ? () => handleTestModel(model.id)
+                : undefined
+            }
             isTesting={testingModelId === model.id}
             isCustom
             isFree={false}
@@ -663,35 +768,42 @@ export default function ProviderDetailPage() {
         </button>
 
         {/* Suggested models from provider API — show only models not yet added */}
-        {suggestedModels.length > 0 && (() => {
-          const addedFullModels = new Set(Object.values(modelAliases));
-          const hardcodedIds = new Set(models.map((m) => m.id));
-          const notAdded = suggestedModels.filter(
-            (m) => !addedFullModels.has(`${providerStorageAlias}/${m.id}`) && !hardcodedIds.has(m.id)
-          );
-          if (notAdded.length === 0) return null;
-          return (
-            <div className="w-full mt-2">
-              <p className="text-xs text-text-muted mb-2">Suggested free models (≥200k context):</p>
-              <div className="flex flex-wrap gap-2">
-                {notAdded.map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={async () => {
-                      const alias = m.id.split("/").pop();
-                      await handleSetAlias(m.id, alias, providerStorageAlias);
-                    }}
-                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
-                    title={`${m.name} · ${(m.contextLength / 1000).toFixed(0)}k ctx`}
-                  >
-                    <span className="material-symbols-outlined text-[13px]">add</span>
-                    {m.id.split("/").pop()}
-                  </button>
-                ))}
+        {suggestedModels.length > 0 &&
+          (() => {
+            const addedFullModels = new Set(Object.values(modelAliases));
+            const hardcodedIds = new Set(models.map((m) => m.id));
+            const notAdded = suggestedModels.filter(
+              (m) =>
+                !addedFullModels.has(`${providerStorageAlias}/${m.id}`) &&
+                !hardcodedIds.has(m.id),
+            );
+            if (notAdded.length === 0) return null;
+            return (
+              <div className="w-full mt-2">
+                <p className="text-xs text-text-muted mb-2">
+                  Suggested free models (≥200k context):
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {notAdded.map((m) => (
+                    <button
+                      key={m.id}
+                      onClick={async () => {
+                        const alias = m.id.split("/").pop();
+                        await handleSetAlias(m.id, alias, providerStorageAlias);
+                      }}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
+                      title={`${m.name} · ${(m.contextLength / 1000).toFixed(0)}k ctx`}
+                    >
+                      <span className="material-symbols-outlined text-[13px]">
+                        add
+                      </span>
+                      {m.id.split("/").pop()}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
-          );
-        })()}
+            );
+          })()}
       </div>
     );
   };
@@ -703,13 +815,16 @@ export default function ProviderDetailPage() {
         <CardSkeleton />
       </div>
     );
-}
+  }
 
   if (!providerInfo) {
     return (
       <div className="text-center py-20">
         <p className="text-text-muted">Provider not found</p>
-        <Link href="/dashboard/providers" className="text-primary mt-4 inline-block">
+        <Link
+          href="/dashboard/providers"
+          className="text-primary mt-4 inline-block"
+        >
           Back to Providers
         </Link>
       </div>
@@ -719,7 +834,9 @@ export default function ProviderDetailPage() {
   // Determine icon path: OpenAI Compatible providers use specialized icons
   const getHeaderIconPath = () => {
     if (isOpenAICompatible && providerInfo.apiType) {
-      return providerInfo.apiType === "responses" ? "/providers/oai-r.png" : "/providers/oai-cc.png";
+      return providerInfo.apiType === "responses"
+        ? "/providers/oai-r.png"
+        : "/providers/oai-cc.png";
     }
     if (isAnthropicCompatible) {
       return "/providers/anthropic-m.png";
@@ -744,8 +861,12 @@ export default function ProviderDetailPage() {
             style={{ backgroundColor: `${providerInfo.color}15` }}
           >
             {headerImgError ? (
-              <span className="text-sm font-bold" style={{ color: providerInfo.color }}>
-                {providerInfo.textIcon || providerInfo.id.slice(0, 2).toUpperCase()}
+              <span
+                className="text-sm font-bold"
+                style={{ color: providerInfo.color }}
+              >
+                {providerInfo.textIcon ||
+                  providerInfo.id.slice(0, 2).toUpperCase()}
               </span>
             ) : (
               <Image
@@ -760,9 +881,12 @@ export default function ProviderDetailPage() {
             )}
           </div>
           <div>
-            <h1 className="text-3xl font-semibold tracking-tight">{providerInfo.name}</h1>
+            <h1 className="text-3xl font-semibold tracking-tight">
+              {providerInfo.name}
+            </h1>
             <p className="text-text-muted">
-              {connections.length} connection{connections.length === 1 ? "" : "s"}
+              {connections.length} connection
+              {connections.length === 1 ? "" : "s"}
             </p>
           </div>
         </div>
@@ -770,15 +894,23 @@ export default function ProviderDetailPage() {
 
       {providerInfo.deprecated && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
-          <span className="material-symbols-outlined text-[16px] text-yellow-500 mt-0.5 shrink-0">warning</span>
-          <p className="text-xs text-red-600 dark:text-yellow-400 leading-relaxed">{providerInfo.deprecationNotice}</p>
+          <span className="material-symbols-outlined text-[16px] text-yellow-500 mt-0.5 shrink-0">
+            warning
+          </span>
+          <p className="text-xs text-red-600 dark:text-yellow-400 leading-relaxed">
+            {providerInfo.deprecationNotice}
+          </p>
         </div>
       )}
 
       {providerInfo.notice && !providerInfo.deprecated && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/30">
-          <span className="material-symbols-outlined text-[16px] text-blue-500 shrink-0">info</span>
-          <p className="text-xs text-blue-600 dark:text-blue-400 leading-relaxed">{providerInfo.notice.text}</p>
+          <span className="material-symbols-outlined text-[16px] text-blue-500 shrink-0">
+            info
+          </span>
+          <p className="text-xs text-blue-600 dark:text-blue-400 leading-relaxed">
+            {providerInfo.notice.text}
+          </p>
           {providerInfo.notice.apiKeyUrl && (
             <a
               href={providerInfo.notice.apiKeyUrl}
@@ -796,10 +928,23 @@ export default function ProviderDetailPage() {
         <Card>
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h2 className="text-lg font-semibold">{isAnthropicCompatible ? "Anthropic Compatible Details" : "OpenAI Compatible Details"}</h2>
+              <h2 className="text-lg font-semibold">
+                {isAnthropicCompatible
+                  ? "Anthropic Compatible Details"
+                  : "OpenAI Compatible Details"}
+              </h2>
               <p className="text-sm text-text-muted">
-                {isAnthropicCompatible ? "Messages API" : (providerNode.apiType === "responses" ? "Responses API" : "Chat Completions")} · {(providerNode.baseUrl || "").replace(/\/$/, "")}/
-                {isAnthropicCompatible ? "messages" : (providerNode.apiType === "responses" ? "responses" : "chat/completions")}
+                {isAnthropicCompatible
+                  ? "Messages API"
+                  : providerNode.apiType === "responses"
+                    ? "Responses API"
+                    : "Chat Completions"}{" "}
+                · {(providerNode.baseUrl || "").replace(/\/$/, "")}/
+                {isAnthropicCompatible
+                  ? "messages"
+                  : providerNode.apiType === "responses"
+                    ? "responses"
+                    : "chat/completions"}
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -824,9 +969,17 @@ export default function ProviderDetailPage() {
                 variant="secondary"
                 icon="delete"
                 onClick={async () => {
-                  if (!confirm(`Delete this ${isAnthropicCompatible ? "Anthropic" : "OpenAI"} Compatible node?`)) return;
+                  if (
+                    !confirm(
+                      `Delete this ${isAnthropicCompatible ? "Anthropic" : "OpenAI"} Compatible node?`,
+                    )
+                  )
+                    return;
                   try {
-                    const res = await fetch(`/api/provider-nodes/${providerId}`, { method: "DELETE" });
+                    const res = await fetch(
+                      `/api/provider-nodes/${providerId}`,
+                      { method: "DELETE" },
+                    );
                     if (res.ok) {
                       router.push("/dashboard/providers");
                     }
@@ -841,7 +994,8 @@ export default function ProviderDetailPage() {
           </div>
           {connections.length > 0 && (
             <p className="text-sm text-text-muted">
-              Only one connection is allowed per compatible node. Add another node if you need more connections.
+              Only one connection is allowed per compatible node. Add another
+              node if you need more connections.
             </p>
           )}
         </Card>
@@ -852,11 +1006,15 @@ export default function ProviderDetailPage() {
         <Card>
           <div className="flex items-center gap-3">
             <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-green-500/10 text-green-500">
-              <span className="material-symbols-outlined text-[20px]">lock_open</span>
+              <span className="material-symbols-outlined text-[20px]">
+                lock_open
+              </span>
             </div>
             <div>
               <p className="text-sm font-medium">No authentication required</p>
-              <p className="text-xs text-text-muted">This provider is ready to use.</p>
+              <p className="text-xs text-text-muted">
+                This provider is ready to use.
+              </p>
             </div>
           </div>
         </Card>
@@ -882,7 +1040,9 @@ export default function ProviderDetailPage() {
               )} */}
               {/* Round Robin toggle */}
               <div className="flex items-center gap-2">
-                <span className="text-xs text-text-muted font-medium">Round Robin</span>
+                <span className="text-xs text-text-muted font-medium">
+                  Round Robin
+                </span>
                 <Toggle
                   checked={providerStrategy === "round-robin"}
                   onChange={handleRoundRobinToggle}
@@ -907,19 +1067,27 @@ export default function ProviderDetailPage() {
           {connections.length === 0 ? (
             <div className="text-center py-12">
               <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-primary/10 text-primary mb-4">
-                <span className="material-symbols-outlined text-[32px]">{isOAuth ? "lock" : "key"}</span>
+                <span className="material-symbols-outlined text-[32px]">
+                  {isOAuth ? "lock" : "key"}
+                </span>
               </div>
-              <p className="text-text-main font-medium mb-1">No connections yet</p>
-              <p className="text-sm text-text-muted mb-4">Add your first connection to get started</p>
+              <p className="text-text-main font-medium mb-1">
+                No connections yet
+              </p>
+              <p className="text-sm text-text-muted mb-4">
+                Add your first connection to get started
+              </p>
               {!isCompatible && (
                 <div className="flex gap-2 justify-center">
-                  {providerId === "iflow" && (
-                    <Button icon="cookie" variant="secondary" onClick={() => setShowIFlowCookieModal(true)}>
-                      Cookie Auth
-                    </Button>
-                  )}
-                  <Button icon="add" onClick={() => isOAuth ? setShowOAuthModal(true) : setShowAddApiKeyModal(true)}>
-                    {providerId === "iflow" ? "OAuth" : "Add Connection"}
+                  <Button
+                    icon="add"
+                    onClick={() =>
+                      isOAuth
+                        ? setShowOAuthModal(true)
+                        : setShowAddApiKeyModal(true)
+                    }
+                  >
+                    Add Connection
                   </Button>
                 </div>
               )}
@@ -929,21 +1097,14 @@ export default function ProviderDetailPage() {
               {connectionsList}
               {!isCompatible && (
                 <div className="flex gap-2 mt-4">
-                  {providerId === "iflow" && (
-                    <Button
-                      size="sm"
-                      icon="cookie"
-                      variant="secondary"
-                      onClick={() => setShowIFlowCookieModal(true)}
-                      title="Add connection using browser cookie"
-                    >
-                      Cookie
-                    </Button>
-                  )}
                   <Button
                     size="sm"
                     icon="add"
-                    onClick={() => isOAuth ? setShowOAuthModal(true) : setShowAddApiKeyModal(true)}
+                    onClick={() =>
+                      isOAuth
+                        ? setShowOAuthModal(true)
+                        : setShowAddApiKeyModal(true)
+                    }
                   >
                     Add
                   </Button>
@@ -957,12 +1118,12 @@ export default function ProviderDetailPage() {
       {/* Models */}
       <Card>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">
-            {"Available Models"}
-          </h2>
+          <h2 className="text-lg font-semibold">{"Available Models"}</h2>
         </div>
         {!!modelsTestError && (
-          <p className="text-xs text-red-500 mb-3 break-words">{modelsTestError}</p>
+          <p className="text-xs text-red-500 mb-3 break-words">
+            {modelsTestError}
+          </p>
         )}
         {renderModelsSection()}
       </Card>
@@ -970,42 +1131,13 @@ export default function ProviderDetailPage() {
       {bulkActionModal}
 
       {/* Modals */}
-      {providerId === "kiro" ? (
-        <KiroOAuthWrapper
-          isOpen={showOAuthModal}
-          providerInfo={providerInfo}
-          onSuccess={handleOAuthSuccess}
-          onClose={() => setShowOAuthModal(false)}
-        />
-      ) : providerId === "cursor" ? (
-        <CursorAuthModal
-          isOpen={showOAuthModal}
-          onSuccess={handleOAuthSuccess}
-          onClose={() => setShowOAuthModal(false)}
-        />
-      ) : providerId === "gitlab" ? (
-        <GitLabAuthModal
-          isOpen={showOAuthModal}
-          providerInfo={providerInfo}
-          onSuccess={handleOAuthSuccess}
-          onClose={() => setShowOAuthModal(false)}
-        />
-      ) : (
-        <OAuthModal
-          isOpen={showOAuthModal}
-          provider={providerId}
-          providerInfo={providerInfo}
-          onSuccess={handleOAuthSuccess}
-          onClose={() => setShowOAuthModal(false)}
-        />
-      )}
-      {providerId === "iflow" && (
-        <IFlowCookieModal
-          isOpen={showIFlowCookieModal}
-          onSuccess={handleIFlowCookieSuccess}
-          onClose={() => setShowIFlowCookieModal(false)}
-        />
-      )}
+      <OAuthModal
+        isOpen={showOAuthModal}
+        provider={providerId}
+        providerInfo={providerInfo}
+        onSuccess={handleOAuthSuccess}
+        onClose={() => setShowOAuthModal(false)}
+      />
       <AddApiKeyModal
         isOpen={showAddApiKeyModal}
         provider={providerId}

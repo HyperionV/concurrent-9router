@@ -1,24 +1,22 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Card, CardSkeleton } from "@/shared/components";
+import { CardSkeleton } from "@/shared/components";
 import { CLI_TOOLS } from "@/shared/constants/cliTools";
-import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
-import { ClaudeToolCard, CodexToolCard, DroidToolCard, OpenClawToolCard, DefaultToolCard, OpenCodeToolCard, MitmLinkCard } from "./components";
-import { MITM_TOOLS } from "@/shared/constants/cliTools";
+import {
+  getModelsByProviderId,
+  PROVIDER_ID_TO_ALIAS,
+} from "@/shared/constants/models";
+import { ClaudeToolCard, CodexToolCard, DefaultToolCard } from "./components";
 
 const CLOUD_URL = process.env.NEXT_PUBLIC_CLOUD_URL;
-
 
 const STATUS_ENDPOINTS = {
   claude: "/api/cli-tools/claude-settings",
   codex: "/api/cli-tools/codex-settings",
-  opencode: "/api/cli-tools/opencode-settings",
-  droid: "/api/cli-tools/droid-settings",
-  openclaw: "/api/cli-tools/openclaw-settings",
 };
 
-export default function CLIToolsPageClient({ machineId }) {
+export default function CLIToolsPageClient() {
   const [connections, setConnections] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedTool, setExpandedTool] = useState(null);
@@ -47,7 +45,7 @@ export default function CLIToolsPageClient({ machineId }) {
           } catch {
             return [toolId, null];
           }
-        })
+        }),
       );
       setToolStatuses(Object.fromEntries(entries));
     } catch (error) {
@@ -101,32 +99,46 @@ export default function CLIToolsPageClient({ machineId }) {
     }
   };
 
-  const getActiveProviders = () => connections.filter(c => c.isActive !== false);
+  const getActiveProviders = () =>
+    connections.filter((c) => c.isActive !== false);
 
   const getAllAvailableModels = () => {
     const activeProviders = getActiveProviders();
     const models = [];
     const seenModels = new Set();
-    activeProviders.forEach(conn => {
+    activeProviders.forEach((conn) => {
       const alias = PROVIDER_ID_TO_ALIAS[conn.provider] || conn.provider;
       const providerModels = getModelsByProviderId(conn.provider);
-      providerModels.forEach(m => {
+      providerModels.forEach((m) => {
         const modelValue = `${alias}/${m.id}`;
         if (!seenModels.has(modelValue)) {
           seenModels.add(modelValue);
-          models.push({ value: modelValue, label: `${alias}/${m.id}`, provider: conn.provider, alias, connectionName: conn.name, modelId: m.id });
+          models.push({
+            value: modelValue,
+            label: `${alias}/${m.id}`,
+            provider: conn.provider,
+            alias,
+            connectionName: conn.name,
+            modelId: m.id,
+          });
         }
       });
     });
     return models;
   };
 
-  const handleModelMappingChange = useCallback((toolId, modelAlias, targetModel) => {
-    setModelMappings(prev => {
-      if (prev[toolId]?.[modelAlias] === targetModel) return prev;
-      return { ...prev, [toolId]: { ...prev[toolId], [modelAlias]: targetModel } };
-    });
-  }, []);
+  const handleModelMappingChange = useCallback(
+    (toolId, modelAlias, targetModel) => {
+      setModelMappings((prev) => {
+        if (prev[toolId]?.[modelAlias] === targetModel) return prev;
+        return {
+          ...prev,
+          [toolId]: { ...prev[toolId], [modelAlias]: targetModel },
+        };
+      });
+    },
+    [],
+  );
 
   const getBaseUrl = () => {
     if (tunnelEnabled && tunnelPublicUrl) return tunnelPublicUrl;
@@ -165,37 +177,44 @@ export default function CLIToolsPageClient({ machineId }) {
             {...commonProps}
             activeProviders={getActiveProviders()}
             modelMappings={modelMappings[toolId] || {}}
-            onModelMappingChange={(alias, target) => handleModelMappingChange(toolId, alias, target)}
+            onModelMappingChange={(alias, target) =>
+              handleModelMappingChange(toolId, alias, target)
+            }
             hasActiveProviders={hasActiveProviders}
             cloudEnabled={cloudEnabled}
             initialStatus={toolStatuses.claude}
           />
         );
       case "codex":
-        return <CodexToolCard key={toolId} {...commonProps} activeProviders={getActiveProviders()} cloudEnabled={cloudEnabled} initialStatus={toolStatuses.codex} />;
-      case "opencode":
-        return <OpenCodeToolCard key={toolId} {...commonProps} activeProviders={getActiveProviders()} cloudEnabled={cloudEnabled} initialStatus={toolStatuses.opencode} />;
-      case "droid":
-        return <DroidToolCard key={toolId} {...commonProps} activeProviders={getActiveProviders()} hasActiveProviders={hasActiveProviders} cloudEnabled={cloudEnabled} initialStatus={toolStatuses.droid} />;
-      case "openclaw":
-        return <OpenClawToolCard key={toolId} {...commonProps} activeProviders={getActiveProviders()} hasActiveProviders={hasActiveProviders} cloudEnabled={cloudEnabled} initialStatus={toolStatuses.openclaw} />;
+        return (
+          <CodexToolCard
+            key={toolId}
+            {...commonProps}
+            activeProviders={getActiveProviders()}
+            cloudEnabled={cloudEnabled}
+            initialStatus={toolStatuses.codex}
+          />
+        );
       default:
-        return <DefaultToolCard key={toolId} toolId={toolId} {...commonProps} activeProviders={getActiveProviders()} cloudEnabled={cloudEnabled} tunnelEnabled={tunnelEnabled} />;
+        return (
+          <DefaultToolCard
+            key={toolId}
+            toolId={toolId}
+            {...commonProps}
+            activeProviders={getActiveProviders()}
+            cloudEnabled={cloudEnabled}
+            tunnelEnabled={tunnelEnabled}
+          />
+        );
     }
   };
 
   const regularTools = Object.entries(CLI_TOOLS);
-  const mitmTools = Object.entries(MITM_TOOLS);
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-4">
         {regularTools.map(([toolId, tool]) => renderToolCard(toolId, tool))}
-      </div>
-      <div className="flex flex-col gap-4">
-        {mitmTools.map(([toolId, tool]) => (
-          <MitmLinkCard key={toolId} tool={tool} />
-        ))}
       </div>
     </div>
   );
