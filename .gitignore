@@ -74,3 +74,5 @@ ecosystem.config.*
 scripts/proxy_results.json
 scripts/proxy_list.txt
 responses_probe.py
+tests/
+.claude
