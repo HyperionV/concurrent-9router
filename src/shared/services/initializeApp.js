@@ -1,4 +1,5 @@
 import { cleanupProviderConnections, getSettings } from "@/lib/localDb";
+import { pruneDispatchLedger } from "@/lib/sqlite/dispatcherStore.js";
 import {
   enableTunnel,
   isTunnelManuallyDisabled,
@@ -20,6 +21,7 @@ const g = (global.__appSingleton ??= {
   signalHandlersRegistered: false,
   watchdogInterval: null,
   networkMonitorInterval: null,
+  dispatcherRetentionInterval: null,
   lastNetworkFingerprint: null,
   lastWatchdogTick: Date.now(),
   lastTunnelRestartAt: 0,
@@ -29,6 +31,9 @@ const g = (global.__appSingleton ??= {
 const WATCHDOG_INTERVAL_MS = 60000;
 const NETWORK_CHECK_INTERVAL_MS = 5000;
 const NETWORK_RESTART_COOLDOWN_MS = 30000;
+const DISPATCHER_RETENTION_INTERVAL_MS = 15 * 60 * 1000;
+const DISPATCHER_ATTEMPT_RETENTION_MS = 24 * 60 * 60 * 1000;
+const DISPATCHER_AFFINITY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Initialize app on startup
@@ -72,6 +77,9 @@ export async function initializeApp() {
 
     // Network monitor: detect sleep/wake + network changes → restart tunnel
     startNetworkMonitor();
+
+    // Dispatcher ledger retention: keep recent operator evidence without unbounded growth
+    startDispatcherRetention();
   } catch (error) {
     console.error("[InitApp] Error:", error);
   }
@@ -174,6 +182,49 @@ function startNetworkMonitor() {
   }, NETWORK_CHECK_INTERVAL_MS);
 
   if (g.networkMonitorInterval.unref) g.networkMonitorInterval.unref();
+}
+
+function startDispatcherRetention() {
+  if (g.dispatcherRetentionInterval) return;
+
+  const runPrune = () => {
+    try {
+      const now = Date.now();
+      const retentionResult = pruneDispatchLedger({
+        retainAttemptsSince: new Date(
+          now - DISPATCHER_ATTEMPT_RETENTION_MS,
+        ).toISOString(),
+        retainAffinitySince: new Date(
+          now - DISPATCHER_AFFINITY_RETENTION_MS,
+        ).toISOString(),
+      });
+
+      const totalDeleted =
+        retentionResult.deletedEvents +
+        retentionResult.deletedAttempts +
+        retentionResult.deletedRequests +
+        retentionResult.deletedAffinity;
+
+      if (totalDeleted > 0) {
+        console.log(
+          "[DispatcherRetention] Pruned dispatcher ledger rows",
+          retentionResult,
+        );
+      }
+    } catch (error) {
+      console.log("[DispatcherRetention] Prune failed:", error.message);
+    }
+  };
+
+  runPrune();
+  g.dispatcherRetentionInterval = setInterval(
+    runPrune,
+    DISPATCHER_RETENTION_INTERVAL_MS,
+  );
+
+  if (g.dispatcherRetentionInterval.unref) {
+    g.dispatcherRetentionInterval.unref();
+  }
 }
 
 export default initializeApp;

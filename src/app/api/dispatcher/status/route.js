@@ -7,10 +7,10 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const { dispatcher, watchdog } = getCodexDispatcher();
+    const { dispatcher, watchdog, getConnections } = getCodexDispatcher();
     const [settings, connectionViews] = await Promise.all([
       getSettings(),
-      dispatcher?.getConnections?.() || [],
+      getConnections?.() || [],
     ]);
     const inMemory = dispatcher?.getInMemorySnapshot?.() || null;
     const snapshot = getDispatcherStatusSnapshot({
@@ -23,6 +23,10 @@ export async function GET() {
       ...snapshot,
       watchdog: {
         timeoutPolicy: watchdog?.timeoutPolicy || null,
+      },
+      retention: {
+        attemptsRetentionHours: 24,
+        affinityRetentionDays: 7,
       },
       inMemory,
     });

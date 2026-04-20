@@ -395,3 +395,74 @@ export function clearDispatchTables() {
   db.prepare("DELETE FROM dispatch_requests").run();
   db.prepare("DELETE FROM dispatch_conversation_affinity").run();
 }
+
+export function pruneDispatchLedger({
+  retainAttemptsSince = null,
+  retainAffinitySince = null,
+} = {}) {
+  const db = getSqlite();
+  const result = {
+    deletedEvents: 0,
+    deletedAttempts: 0,
+    deletedRequests: 0,
+    deletedAffinity: 0,
+  };
+
+  if (retainAttemptsSince) {
+    const deletedEvents = db
+      .prepare(
+        `
+          DELETE FROM dispatch_attempt_events
+          WHERE attempt_id IN (
+            SELECT id
+            FROM dispatch_attempts
+            WHERE COALESCE(finished_at, last_progress_at, first_progress_at, stream_started_at, connect_started_at, leased_at, queue_entered_at) < ?
+              AND state IN ('completed', 'failed', 'timed_out', 'cancelled', 'reconciled')
+          )
+        `,
+      )
+      .run(retainAttemptsSince);
+    result.deletedEvents = deletedEvents.changes || 0;
+
+    const deletedAttempts = db
+      .prepare(
+        `
+          DELETE FROM dispatch_attempts
+          WHERE COALESCE(finished_at, last_progress_at, first_progress_at, stream_started_at, connect_started_at, leased_at, queue_entered_at) < ?
+            AND state IN ('completed', 'failed', 'timed_out', 'cancelled', 'reconciled')
+        `,
+      )
+      .run(retainAttemptsSince);
+    result.deletedAttempts = deletedAttempts.changes || 0;
+
+    const deletedRequests = db
+      .prepare(
+        `
+          DELETE FROM dispatch_requests
+          WHERE status IN ('completed', 'failed', 'timed_out', 'cancelled')
+            AND COALESCE(completed_at, queued_at) < ?
+            AND NOT EXISTS (
+              SELECT 1
+              FROM dispatch_attempts
+              WHERE dispatch_attempts.request_id = dispatch_requests.id
+            )
+        `,
+      )
+      .run(retainAttemptsSince);
+    result.deletedRequests = deletedRequests.changes || 0;
+  }
+
+  if (retainAffinitySince) {
+    const deletedAffinity = db
+      .prepare(
+        `
+          DELETE FROM dispatch_conversation_affinity
+          WHERE updated_at < ?
+        `,
+      )
+      .run(retainAffinitySince);
+    result.deletedAffinity = deletedAffinity.changes || 0;
+  }
+
+  return result;
+}

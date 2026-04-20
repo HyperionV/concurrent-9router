@@ -86,7 +86,6 @@ test("dispatcher status snapshot summarizes queued active and terminal ledger st
 
   const snapshot = getDispatcherStatusSnapshot({
     provider: "codex",
-    recentLimit: 5,
     settings: {
       dispatcherEnabled: true,
       dispatcherShadowMode: false,
@@ -146,7 +145,11 @@ test("dispatcher status snapshot summarizes queued active and terminal ledger st
   assert.equal(snapshot.connections[0].availableSlots, 4);
   assert.equal(snapshot.connections[0].strictProxy, true);
   assert.equal(snapshot.connections[0].proxyPoolId, "pool-1");
-
-  assert.equal(snapshot.recentAttempts.length, 2);
-  assert.equal(snapshot.recentAttempts[0].events.length >= 0, true);
+  assert.equal(snapshot.models.length, 1);
+  assert.equal(snapshot.models[0].modelId, "gpt-5.4-low");
+  assert.equal(snapshot.models[0].queued, 1);
+  assert.equal(snapshot.models[0].active, 1);
+  assert.equal(snapshot.models[0].timedOut, 1);
+  assert.equal(snapshot.paths.length, 2);
+  assert.equal(snapshot.paths[0].total >= 1, true);
 });

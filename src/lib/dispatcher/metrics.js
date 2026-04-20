@@ -1,10 +1,9 @@
 import {
-  getDispatchRequest,
   listActiveDispatchAttempts,
-  listDispatchAttemptEvents,
   listDispatchAttemptsByState,
   listQueuedDispatchRequests,
 } from "@/lib/sqlite/dispatcherStore.js";
+import { deriveDispatcherMode } from "@/lib/dispatcher/settings.js";
 
 function toIsoAgeMs(timestamp) {
   if (!timestamp) return null;
@@ -84,21 +83,6 @@ function summarizeTerminalAttempts(terminalAttempts) {
   };
 }
 
-function summarizeRequestsForAttempts(attempts) {
-  const requestStatusCounts = {};
-  for (const attempt of attempts) {
-    const request = getDispatchRequest(attempt.requestId);
-    increment(requestStatusCounts, request?.status);
-  }
-  return requestStatusCounts;
-}
-
-function deriveDispatcherMode(settings = {}) {
-  if (settings.dispatcherEnabled === true) return "managed";
-  if (settings.dispatcherShadowMode === true) return "shadow";
-  return "off";
-}
-
 function buildCapacitySummary({
   connectionViews,
   settings,
@@ -127,15 +111,25 @@ function buildCapacitySummary({
   };
 }
 
-function summarizeConnectionHealth(connectionId, recentAttempts) {
-  const attempts = recentAttempts.filter(
+function summarizeConnectionHealth(
+  connectionId,
+  activeAttempts,
+  terminalAttempts,
+) {
+  const attempts = [...activeAttempts, ...terminalAttempts].filter(
     (attempt) => attempt.connectionId === connectionId,
   );
   const terminalReasonCounts = {};
   let lastAttemptAt = null;
 
   for (const attempt of attempts) {
-    increment(terminalReasonCounts, attempt.terminalReason);
+    if (
+      attempt.state !== "leased" &&
+      attempt.state !== "connecting" &&
+      attempt.state !== "streaming"
+    ) {
+      increment(terminalReasonCounts, attempt.terminalReason);
+    }
     const candidate =
       attempt.finishedAt ||
       attempt.lastProgressAt ||
@@ -164,7 +158,8 @@ function summarizeConnections({
   connectionViews,
   settings,
   inMemory,
-  recentAttempts,
+  activeAttempts,
+  terminalAttempts,
 }) {
   const slotsPerConnection = Math.max(
     1,
@@ -175,7 +170,11 @@ function summarizeConnections({
   return [...connectionViews]
     .map((connection) => {
       const occupiedSlots = Number(occupancyByConnection[connection.id] || 0);
-      const health = summarizeConnectionHealth(connection.id, recentAttempts);
+      const health = summarizeConnectionHealth(
+        connection.id,
+        activeAttempts,
+        terminalAttempts,
+      );
       return {
         connectionId: connection.id,
         connectionName:
@@ -201,9 +200,97 @@ function summarizeConnections({
     });
 }
 
+function summarizeModels(queuedRequests, activeAttempts, terminalAttempts) {
+  const byModel = new Map();
+
+  function ensureModel(modelId) {
+    const key = modelId || "unknown";
+    if (!byModel.has(key)) {
+      byModel.set(key, {
+        modelId: key,
+        queued: 0,
+        active: 0,
+        completed: 0,
+        failed: 0,
+        timedOut: 0,
+        cancelled: 0,
+        reconciled: 0,
+        total: 0,
+      });
+    }
+    return byModel.get(key);
+  }
+
+  for (const request of queuedRequests) {
+    const entry = ensureModel(request.modelId);
+    entry.queued += 1;
+    entry.total += 1;
+  }
+
+  for (const attempt of activeAttempts) {
+    const entry = ensureModel(attempt.modelId);
+    entry.active += 1;
+    entry.total += 1;
+  }
+
+  for (const attempt of terminalAttempts) {
+    const entry = ensureModel(attempt.modelId);
+    if (attempt.state === "completed") entry.completed += 1;
+    if (attempt.state === "failed") entry.failed += 1;
+    if (attempt.state === "timed_out") entry.timedOut += 1;
+    if (attempt.state === "cancelled") entry.cancelled += 1;
+    if (attempt.state === "reconciled") entry.reconciled += 1;
+    entry.total += 1;
+  }
+
+  return [...byModel.values()].sort((a, b) => {
+    const totalDiff = b.total - a.total;
+    if (totalDiff !== 0) return totalDiff;
+    return a.modelId.localeCompare(b.modelId);
+  });
+}
+
+function summarizePaths(activeAttempts, terminalAttempts) {
+  const byPath = new Map();
+
+  function ensurePath(pathMode) {
+    const key = pathMode || "unknown";
+    if (!byPath.has(key)) {
+      byPath.set(key, {
+        pathMode: key,
+        active: 0,
+        completed: 0,
+        failed: 0,
+        timedOut: 0,
+        total: 0,
+      });
+    }
+    return byPath.get(key);
+  }
+
+  for (const attempt of activeAttempts) {
+    const entry = ensurePath(attempt.pathMode);
+    entry.active += 1;
+    entry.total += 1;
+  }
+
+  for (const attempt of terminalAttempts) {
+    const entry = ensurePath(attempt.pathMode);
+    if (attempt.state === "completed") entry.completed += 1;
+    if (attempt.state === "failed") entry.failed += 1;
+    if (attempt.state === "timed_out") entry.timedOut += 1;
+    entry.total += 1;
+  }
+
+  return [...byPath.values()].sort((a, b) => {
+    const totalDiff = b.total - a.total;
+    if (totalDiff !== 0) return totalDiff;
+    return a.pathMode.localeCompare(b.pathMode);
+  });
+}
+
 export function getDispatcherStatusSnapshot({
   provider = "codex",
-  recentLimit = 20,
   settings = {},
   inMemory = null,
   connectionViews = [],
@@ -217,35 +304,6 @@ export function getDispatcherStatusSnapshot({
     "cancelled",
     "reconciled",
   ]).filter((attempt) => attempt.provider === provider);
-
-  const recentAttempts = [...activeAttempts, ...terminalAttempts]
-    .sort((a, b) => {
-      const aTime =
-        a.finishedAt ||
-        a.lastProgressAt ||
-        a.firstProgressAt ||
-        a.streamStartedAt ||
-        a.connectStartedAt ||
-        a.leasedAt ||
-        a.queueEnteredAt ||
-        "";
-      const bTime =
-        b.finishedAt ||
-        b.lastProgressAt ||
-        b.firstProgressAt ||
-        b.streamStartedAt ||
-        b.connectStartedAt ||
-        b.leasedAt ||
-        b.queueEnteredAt ||
-        "";
-      return String(bTime).localeCompare(String(aTime));
-    })
-    .slice(0, recentLimit)
-    .map((attempt) => ({
-      ...attempt,
-      request: getDispatchRequest(attempt.requestId),
-      events: listDispatchAttemptEvents(attempt.id),
-    }));
 
   return {
     provider,
@@ -267,13 +325,14 @@ export function getDispatcherStatusSnapshot({
     queued: summarizeQueuedRequests(queuedRequests),
     active: summarizeActiveAttempts(activeAttempts),
     terminal: summarizeTerminalAttempts(terminalAttempts),
-    requestStatusByRecentAttempts: summarizeRequestsForAttempts(recentAttempts),
+    models: summarizeModels(queuedRequests, activeAttempts, terminalAttempts),
+    paths: summarizePaths(activeAttempts, terminalAttempts),
     connections: summarizeConnections({
       connectionViews,
       settings,
       inMemory,
-      recentAttempts,
+      activeAttempts,
+      terminalAttempts,
     }),
-    recentAttempts,
   };
 }
