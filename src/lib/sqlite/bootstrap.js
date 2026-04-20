@@ -94,7 +94,7 @@ function importLegacyRequestDetails() {
   }
 }
 
-function importLegacyIfNeeded() {
+async function importLegacyIfNeeded() {
   if (getMetadata(LEGACY_BOOTSTRAP_KEY)?.done === true) {
     return;
   }
@@ -102,7 +102,7 @@ function importLegacyIfNeeded() {
   if (fs.existsSync(LEGACY_DB_FILE)) {
     const legacyDb = parseJsonFile(LEGACY_DB_FILE);
     if (legacyDb) {
-      importLegacyPayload(legacyDb, { replaceExisting: true });
+      await importLegacyPayload(legacyDb, { replaceExisting: true });
     }
   }
 
@@ -118,9 +118,9 @@ function importLegacyIfNeeded() {
 
 export async function ensureSqliteReady() {
   if (!bootstrapPromise) {
-    bootstrapPromise = Promise.resolve().then(() => {
+    bootstrapPromise = Promise.resolve().then(async () => {
       getSqlite();
-      importLegacyIfNeeded();
+      await importLegacyIfNeeded();
     });
   }
   return bootstrapPromise;

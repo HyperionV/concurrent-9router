@@ -1221,6 +1221,27 @@ export function listRequestDetails() {
     }));
 }
 
+function mapRequestDetailRow(row) {
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    provider: row.provider,
+    model: row.model_id,
+    connectionId: row.connection_id,
+    timestamp: row.timestamp,
+    status: row.status,
+    latency: parseJson(row.latency_json, {}),
+    tokens: parseJson(row.tokens_json, {}),
+    request: parseJson(row.request_json, {}),
+    providerRequest: parseJson(row.provider_request_json, {}),
+    providerResponse: parseJson(row.provider_response_json, {}),
+    response: parseJson(row.response_json, {}),
+  };
+}
+
 export function getRequestDetailRecord(id) {
-  return listRequestDetails().find((row) => row.id === id) || null;
+  return mapRequestDetailRow(
+    db().prepare("SELECT * FROM request_details WHERE id = ?").get(id),
+  );
 }

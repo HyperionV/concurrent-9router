@@ -1,6 +1,6 @@
 # 9Router Architecture
 
-_Last updated: 2026-02-06_
+_Last updated: 2026-04-20_
 
 ## Executive Summary
 
@@ -22,6 +22,8 @@ Primary runtime model:
 
 - Next.js app routes under `src/app/api/*` implement both dashboard APIs and compatibility APIs
 - A shared SSE/routing core in `src/sse/*` + `open-sse/*` handles provider execution, translation, streaming, fallback, and usage
+- Canonical persistence now lives in SQLite under `${DATA_DIR}/state.sqlite`
+- Legacy JSON files remain import/migration sources only and are no longer the active runtime store
 
 ## Scope and Boundaries
 
@@ -56,8 +58,7 @@ flowchart LR
         API[V1 Compatibility API\n/v1/*]
         DASH[Dashboard + Management API\n/api/*]
         CORE[SSE + Translation Core\nopen-sse + src/sse]
-        DB[(db.json)]
-        UDB[(usage.json + log.txt)]
+        DB[(state.sqlite)]
     end
 
     subgraph Upstreams[Upstream Providers]
@@ -79,7 +80,6 @@ flowchart LR
     API --> CORE
     DASH --> DB
     CORE --> DB
-    CORE --> UDB
 
     CORE --> P1
     CORE --> P2
@@ -138,14 +138,20 @@ Main flow modules:
 Primary state DB:
 
 - `src/lib/localDb.js`
-- file: `${DATA_DIR}/db.json` (or `~/.9router/db.json` when `DATA_DIR` is unset)
-- entities: providerConnections, providerNodes, modelAliases, combos, apiKeys, settings, pricing
+- file: `${DATA_DIR}/state.sqlite`
+- entities: providerConnections, providerNodes, proxyPools, modelAliases, mitm aliases, combos, apiKeys, settings, pricing
 
 Usage DB:
 
 - `src/lib/usageDb.js`
-- files: `~/.9router/usage.json`, `~/.9router/log.txt`
-- note: currently independent from `DATA_DIR`
+- stored in SQLite under `${DATA_DIR}/state.sqlite`
+- includes usage events and request log rows
+
+Request details DB:
+
+- `src/lib/requestDetailsDb.js`
+- stored in SQLite under `${DATA_DIR}/state.sqlite`
+- includes observability request detail rows
 
 ## 4) Auth + Security Surfaces
 
@@ -377,9 +383,8 @@ erDiagram
 
 Physical storage files:
 
-- main state: `${DATA_DIR}/db.json` (or `~/.9router/db.json`)
-- usage stats: `~/.9router/usage.json`
-- request log lines: `~/.9router/log.txt`
+- canonical runtime DB: `${DATA_DIR}/state.sqlite`
+- legacy import sources only: `${DATA_DIR}/db.json`, `~/.9router/usage.json`, `~/.9router/log.txt`, `${DATA_DIR}/request-details.json`
 - optional translator/request debug sessions: `<repo>/logs/...`
 
 ## Deployment Topology
@@ -394,8 +399,7 @@ flowchart LR
     subgraph ContainerOrProcess[9Router Runtime]
         Next[Next.js Server\nPORT=20128]
         Core[SSE Core + Executors]
-        MainDB[(db.json)]
-        UsageDB[(usage.json/log.txt)]
+        MainDB[(state.sqlite)]
     end
 
     subgraph External[External Services]
@@ -408,7 +412,6 @@ flowchart LR
     Next --> Core
     Next --> MainDB
     Core --> MainDB
-    Core --> UsageDB
     Core --> Providers
     Next --> SyncCloud
 ```
@@ -445,7 +448,9 @@ flowchart LR
 ### Persistence
 
 - `src/lib/localDb.js`: persistent config/state
-- `src/lib/usageDb.js`: usage history and rolling request logs
+- `src/lib/usageDb.js`: SQLite-backed usage history and rolling request logs
+- `src/lib/requestDetailsDb.js`: SQLite-backed request details
+- `src/lib/sqlite/*`: runtime, bootstrap, import, backup, restore, validation
 
 ## Provider Executor Coverage
 
@@ -515,8 +520,8 @@ Translations are selected dynamically based on source payload shape and provider
 Runtime visibility sources:
 
 - console logs from `src/sse/utils/logger.js`
-- per-request usage aggregates in `usage.json`
-- textual request status log in `log.txt`
+- per-request usage aggregates in SQLite usage tables
+- textual request status log rows in SQLite request log tables
 - optional deep request/translation logs under `logs/` when `ENABLE_REQUEST_LOGS=true`
 - dashboard usage endpoints (`/api/usage/*`) for UI consumption
 
@@ -542,10 +547,10 @@ Environment variables actively used by code:
 
 ## Known Architectural Notes
 
-1. `usageDb` currently stores under `~/.9router` and does not follow `DATA_DIR`.
-2. `/api/v1/route.js` returns a static model list and is not the main models source used by `/v1/models`.
-3. Request logger writes full headers/body when enabled; treat log directory as sensitive.
-4. Cloud behavior depends on correct `NEXT_PUBLIC_BASE_URL` and cloud endpoint reachability.
+1. `/api/v1/route.js` returns a static model list and is not the main models source used by `/v1/models`.
+2. Request logger writes full headers/body when enabled; treat log directory as sensitive.
+3. Cloud behavior depends on correct `NEXT_PUBLIC_BASE_URL` and cloud endpoint reachability.
+4. `better-sqlite3` is a native Node module, so install-time and run-time Node ABIs must match.
 
 ## Operational Verification Checklist
 
