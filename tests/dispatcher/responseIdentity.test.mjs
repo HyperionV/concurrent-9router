@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 const tempRoot = fs.mkdtempSync(
   path.join(os.tmpdir(), "dispatcher-response-id-"),
@@ -172,4 +173,85 @@ test("streaming handler forwards response identity observed in sse stream", asyn
 
   await result.response.text();
   assert.equal(responseId, "resp-stream");
+});
+
+test("streaming handler waits for async response identity persistence before continuing", async () => {
+  let responseId = null;
+  let releaseIdentity = null;
+  const events = [];
+  const identityGate = new Promise((resolve) => {
+    releaseIdentity = resolve;
+  });
+  const streamController = createStreamController({
+    provider: "openai",
+    model: "gpt-5.4-low",
+  });
+  const sse = [
+    'data: {"id":"resp-stream-await","object":"chat.completion.chunk","created":1710000000,"model":"gpt-5.4-low","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}\n',
+    "data: [DONE]\n\n",
+  ].join("\n");
+
+  const result = handleStreamingResponse({
+    providerResponse: new Response(stringStream(sse), {
+      headers: { "content-type": "text/event-stream" },
+    }),
+    provider: "openai",
+    model: "gpt-5.4-low",
+    sourceFormat: FORMATS.OPENAI,
+    targetFormat: FORMATS.OPENAI,
+    userAgent: "",
+    body: { messages: [{ role: "user", content: "hi" }], stream: true },
+    stream: true,
+    translatedBody: null,
+    finalBody: null,
+    requestStartTime: Date.now() - 5,
+    connectionId: "conn-1",
+    apiKey: null,
+    clientRawRequest: { endpoint: "/v1/chat/completions" },
+    onRequestSuccess: async () => {},
+    reqLogger: noopLogger(),
+    toolNameMap: null,
+    streamController,
+    onStreamComplete: async () => {},
+    dispatcherHooks: {
+      onStreamStarted: async () => {},
+      onFirstProgress: async () => {
+        events.push("first-progress");
+      },
+      onCompleted: async () => {
+        events.push("completed");
+      },
+      onResponseIdentity: async (id) => {
+        events.push("identity-start");
+        responseId = id;
+        await identityGate;
+        events.push("identity-done");
+      },
+    },
+  });
+
+  const responseTextPromise = result.response.text();
+  const earlyResult = await Promise.race([
+    responseTextPromise.then(() => "done"),
+    delay(20, "timeout"),
+  ]);
+
+  assert.equal(earlyResult, "timeout");
+  assert.deepEqual(events, ["identity-start"]);
+
+  releaseIdentity();
+
+  const text = await responseTextPromise;
+  await delay(0);
+
+  assert.equal(responseId, "resp-stream-await");
+  assert.match(text, /hello/);
+  assert.ok(
+    events.indexOf("identity-done") !== -1,
+    "identity callback should finish before stream completes",
+  );
+  assert.ok(
+    events.indexOf("first-progress") > events.indexOf("identity-done"),
+    "first progress should happen only after response identity persistence finishes",
+  );
 });

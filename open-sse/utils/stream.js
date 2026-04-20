@@ -86,15 +86,15 @@ export function createSSEStream(options = {}) {
     onFirstProgress?.();
   }
 
-  function maybeEmitResponseIdentity(parsed) {
+  async function maybeEmitResponseIdentity(parsed) {
     const responseId = parsed?.response?.id || parsed?.id || null;
     if (typeof responseId === "string" && responseId.trim() !== "") {
-      onResponseIdentity?.(responseId);
+      await onResponseIdentity?.(responseId);
     }
   }
 
   return new TransformStream({
-    transform(chunk, controller) {
+    async transform(chunk, controller) {
       if (!ttftAt) {
         ttftAt = Date.now();
       }
@@ -119,7 +119,7 @@ export function createSSEStream(options = {}) {
           ) {
             try {
               const parsed = JSON.parse(trimmed.slice(5).trim());
-              maybeEmitResponseIdentity(parsed);
+              await maybeEmitResponseIdentity(parsed);
 
               const idFixed = fixInvalidId(parsed);
 
@@ -214,7 +214,7 @@ export function createSSEStream(options = {}) {
 
         const parsed = parseSSELine(trimmed, targetFormat);
         if (!parsed) continue;
-        maybeEmitResponseIdentity(parsed);
+        await maybeEmitResponseIdentity(parsed);
 
         // For Ollama: done=true is the final chunk with finish_reason/usage, must translate
         // For other formats: done=true is the [DONE] sentinel, skip
@@ -325,7 +325,7 @@ export function createSSEStream(options = {}) {
       }
     },
 
-    flush(controller) {
+    async flush(controller) {
       trackPendingRequest(model, provider, connectionId, false);
       try {
         const remaining = decoder.decode();
