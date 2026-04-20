@@ -87,6 +87,40 @@ test("dispatcher status snapshot summarizes queued active and terminal ledger st
   const snapshot = getDispatcherStatusSnapshot({
     provider: "codex",
     recentLimit: 5,
+    settings: {
+      dispatcherEnabled: true,
+      dispatcherShadowMode: false,
+      dispatcherCodexOnly: true,
+      dispatcherSlotsPerConnection: 5,
+    },
+    inMemory: {
+      occupancyByConnection: {
+        "conn-12": 1,
+        "conn-11": 0,
+      },
+      timeoutPolicy: {
+        queueTtlMs: 600000,
+      },
+      pathHealth: {},
+    },
+    connectionViews: [
+      {
+        id: "conn-12",
+        displayName: "Account 12",
+        providerSpecificData: {
+          connectionProxyPoolId: "pool-1",
+          strictProxy: true,
+        },
+      },
+      {
+        id: "conn-11",
+        displayName: "Account 11",
+        providerSpecificData: {
+          connectionProxyPoolId: null,
+          strictProxy: false,
+        },
+      },
+    ],
   });
 
   assert.equal(snapshot.queued.count, 1);
@@ -99,6 +133,19 @@ test("dispatcher status snapshot summarizes queued active and terminal ledger st
   assert.equal(snapshot.terminal.count, 1);
   assert.equal(snapshot.terminal.byState.timed_out, 1);
   assert.equal(snapshot.terminal.byTimeoutKind.idle_timeout, 1);
+
+  assert.equal(snapshot.mode, "managed");
+  assert.equal(snapshot.settings.dispatcherSlotsPerConnection, 5);
+  assert.equal(snapshot.capacity.activeConnections, 2);
+  assert.equal(snapshot.capacity.totalCapacity, 10);
+  assert.equal(snapshot.capacity.activeLeases, 1);
+  assert.equal(snapshot.connections.length, 2);
+  assert.equal(snapshot.connections[0].connectionId, "conn-12");
+  assert.equal(snapshot.connections[0].occupiedSlots, 1);
+  assert.equal(snapshot.connections[0].capacity, 5);
+  assert.equal(snapshot.connections[0].availableSlots, 4);
+  assert.equal(snapshot.connections[0].strictProxy, true);
+  assert.equal(snapshot.connections[0].proxyPoolId, "pool-1");
 
   assert.equal(snapshot.recentAttempts.length, 2);
   assert.equal(snapshot.recentAttempts[0].events.length >= 0, true);

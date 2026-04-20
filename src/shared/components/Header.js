@@ -76,6 +76,14 @@ const getPageInfo = (pathname) => {
       icon: "lan",
       breadcrumbs: [],
     };
+  if (pathname.includes("/dispatcher"))
+    return {
+      title: "Dispatcher",
+      description:
+        "Monitor Codex queueing, slot usage, and recent dispatch health",
+      icon: "hub",
+      breadcrumbs: [],
+    };
   if (pathname.includes("/endpoint"))
     return {
       title: "Endpoint",

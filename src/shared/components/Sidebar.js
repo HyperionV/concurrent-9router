@@ -24,6 +24,7 @@ const debugItems = [
 ];
 
 const systemItems = [
+  { href: "/dashboard/dispatcher", label: "Dispatcher", icon: "hub" },
   { href: "/dashboard/proxy-pools", label: "Proxy Pools", icon: "lan" },
 ];
 
