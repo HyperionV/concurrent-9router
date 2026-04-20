@@ -76,3 +76,4 @@ scripts/proxy_list.txt
 responses_probe.py
 tests/
 .claude
+setup-9router-vm.sh

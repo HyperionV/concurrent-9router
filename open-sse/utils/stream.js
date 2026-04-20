@@ -79,11 +79,16 @@ export function createSSEStream(options = {}) {
   let accumulatedThinking = "";
   let ttftAt = null;
   let firstProgressSeen = false;
+  let firstProgressPromise = null;
 
   function emitFirstProgressOnce() {
-    if (firstProgressSeen) return;
+    if (firstProgressPromise) return firstProgressPromise;
+    if (firstProgressSeen) return Promise.resolve();
     firstProgressSeen = true;
-    onFirstProgress?.();
+    firstProgressPromise = Promise.resolve(onFirstProgress?.()).finally(() => {
+      firstProgressPromise = null;
+    });
+    return firstProgressPromise;
   }
 
   async function maybeEmitResponseIdentity(parsed) {
@@ -160,12 +165,12 @@ export function createSSEStream(options = {}) {
               if (content && typeof content === "string") {
                 totalContentLength += content.length;
                 accumulatedContent += content;
-                emitFirstProgressOnce();
+                await emitFirstProgressOnce();
               }
               if (reasoning && typeof reasoning === "string") {
                 totalContentLength += reasoning.length;
                 accumulatedThinking += reasoning;
-                emitFirstProgressOnce();
+                await emitFirstProgressOnce();
               }
 
               const extracted = extractUsage(parsed);
@@ -229,27 +234,27 @@ export function createSSEStream(options = {}) {
         if (parsed.delta?.text) {
           totalContentLength += parsed.delta.text.length;
           accumulatedContent += parsed.delta.text;
-          emitFirstProgressOnce();
+          await emitFirstProgressOnce();
         }
         // Claude format - thinking
         if (parsed.delta?.thinking) {
           totalContentLength += parsed.delta.thinking.length;
           accumulatedThinking += parsed.delta.thinking;
-          emitFirstProgressOnce();
+          await emitFirstProgressOnce();
         }
 
         // OpenAI format - content
         if (parsed.choices?.[0]?.delta?.content) {
           totalContentLength += parsed.choices[0].delta.content.length;
           accumulatedContent += parsed.choices[0].delta.content;
-          emitFirstProgressOnce();
+          await emitFirstProgressOnce();
         }
         // OpenAI format - reasoning
         if (parsed.choices?.[0]?.delta?.reasoning_content) {
           totalContentLength +=
             parsed.choices[0].delta.reasoning_content.length;
           accumulatedThinking += parsed.choices[0].delta.reasoning_content;
-          emitFirstProgressOnce();
+          await emitFirstProgressOnce();
         }
 
         // Gemini format
@@ -263,7 +268,7 @@ export function createSSEStream(options = {}) {
               } else {
                 accumulatedContent += part.text;
               }
-              emitFirstProgressOnce();
+              await emitFirstProgressOnce();
             }
           }
         }
