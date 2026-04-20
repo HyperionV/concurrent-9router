@@ -24,6 +24,10 @@ export const DEFAULT_SETTINGS = {
   outboundProxyEnabled: false,
   outboundProxyUrl: "",
   outboundNoProxy: "",
+  dispatcherEnabled: false,
+  dispatcherShadowMode: false,
+  dispatcherCodexOnly: true,
+  dispatcherSlotsPerConnection: 1,
   mitmRouterBaseUrl: DEFAULT_MITM_ROUTER_BASE,
 };
 

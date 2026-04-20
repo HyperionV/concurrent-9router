@@ -5,21 +5,31 @@
  * Returns null if fetch fails.
  *
  * @param {string} imageUrl - HTTP(S) URL of the image
- * @param {object} options - { signal, timeoutMs }
+ * @param {object} options - { signal, timeoutMs, proxyOptions }
  * @returns {Promise<{url: string, mimeType: string}|null>}
  */
 export async function fetchImageAsBase64(imageUrl, options = {}) {
-  const { signal, timeoutMs = 10000 } = options;
-  if (!imageUrl || (!imageUrl.startsWith("http://") && !imageUrl.startsWith("https://"))) {
+  const { signal, timeoutMs = 10000, proxyOptions = null } = options;
+  if (
+    !imageUrl ||
+    (!imageUrl.startsWith("http://") && !imageUrl.startsWith("https://"))
+  ) {
     return null;
   }
 
   const controller = new AbortController();
-  const timeout = signal ? null : setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = signal
+    ? null
+    : setTimeout(() => controller.abort(), timeoutMs);
   const fetchSignal = signal || controller.signal;
 
   try {
-    const response = await fetch(imageUrl, { signal: fetchSignal });
+    const { proxyAwareFetch } = await import("open-sse/utils/proxyFetch.js");
+    const response = await proxyAwareFetch(
+      imageUrl,
+      { signal: fetchSignal },
+      proxyOptions,
+    );
     if (!response.ok) return null;
 
     const mimeType = response.headers.get("Content-Type") || "image/jpeg";

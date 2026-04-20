@@ -47,6 +47,15 @@ function mapSettingsRow(row) {
       outboundProxyEnabled: fromBool(row.outbound_proxy_enabled),
       outboundProxyUrl: row.outbound_proxy_url || "",
       outboundNoProxy: row.outbound_no_proxy || "",
+      dispatcherEnabled: fromBool(row.dispatcher_enabled),
+      dispatcherShadowMode: fromBool(row.dispatcher_shadow_mode),
+      dispatcherCodexOnly:
+        row.dispatcher_codex_only == null
+          ? DEFAULT_SETTINGS.dispatcherCodexOnly
+          : fromBool(row.dispatcher_codex_only),
+      dispatcherSlotsPerConnection:
+        row.dispatcher_slots_per_connection ??
+        DEFAULT_SETTINGS.dispatcherSlotsPerConnection,
       mitmRouterBaseUrl:
         row.mitm_router_base_url || DEFAULT_SETTINGS.mitmRouterBaseUrl,
       password: row.password || undefined,
@@ -100,6 +109,10 @@ export function writeSettings(updates) {
       outbound_proxy_enabled = @outboundProxyEnabled,
       outbound_proxy_url = @outboundProxyUrl,
       outbound_no_proxy = @outboundNoProxy,
+      dispatcher_enabled = @dispatcherEnabled,
+      dispatcher_shadow_mode = @dispatcherShadowMode,
+      dispatcher_codex_only = @dispatcherCodexOnly,
+      dispatcher_slots_per_connection = @dispatcherSlotsPerConnection,
       mitm_router_base_url = @mitmRouterBaseUrl,
       password = @password,
       mitm_enabled = @mitmEnabled
@@ -129,6 +142,12 @@ export function writeSettings(updates) {
       outboundProxyEnabled: asBool(next.outboundProxyEnabled),
       outboundProxyUrl: next.outboundProxyUrl || "",
       outboundNoProxy: next.outboundNoProxy || "",
+      dispatcherEnabled: asBool(next.dispatcherEnabled),
+      dispatcherShadowMode: asBool(next.dispatcherShadowMode),
+      dispatcherCodexOnly: asBool(next.dispatcherCodexOnly !== false),
+      dispatcherSlotsPerConnection:
+        next.dispatcherSlotsPerConnection ??
+        DEFAULT_SETTINGS.dispatcherSlotsPerConnection,
       mitmRouterBaseUrl:
         next.mitmRouterBaseUrl || DEFAULT_SETTINGS.mitmRouterBaseUrl,
       password: next.password || null,

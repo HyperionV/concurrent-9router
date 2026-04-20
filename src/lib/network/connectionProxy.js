@@ -6,9 +6,14 @@ function normalizeString(value) {
 }
 
 function normalizeLegacyProxy(providerSpecificData = {}) {
-  const connectionProxyEnabled = providerSpecificData?.connectionProxyEnabled === true;
-  const connectionProxyUrl = normalizeString(providerSpecificData?.connectionProxyUrl);
-  const connectionNoProxy = normalizeString(providerSpecificData?.connectionNoProxy);
+  const connectionProxyEnabled =
+    providerSpecificData?.connectionProxyEnabled === true;
+  const connectionProxyUrl = normalizeString(
+    providerSpecificData?.connectionProxyUrl,
+  );
+  const connectionNoProxy = normalizeString(
+    providerSpecificData?.connectionNoProxy,
+  );
 
   return {
     connectionProxyEnabled,
@@ -50,6 +55,7 @@ export async function resolveConnectionProxyConfig(providerSpecificData = {}) {
         connectionProxyUrl: proxyUrl,
         connectionNoProxy: noProxy,
         strictProxy: proxyPool.strictProxy === true,
+        vercelRelayUrl: "",
       };
     }
   }
@@ -59,6 +65,8 @@ export async function resolveConnectionProxyConfig(providerSpecificData = {}) {
       source: "legacy",
       proxyPoolId: proxyPoolId || null,
       proxyPool: null,
+      strictProxy: false,
+      vercelRelayUrl: "",
       ...legacy,
     };
   }
@@ -67,6 +75,8 @@ export async function resolveConnectionProxyConfig(providerSpecificData = {}) {
     source: "none",
     proxyPoolId: proxyPoolId || null,
     proxyPool: null,
+    strictProxy: false,
+    vercelRelayUrl: "",
     ...legacy,
   };
 }

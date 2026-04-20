@@ -17,8 +17,13 @@ import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
-import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
+import {
+  updateProviderCredentials,
+  checkAndRefreshToken,
+} from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
+import { maybeHandleManagedCodexRequest } from "@/lib/dispatcher/executeCodexAttempt.js";
+import { beginShadowCodexAttempt } from "@/lib/dispatcher/shadowMode.js";
 
 /**
  * Handle chat completion request
@@ -40,7 +45,7 @@ export async function handleChat(request, clientRawRequest = null) {
     clientRawRequest = {
       endpoint: url.pathname,
       body,
-      headers: Object.fromEntries(request.headers.entries())
+      headers: Object.fromEntries(request.headers.entries()),
     };
   }
   cacheClaudeHeaders(clientRawRequest.headers);
@@ -53,7 +58,10 @@ export async function handleChat(request, clientRawRequest = null) {
   const msgCount = body.messages?.length || body.input?.length || 0;
   const toolCount = body.tools?.length || 0;
   const effort = body.reasoning_effort || body.reasoning?.effort || null;
-  log.request("POST", `${url.pathname} | ${modelStr} | ${msgCount} msgs${toolCount ? ` | ${toolCount} tools` : ""}${effort ? ` | effort=${effort}` : ""}`);
+  log.request(
+    "POST",
+    `${url.pathname} | ${modelStr} | ${msgCount} msgs${toolCount ? ` | ${toolCount} tools` : ""}${effort ? ` | effort=${effort}` : ""}`,
+  );
 
   // Log API key (masked)
   const authHeader = request.headers.get("Authorization");
@@ -86,7 +94,12 @@ export async function handleChat(request, clientRawRequest = null) {
 
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
   const userAgent = request?.headers?.get("user-agent") || "";
-  const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming);
+  const bypassResponse = handleBypassRequest(
+    body,
+    modelStr,
+    userAgent,
+    !!settings.ccFilterNaming,
+  );
   if (bypassResponse) return bypassResponse.response || bypassResponse;
 
   // Check if model is a combo (has multiple models with fallback)
@@ -95,27 +108,44 @@ export async function handleChat(request, clientRawRequest = null) {
     // Check for combo-specific strategy first, fallback to global
     const comboStrategies = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
-    const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
-    
-    log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy})`);
+    const comboStrategy =
+      comboSpecificStrategy || settings.comboStrategy || "fallback";
+
+    log.info(
+      "CHAT",
+      `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy})`,
+    );
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+      handleSingleModel: (b, m) =>
+        handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
       log,
       comboName: modelStr,
-      comboStrategy
+      comboStrategy,
     });
   }
 
   // Single model request
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey);
+  return handleSingleModelChat(
+    body,
+    modelStr,
+    clientRawRequest,
+    request,
+    apiKey,
+  );
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
+async function handleSingleModelChat(
+  body,
+  modelStr,
+  clientRawRequest = null,
+  request = null,
+  apiKey = null,
+) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
@@ -126,16 +156,21 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       // Check for combo-specific strategy first, fallback to global
       const comboStrategies = chatSettings.comboStrategies || {};
       const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
-      const comboStrategy = comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
-      
-      log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy})`);
+      const comboStrategy =
+        comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
+
+      log.info(
+        "CHAT",
+        `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy})`,
+      );
       return handleComboChat({
         body,
         models: comboModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        handleSingleModel: (b, m) =>
+          handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
         log,
         comboName: modelStr,
-        comboStrategy
+        comboStrategy,
       });
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });
@@ -154,48 +189,116 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   // Extract userAgent from request
   const userAgent = request?.headers?.get("user-agent") || "";
 
+  const chatSettings = await getSettings();
+  const providerThinking =
+    (chatSettings.providerThinking || {})[provider] || null;
+  const managedCodexResponse = await maybeHandleManagedCodexRequest({
+    body,
+    provider,
+    model,
+    modelStr,
+    request,
+    clientRawRequest,
+    apiKey,
+    providerThinking,
+    ccFilterNaming: !!chatSettings.ccFilterNaming,
+  });
+  if (managedCodexResponse) {
+    return managedCodexResponse;
+  }
+
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const credentials = await getProviderCredentials(
+      provider,
+      excludeConnectionIds,
+      model,
+    );
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
         const errorMsg = lastError || credentials.lastError || "Unavailable";
-        const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
-        log.warn("CHAT", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
-        return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
+        const status =
+          lastStatus ||
+          Number(credentials.lastErrorCode) ||
+          HTTP_STATUS.SERVICE_UNAVAILABLE;
+        log.warn(
+          "CHAT",
+          `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`,
+        );
+        return unavailableResponse(
+          status,
+          `[${provider}/${model}] ${errorMsg}`,
+          credentials.retryAfter,
+          credentials.retryAfterHuman,
+        );
       }
       if (excludeConnectionIds.size === 0) {
         log.warn("AUTH", `No active credentials for provider: ${provider}`);
-        return errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`);
+        return errorResponse(
+          HTTP_STATUS.NOT_FOUND,
+          `No active credentials for provider: ${provider}`,
+        );
       }
       log.warn("CHAT", "No more accounts available", { provider });
-      return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
+      return errorResponse(
+        lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE,
+        lastError || "All accounts unavailable",
+      );
     }
 
     // Log account selection
-    log.info("AUTH", `\x1b[32mUsing ${provider} account: ${credentials.connectionName}\x1b[0m`);
+    log.info(
+      "AUTH",
+      `\x1b[32mUsing ${provider} account: ${credentials.connectionName}\x1b[0m`,
+    );
 
-    const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+    const refreshedCredentials = await checkAndRefreshToken(
+      provider,
+      credentials,
+    );
 
     // Ensure real project ID is available for providers that need it (P0 fix: cold miss)
-    if ((provider === "antigravity" || provider === "gemini-cli") && !refreshedCredentials.projectId) {
-      const pid = await getProjectIdForConnection(credentials.connectionId, refreshedCredentials.accessToken);
+    if (
+      (provider === "antigravity" || provider === "gemini-cli") &&
+      !refreshedCredentials.projectId
+    ) {
+      const pid = await getProjectIdForConnection(
+        credentials.connectionId,
+        refreshedCredentials.accessToken,
+      );
       if (pid) {
         refreshedCredentials.projectId = pid;
         // Persist to DB in background so subsequent requests have it immediately
-        updateProviderCredentials(credentials.connectionId, { projectId: pid }).catch(() => { });
+        updateProviderCredentials(credentials.connectionId, {
+          projectId: pid,
+        }).catch(() => {});
       }
     }
 
     // Use shared chatCore
-    const chatSettings = await getSettings();
-    const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    const shadowTracker =
+      provider === "codex" &&
+      chatSettings.dispatcherEnabled !== true &&
+      chatSettings.dispatcherShadowMode === true
+        ? beginShadowCodexAttempt({
+            provider: "codex",
+            modelId: model,
+            routeModel: modelStr,
+            sourceEndpoint: clientRawRequest?.endpoint || null,
+            sourceFormat: request?.url
+              ? detectFormatByEndpoint(new URL(request.url).pathname, body)
+              : null,
+            targetFormat: "openai-responses",
+            connectionId: credentials.connectionId,
+            sessionId: credentials.connectionId,
+          })
+        : null;
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
@@ -208,31 +311,66 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       ccFilterNaming: !!chatSettings.ccFilterNaming,
       providerThinking,
       // Detect source format by endpoint + body
-      sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
+      sourceFormatOverride: request?.url
+        ? detectFormatByEndpoint(new URL(request.url).pathname, body)
+        : null,
+      dispatcherHooks: shadowTracker?.dispatcherHooks || null,
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {
           accessToken: newCreds.accessToken,
           refreshToken: newCreds.refreshToken,
           providerSpecificData: newCreds.providerSpecificData,
-          testStatus: "active"
+          testStatus: "active",
         });
       },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
-      }
+      },
     });
 
-    if (result.success) return result.response;
+    if (result.success) {
+      if (
+        shadowTracker &&
+        result.response?.headers
+          ?.get?.("Content-Type")
+          ?.includes("application/json")
+      ) {
+        await shadowTracker.finalizeSuccess("success");
+      }
+      return result.response;
+    }
 
     // Mark account unavailable (auto-calculates cooldown with exponential backoff)
-    const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model);
+    const { shouldFallback } = await markAccountUnavailable(
+      credentials.connectionId,
+      result.status,
+      result.error,
+      provider,
+      model,
+    );
 
     if (shouldFallback) {
-      log.warn("AUTH", `Account ${credentials.connectionName} unavailable (${result.status}), trying fallback`);
+      if (shadowTracker) {
+        await shadowTracker.finalizeFailure("fallback_requested", {
+          status: result.status,
+          message: result.error,
+        });
+      }
+      log.warn(
+        "AUTH",
+        `Account ${credentials.connectionName} unavailable (${result.status}), trying fallback`,
+      );
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;
       lastStatus = result.status;
       continue;
+    }
+
+    if (shadowTracker) {
+      await shadowTracker.finalizeFailure("upstream_error", {
+        status: result.status,
+        message: result.error,
+      });
     }
 
     return result.response;

@@ -133,6 +133,35 @@ Main flow modules:
 - Stream transformations: `open-sse/utils/stream.js`, `open-sse/utils/streamHandler.js`
 - Usage extraction/normalization: `open-sse/utils/usageTracking.js`
 
+### Codex Dispatcher Admission Layer
+
+Codex traffic now has an optional dispatcher-owned admission path in front of the legacy account-selection loop:
+
+- managed entry: `src/lib/dispatcher/executeCodexAttempt.js`
+- scheduler core: `src/lib/dispatcher/core.js`
+- watchdog/timeouts: `src/lib/dispatcher/watchdog.js`
+- status/metrics: `src/lib/dispatcher/metrics.js`
+- operator route: `src/app/api/dispatcher/status/route.js`
+- shadow-only tracking: `src/lib/dispatcher/shadowMode.js`
+
+Runtime contract:
+
+- queued work is dispatcher-owned until lease time
+- slots pull from a central queue; slots do not own private backlogs
+- durable lifecycle state lives in SQLite tables:
+  - `dispatch_requests`
+  - `dispatch_attempts`
+  - `dispatch_attempt_events`
+  - `dispatch_conversation_affinity`
+- in-memory state is intentionally limited to ephemeral occupancy and path-health ranking
+- the watchdog periodically sweeps queued and active attempts for timeout enforcement
+
+Current scope:
+
+- managed enforcement is Codex-only
+- shadow mode records lifecycle rows without taking over admission
+- non-Codex traffic still uses the legacy direct account-selection loop
+
 ## 3) Persistence Layer
 
 Primary state DB:
@@ -244,6 +273,44 @@ flowchart TD
 ```
 
 Fallback decisions are driven by `open-sse/services/accountFallback.js` using status codes and error-message heuristics.
+
+## Codex Managed Request Lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as Codex Client
+    participant Route as /api/v1/responses
+    participant Chat as src/sse/handlers/chat.js
+    participant Dispatcher as Dispatcher Core
+    participant Ledger as SQLite Dispatch Tables
+    participant Core as open-sse/handlers/chatCore.js
+    participant Exec as Codex Executor
+    participant Prov as Codex Upstream
+
+    Client->>Route: POST /v1/responses
+    Route->>Chat: handleChat(request)
+    Chat->>Dispatcher: enqueueRequest()
+    Dispatcher->>Ledger: insert request + queued attempt + enqueued event
+    Dispatcher->>Dispatcher: tryLeaseRequest()
+    Dispatcher->>Ledger: lease attempt + running request status
+    Chat->>Core: handleChatCore(...dispatcherHooks)
+    Core->>Exec: execute()
+    Exec->>Prov: upstream request
+    Prov-->>Exec: streaming or JSON response
+    Core->>Dispatcher: connect_started / stream_started / first_progress
+    Dispatcher->>Ledger: transition attempt state + append events
+    Core->>Dispatcher: response identity callback
+    Dispatcher->>Ledger: persist conversation affinity for next continuation
+    Core->>Dispatcher: completed or failed
+    Dispatcher->>Ledger: terminalize attempt + request
+```
+
+Important consequence:
+
+- one slow Codex request only occupies its own leased slot
+- freed slots immediately refill from the shared queue while eligible work exists
+- follow-up continuations can stay pinned to the same account because successful turns now persist the returned `response.id`
 
 ## OAuth Onboarding and Token Refresh Lifecycle
 
@@ -387,6 +454,13 @@ Physical storage files:
 - legacy import sources only: `${DATA_DIR}/db.json`, `~/.9router/usage.json`, `~/.9router/log.txt`, `${DATA_DIR}/request-details.json`
 - optional translator/request debug sessions: `<repo>/logs/...`
 
+Dispatcher-specific tables in `state.sqlite`:
+
+- `dispatch_requests`: one logical request row per managed or shadow-tracked Codex request
+- `dispatch_attempts`: one row per execution attempt with connection/path/timing state
+- `dispatch_attempt_events`: append-only lifecycle evidence used for reconciliation
+- `dispatch_conversation_affinity`: durable continuation pinning for Codex conversations
+
 ## Deployment Topology
 
 ```mermaid
@@ -515,6 +589,22 @@ Translations are selected dynamically based on source payload shape and provider
 - DB shape migration/repair for missing keys
 - corrupt JSON reset safeguards for localDb and usageDb
 
+## Dispatcher Health Model
+
+Three different health domains now matter and should not be conflated:
+
+- account health:
+  - owned by provider connection state and cooldown logic
+  - answers "is this account currently eligible to try?"
+- path health:
+  - transient runtime ranking in `src/lib/dispatcher/pathHealth.js`
+  - answers "which proxy/direct/relay path has been behaving best recently?"
+- slot state:
+  - durable request/attempt lifecycle plus ephemeral occupancy
+  - answers "what is queued, leased, streaming, terminal, or stuck right now?"
+
+This separation is deliberate. Account cooldowns remain durable and conservative. Path health is advisory. Slot state is the operational truth for benchmark reconciliation.
+
 ## Observability and Operational Signals
 
 Runtime visibility sources:
@@ -524,6 +614,19 @@ Runtime visibility sources:
 - textual request status log rows in SQLite request log tables
 - optional deep request/translation logs under `logs/` when `ENABLE_REQUEST_LOGS=true`
 - dashboard usage endpoints (`/api/usage/*`) for UI consumption
+- dispatcher operator route: `/api/dispatcher/status`
+- dispatch ledger rows in `dispatch_requests`, `dispatch_attempts`, and `dispatch_attempt_events`
+
+Dispatcher operator route currently exposes:
+
+- queued depth and queue age
+- active attempts by connection/state/path mode
+- terminal attempt counts by state, timeout kind, and terminal reason
+- recent attempt history with event payloads
+- watchdog timeout policy
+- in-memory occupancy snapshot
+
+Use this route, not the legacy pending counters, when validating dispatcher behavior under burst load.
 
 ## Security-Sensitive Boundaries
 
@@ -551,6 +654,8 @@ Environment variables actively used by code:
 2. Request logger writes full headers/body when enabled; treat log directory as sensitive.
 3. Cloud behavior depends on correct `NEXT_PUBLIC_BASE_URL` and cloud endpoint reachability.
 4. `better-sqlite3` is a native Node module, so install-time and run-time Node ABIs must match.
+5. `dispatcherShadowMode` now records Codex lifecycle rows without taking over admission; `dispatcherEnabled` is the hard switch for managed enforcement.
+6. The dispatcher rollout starts at `dispatcherSlotsPerConnection=1`. Higher slot counts must be justified by benchmark evidence, not assumed from upstream theoretical limits.
 
 ## Operational Verification Checklist
 

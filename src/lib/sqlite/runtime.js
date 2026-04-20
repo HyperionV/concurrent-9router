@@ -25,6 +25,17 @@ function ensureDataDir() {
   return DATA_DIR;
 }
 
+function hasColumn(db, tableName, columnName) {
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  return rows.some((row) => row.name === columnName);
+}
+
+function ensureColumn(db, tableName, columnName, columnDef) {
+  if (!hasColumn(db, tableName, columnName)) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDef};`);
+  }
+}
+
 function runMigrations(db) {
   db.exec(`
     PRAGMA journal_mode = WAL;
@@ -65,6 +76,10 @@ function runMigrations(db) {
       outbound_proxy_enabled INTEGER NOT NULL DEFAULT 0,
       outbound_proxy_url TEXT NOT NULL DEFAULT '',
       outbound_no_proxy TEXT NOT NULL DEFAULT '',
+      dispatcher_enabled INTEGER NOT NULL DEFAULT 0,
+      dispatcher_shadow_mode INTEGER NOT NULL DEFAULT 0,
+      dispatcher_codex_only INTEGER NOT NULL DEFAULT 1,
+      dispatcher_slots_per_connection INTEGER NOT NULL DEFAULT 1,
       mitm_router_base_url TEXT NOT NULL DEFAULT 'http://localhost:20128',
       password TEXT,
       mitm_enabled INTEGER NOT NULL DEFAULT 0
@@ -240,9 +255,114 @@ function runMigrations(db) {
 
     CREATE INDEX IF NOT EXISTS request_details_timestamp_idx ON request_details(timestamp DESC);
 
+    CREATE TABLE IF NOT EXISTS dispatch_requests (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      source_endpoint TEXT,
+      source_format TEXT,
+      target_format TEXT,
+      conversation_key TEXT,
+      request_kind TEXT NOT NULL DEFAULT 'chat',
+      status TEXT NOT NULL,
+      queued_at TEXT NOT NULL,
+      expires_at TEXT,
+      completed_at TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE INDEX IF NOT EXISTS dispatch_requests_status_idx
+      ON dispatch_requests(status, queued_at ASC);
+    CREATE INDEX IF NOT EXISTS dispatch_requests_conversation_idx
+      ON dispatch_requests(conversation_key, queued_at DESC);
+
+    CREATE TABLE IF NOT EXISTS dispatch_attempts (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      attempt_index INTEGER NOT NULL,
+      provider TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      connection_id TEXT,
+      lease_key TEXT,
+      state TEXT NOT NULL,
+      path_mode TEXT,
+      queue_entered_at TEXT NOT NULL,
+      leased_at TEXT,
+      connect_started_at TEXT,
+      stream_started_at TEXT,
+      first_progress_at TEXT,
+      last_progress_at TEXT,
+      finished_at TEXT,
+      timeout_kind TEXT,
+      terminal_reason TEXT,
+      error_json TEXT NOT NULL DEFAULT '{}',
+      FOREIGN KEY (request_id) REFERENCES dispatch_requests(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS dispatch_attempts_state_idx
+      ON dispatch_attempts(state, queue_entered_at ASC);
+    CREATE INDEX IF NOT EXISTS dispatch_attempts_connection_state_idx
+      ON dispatch_attempts(connection_id, state);
+    CREATE INDEX IF NOT EXISTS dispatch_attempts_request_idx
+      ON dispatch_attempts(request_id, attempt_index ASC);
+
+    CREATE TABLE IF NOT EXISTS dispatch_attempt_events (
+      id TEXT PRIMARY KEY,
+      attempt_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      at TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      FOREIGN KEY (attempt_id) REFERENCES dispatch_attempts(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS dispatch_attempt_events_attempt_idx
+      ON dispatch_attempt_events(attempt_id, at ASC);
+
+    CREATE TABLE IF NOT EXISTS dispatch_conversation_affinity (
+      conversation_key TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      model_id TEXT,
+      connection_id TEXT NOT NULL,
+      session_id TEXT,
+      state TEXT NOT NULL DEFAULT 'active',
+      updated_at TEXT NOT NULL
+    );
+
     INSERT OR IGNORE INTO schema_migrations(version, applied_at)
     VALUES ('0001_initial', datetime('now'));
   `);
+
+  ensureColumn(
+    db,
+    "app_settings",
+    "dispatcher_enabled",
+    "INTEGER NOT NULL DEFAULT 0",
+  );
+  ensureColumn(
+    db,
+    "app_settings",
+    "dispatcher_shadow_mode",
+    "INTEGER NOT NULL DEFAULT 0",
+  );
+  ensureColumn(
+    db,
+    "app_settings",
+    "dispatcher_codex_only",
+    "INTEGER NOT NULL DEFAULT 1",
+  );
+  ensureColumn(
+    db,
+    "app_settings",
+    "dispatcher_slots_per_connection",
+    "INTEGER NOT NULL DEFAULT 1",
+  );
+
+  db.prepare(
+    `
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+      VALUES ('0002_dispatcher', datetime('now'))
+    `,
+  ).run();
 }
 
 function seedDefaults(db) {
@@ -273,6 +393,10 @@ function seedDefaults(db) {
       outbound_proxy_enabled,
       outbound_proxy_url,
       outbound_no_proxy,
+      dispatcher_enabled,
+      dispatcher_shadow_mode,
+      dispatcher_codex_only,
+      dispatcher_slots_per_connection,
       mitm_router_base_url,
       password,
       mitm_enabled
@@ -284,6 +408,7 @@ function seedDefaults(db) {
       @observabilityMaxRecords, @observabilityBatchSize,
       @observabilityFlushIntervalMs, @observabilityMaxJsonSize,
       @outboundProxyEnabled, @outboundProxyUrl, @outboundNoProxy,
+      @dispatcherEnabled, @dispatcherShadowMode, @dispatcherCodexOnly, @dispatcherSlotsPerConnection,
       @mitmRouterBaseUrl, @password, @mitmEnabled
     )
   `,
@@ -310,6 +435,10 @@ function seedDefaults(db) {
     outboundProxyEnabled: settings.outboundProxyEnabled ? 1 : 0,
     outboundProxyUrl: settings.outboundProxyUrl,
     outboundNoProxy: settings.outboundNoProxy,
+    dispatcherEnabled: settings.dispatcherEnabled ? 1 : 0,
+    dispatcherShadowMode: settings.dispatcherShadowMode ? 1 : 0,
+    dispatcherCodexOnly: settings.dispatcherCodexOnly !== false ? 1 : 0,
+    dispatcherSlotsPerConnection: settings.dispatcherSlotsPerConnection ?? 1,
     mitmRouterBaseUrl: settings.mitmRouterBaseUrl,
     password: settings.password || null,
     mitmEnabled: settings.mitmEnabled ? 1 : 0,
