@@ -70,3 +70,6 @@ deploy*.sh
 ecosystem.config.*
 
 .gitnexus/
+
+scripts/proxy_results.json
+scripts/proxy_list.txt
