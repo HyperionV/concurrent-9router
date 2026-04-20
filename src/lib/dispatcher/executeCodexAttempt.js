@@ -13,7 +13,6 @@ import {
   clearAccountError,
   markAccountUnavailable,
 } from "@/sse/services/auth.js";
-import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "@/sse/utils/logger.js";
@@ -158,19 +157,6 @@ async function executeManagedCodexRequest({
 
   let credentials = await buildManagedCredentials(rawConnection);
   credentials = await checkAndRefreshToken(provider, credentials);
-
-  if (provider === "codex" && !credentials.projectId) {
-    const pid = await getProjectIdForConnection(
-      credentials.connectionId,
-      credentials.accessToken,
-    );
-    if (pid) {
-      credentials.projectId = pid;
-      updateProviderCredentials(credentials.connectionId, {
-        projectId: pid,
-      }).catch(() => {});
-    }
-  }
 
   let persistedContinuationKey = null;
   const dispatcherHooks = {
