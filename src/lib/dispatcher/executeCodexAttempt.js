@@ -20,11 +20,31 @@ import * as log from "@/sse/utils/logger.js";
 import { createErrorResult } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 
+const LEASE_POLL_INTERVAL_MS = 100;
+
 function shouldManageCodexRequest(settings, provider) {
   if (!settings.dispatcherEnabled) return false;
   if (settings.dispatcherCodexOnly !== false && provider !== "codex")
     return false;
   return provider === "codex";
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForLease(dispatcher, requestId, timeoutMs) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+
+  while (Date.now() <= deadline) {
+    const lease = await dispatcher.tryLeaseRequest(requestId);
+    if (lease) {
+      return lease;
+    }
+    await sleep(LEASE_POLL_INTERVAL_MS);
+  }
+
+  return null;
 }
 
 export async function maybeHandleManagedCodexRequest({
@@ -105,16 +125,21 @@ async function executeManagedCodexRequest({
     ).response;
   }
 
-  const lease = await dispatcher.tryLeaseRequest(queued.request.id);
+  const lease = await waitForLease(
+    dispatcher,
+    queued.request.id,
+    dispatcher.timeoutPolicy?.queueTtlMs,
+  );
   if (!lease) {
     await dispatcher.failAttempt(queued.attempt.id, {
-      nextState: "failed",
-      terminalReason: "no_capacity",
-      error: { code: "dispatcher_no_capacity" },
+      nextState: "timed_out",
+      terminalReason: "queue_expired",
+      timeoutKind: "queue_expired",
+      error: { code: "dispatcher_queue_expired" },
     });
     return createErrorResult(
       HTTP_STATUS.SERVICE_UNAVAILABLE,
-      "Codex dispatcher has no eligible capacity",
+      "Codex dispatcher queue expired before a slot became available",
     ).response;
   }
 

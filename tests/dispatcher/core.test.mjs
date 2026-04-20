@@ -140,3 +140,43 @@ test("conversation-pinned request does not hop accounts when another slot is fre
   assert.equal(resumed[0].requestId, later.request.id);
   assert.equal(resumed[0].connectionId, "a");
 });
+
+test("queued request remains queued when no slot is immediately free", async () => {
+  runtime.getSqlite();
+  store.clearDispatchTables();
+
+  const dispatcher = createDispatcherCore({
+    provider: "codex",
+    getConnections: async () => [makeConnection("a", 1)],
+    slotsPerConnection: 1,
+  });
+
+  const first = await dispatcher.enqueueRequest({
+    id: "req-first",
+    provider: "codex",
+    modelId: "gpt-5.3-codex",
+  });
+  const second = await dispatcher.enqueueRequest({
+    id: "req-second",
+    provider: "codex",
+    modelId: "gpt-5.3-codex",
+  });
+
+  const firstLease = await dispatcher.tryLeaseRequest(first.request.id);
+  assert.ok(firstLease);
+
+  const blocked = await dispatcher.tryLeaseRequest(second.request.id);
+  assert.equal(blocked, null);
+  assert.equal(
+    store.getLatestDispatchAttemptForRequest(second.request.id)?.state,
+    "queued",
+  );
+
+  await dispatcher.completeAttempt(firstLease.attemptId, {
+    terminalReason: "success",
+  });
+
+  const secondLease = await dispatcher.tryLeaseRequest(second.request.id);
+  assert.ok(secondLease);
+  assert.equal(secondLease.requestId, second.request.id);
+});
