@@ -2,6 +2,7 @@ import {
   getDispatchConversationAffinity,
   upsertDispatchConversationAffinity,
 } from "@/lib/sqlite/dispatcherStore.js";
+import { getApiKeyScope } from "@/lib/dispatcher/admissionPolicy.js";
 
 export function resolveConversationKey({
   body = {},
@@ -28,9 +29,12 @@ export function resolveConversationKey({
   return null;
 }
 
-export function getConversationAffinity(conversationKey) {
+export function getConversationAffinity(conversationKey, apiKeyId = null) {
   if (!conversationKey) return null;
-  return getDispatchConversationAffinity(conversationKey);
+  return getDispatchConversationAffinity(
+    conversationKey,
+    getApiKeyScope(apiKeyId),
+  );
 }
 
 export function persistConversationAffinity({
@@ -39,15 +43,18 @@ export function persistConversationAffinity({
   modelId,
   connectionId,
   sessionId,
+  apiKeyId = null,
   state = "active",
 }) {
   if (!conversationKey || !connectionId) return null;
   return upsertDispatchConversationAffinity({
     conversationKey,
+    apiKeyScope: getApiKeyScope(apiKeyId),
     provider,
     modelId,
     connectionId,
     sessionId,
+    apiKeyId,
     state,
   });
 }

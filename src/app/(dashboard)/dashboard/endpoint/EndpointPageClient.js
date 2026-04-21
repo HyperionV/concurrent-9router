@@ -2,18 +2,100 @@
 
 import { useState, useEffect, useRef } from "react";
 import PropTypes from "prop-types";
-import { Card, Button, Input, Modal, CardSkeleton, Toggle } from "@/shared/components";
+import {
+  Card,
+  Button,
+  Input,
+  Modal,
+  CardSkeleton,
+  Toggle,
+  SegmentedControl,
+  Badge,
+} from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
 const TUNNEL_BENEFITS = [
-  { icon: "public", title: "Access Anywhere", desc: "Use your API from any network" },
-  { icon: "group", title: "Share Endpoint", desc: "Share URL with team members" },
-  { icon: "code", title: "Use in Cursor/Cline", desc: "Connect AI tools remotely" },
+  {
+    icon: "public",
+    title: "Access Anywhere",
+    desc: "Use your API from any network",
+  },
+  {
+    icon: "group",
+    title: "Share Endpoint",
+    desc: "Share URL with team members",
+  },
+  {
+    icon: "code",
+    title: "Use in Cursor/Cline",
+    desc: "Connect AI tools remotely",
+  },
   { icon: "lock", title: "Encrypted", desc: "End-to-end TLS via Cloudflare" },
 ];
 
 const TUNNEL_PING_INTERVAL_MS = 2000;
 const TUNNEL_PING_MAX_MS = 300000;
+
+const KEY_TYPE_OPTIONS = [
+  { value: "default", label: "Default" },
+  { value: "coding", label: "Coding" },
+  { value: "production", label: "Production" },
+];
+
+function policyToKeyType(value) {
+  if (value === "legacy") return "coding";
+  if (value === "managed") return "production";
+  return "default";
+}
+
+function keyTypeToPolicy(value) {
+  if (value === "coding") return "legacy";
+  if (value === "production") return "managed";
+  return null;
+}
+
+function getEffectiveCodexBehavior({ key, runtimeMode, defaultPolicy }) {
+  if (key?.isActive === false) {
+    return {
+      label: "Rejected",
+      tone: "warning",
+      detail: "Paused keys are rejected before routing.",
+    };
+  }
+
+  const requestedPolicy =
+    key?.codexAdmissionPolicyOverride || defaultPolicy || "legacy";
+  if (runtimeMode === "off") {
+    return {
+      label: "Legacy",
+      tone: "default",
+      detail: "Runtime is off, so Codex requests bypass dispatcher.",
+    };
+  }
+  if (runtimeMode === "shadow") {
+    return {
+      label: "Legacy",
+      tone: "info",
+      detail:
+        requestedPolicy === "managed"
+          ? "Runtime is shadow: legacy execution with shadow-only tracking."
+          : "Legacy execution without dispatcher admission.",
+    };
+  }
+  if (requestedPolicy === "managed") {
+    return {
+      label: "Managed",
+      tone: "success",
+      detail: "Dispatcher owns admission and slot control for Codex.",
+    };
+  }
+  return {
+    label: "Legacy",
+    tone: "default",
+    detail: "Codex uses the direct account-selection path.",
+  };
+}
+
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -22,6 +104,9 @@ export default function APIPageClient({ machineId }) {
   const [createdKey, setCreatedKey] = useState(null);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
+  const [codexDefaultAdmissionPolicy, setCodexDefaultAdmissionPolicy] =
+    useState("legacy");
+  const [dispatcherRuntimeMode, setDispatcherRuntimeMode] = useState("off");
   const [requireLogin, setRequireLogin] = useState(true);
   const [hasPassword, setHasPassword] = useState(true);
   const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
@@ -59,7 +144,8 @@ export default function APIPageClient({ machineId }) {
 
   // Auto-scroll install log
   useEffect(() => {
-    if (tsLogRef.current) tsLogRef.current.scrollTop = tsLogRef.current.scrollHeight;
+    if (tsLogRef.current)
+      tsLogRef.current.scrollTop = tsLogRef.current.scrollHeight;
   }, [tsInstallLog]);
 
   useEffect(() => {
@@ -72,11 +158,14 @@ export default function APIPageClient({ machineId }) {
     try {
       const [settingsRes, statusRes] = await Promise.all([
         fetch("/api/settings"),
-        fetch("/api/tunnel/status")
+        fetch("/api/tunnel/status"),
       ]);
       if (settingsRes.ok) {
         const data = await settingsRes.json();
         setRequireApiKey(data.requireApiKey || false);
+        setCodexDefaultAdmissionPolicy(
+          data.codexDefaultAdmissionPolicy || "legacy",
+        );
         setRequireLogin(data.requireLogin !== false);
         setHasPassword(data.hasPassword || false);
         setTunnelDashboardAccess(data.tunnelDashboardAccess || false);
@@ -97,18 +186,29 @@ export default function APIPageClient({ machineId }) {
           setTsProgress("Checking Tailscale...");
           const tsHealthUrl = `${tsUrlVal}/api/health`;
           try {
-            const tsPing = await fetch(tsHealthUrl, { mode: "no-cors", cache: "no-store" });
+            const tsPing = await fetch(tsHealthUrl, {
+              mode: "no-cors",
+              cache: "no-store",
+            });
             if (tsPing.ok || tsPing.type === "opaque") {
               setTsEnabled(true);
             } else {
               const ok = await pingTsHealth(tsUrlVal);
               setTsEnabled(ok);
-              if (!ok) setTsStatus({ type: "warning", message: "Tailscale not reachable." });
+              if (!ok)
+                setTsStatus({
+                  type: "warning",
+                  message: "Tailscale not reachable.",
+                });
             }
           } catch {
             const ok = await pingTsHealth(tsUrlVal);
             setTsEnabled(ok);
-            if (!ok) setTsStatus({ type: "warning", message: "Tailscale not reachable." });
+            if (!ok)
+              setTsStatus({
+                type: "warning",
+                message: "Tailscale not reachable.",
+              });
           } finally {
             setTsLoading(false);
             setTsProgress("");
@@ -169,10 +269,17 @@ export default function APIPageClient({ machineId }) {
 
   const fetchData = async () => {
     try {
-      const keysRes = await fetch("/api/keys");
+      const [keysRes, dispatcherRes] = await Promise.all([
+        fetch("/api/keys"),
+        fetch("/api/dispatcher/settings"),
+      ]);
       const keysData = await keysRes.json();
       if (keysRes.ok) {
         setKeys(keysData.keys || []);
+      }
+      if (dispatcherRes.ok) {
+        const dispatcherData = await dispatcherRes.json();
+        setDispatcherRuntimeMode(dispatcherData.mode || "off");
       }
     } catch (error) {
       console.log("Error fetching data:", error);
@@ -191,14 +298,19 @@ export default function APIPageClient({ machineId }) {
     while (Date.now() - start < TUNNEL_PING_MAX_MS) {
       await new Promise((r) => setTimeout(r, TUNNEL_PING_INTERVAL_MS));
       try {
-        const ping = await fetch(healthUrl, { mode: "no-cors", cache: "no-store" });
+        const ping = await fetch(healthUrl, {
+          mode: "no-cors",
+          cache: "no-store",
+        });
         if (ping.ok || ping.type === "opaque") {
           setTunnelEnabled(true);
           setTunnelLoading(false);
           setTunnelProgress("");
           return true;
         }
-      } catch { /* not ready yet */ }
+      } catch {
+        /* not ready yet */
+      }
       // Every 5 pings (~10s), check if backend process still alive
       if ((Date.now() - start) % 10000 < TUNNEL_PING_INTERVAL_MS) {
         try {
@@ -206,16 +318,24 @@ export default function APIPageClient({ machineId }) {
           if (statusRes.ok) {
             const status = await statusRes.json();
             if (!status.tunnel?.enabled) {
-              setTunnelStatus({ type: "error", message: "Tunnel process stopped unexpectedly." });
+              setTunnelStatus({
+                type: "error",
+                message: "Tunnel process stopped unexpectedly.",
+              });
               setTunnelLoading(false);
               setTunnelProgress("");
               return false;
             }
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
     }
-    setTunnelStatus({ type: "error", message: "Tunnel created but not reachable. Please try again." });
+    setTunnelStatus({
+      type: "error",
+      message: "Tunnel created but not reachable. Please try again.",
+    });
     setTunnelLoading(false);
     setTunnelProgress("");
     return false;
@@ -236,12 +356,16 @@ export default function APIPageClient({ machineId }) {
           if (r.ok) {
             const s = await r.json();
             if (s.download?.downloading) {
-              setTunnelProgress(`Downloading cloudflared... ${s.download.progress}%`);
+              setTunnelProgress(
+                `Downloading cloudflared... ${s.download.progress}%`,
+              );
             } else if (polling) {
               setTunnelProgress("Creating tunnel...");
             }
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
         await new Promise((r) => setTimeout(r, 1000));
       }
     };
@@ -252,7 +376,10 @@ export default function APIPageClient({ machineId }) {
       polling = false;
       const data = await res.json();
       if (!res.ok) {
-        setTunnelStatus({ type: "error", message: data.error || "Failed to enable tunnel" });
+        setTunnelStatus({
+          type: "error",
+          message: data.error || "Failed to enable tunnel",
+        });
         return;
       }
 
@@ -287,7 +414,10 @@ export default function APIPageClient({ machineId }) {
         setShowDisableTunnelModal(false);
         setTunnelStatus({ type: "success", message: "Tunnel disabled" });
       } else {
-        setTunnelStatus({ type: "error", message: data.error || "Failed to disable tunnel" });
+        setTunnelStatus({
+          type: "error",
+          message: data.error || "Failed to disable tunnel",
+        });
       }
     } catch (error) {
       setTunnelStatus({ type: "error", message: error.message });
@@ -306,7 +436,9 @@ export default function APIPageClient({ machineId }) {
         setTsInstalled(data.installed);
         return data;
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     setTsInstalled(false);
     return { installed: false };
   };
@@ -340,7 +472,11 @@ export default function APIPageClient({ machineId }) {
           for (const line of lines) {
             if (line.startsWith("event: ")) event = line.slice(7).trim();
             if (line.startsWith("data: ")) {
-              try { data = JSON.parse(line.slice(6)); } catch { /* skip */ }
+              try {
+                data = JSON.parse(line.slice(6));
+              } catch {
+                /* skip */
+              }
             }
           }
           if (!data) continue;
@@ -351,7 +487,10 @@ export default function APIPageClient({ machineId }) {
             setTsInstalling(false);
             return;
           } else if (event === "error") {
-            setTsStatus({ type: "error", message: data.error || "Install failed" });
+            setTsStatus({
+              type: "error",
+              message: data.error || "Install failed",
+            });
           }
         }
       }
@@ -370,9 +509,14 @@ export default function APIPageClient({ machineId }) {
     while (Date.now() - start < TUNNEL_PING_MAX_MS) {
       await new Promise((r) => setTimeout(r, TUNNEL_PING_INTERVAL_MS));
       try {
-        const ping = await fetch(healthUrl, { mode: "no-cors", cache: "no-store" });
+        const ping = await fetch(healthUrl, {
+          mode: "no-cors",
+          cache: "no-store",
+        });
         if (ping.ok || ping.type === "opaque") return true;
-      } catch { /* not ready yet */ }
+      } catch {
+        /* not ready yet */
+      }
     }
     return false;
   };
@@ -385,7 +529,9 @@ export default function APIPageClient({ machineId }) {
     setTsStatus(null);
     setTsProgress("Connecting...");
     try {
-      const res = await fetch("/api/tunnel/tailscale-enable", { method: "POST" });
+      const res = await fetch("/api/tunnel/tailscale-enable", {
+        method: "POST",
+      });
       const data = await res.json();
 
       if (res.ok && data.success) {
@@ -397,7 +543,10 @@ export default function APIPageClient({ machineId }) {
           setTsStatus(null);
         } else {
           setTsEnabled(true);
-          setTsStatus({ type: "warning", message: "Connected but not reachable yet." });
+          setTsStatus({
+            type: "warning",
+            message: "Connected but not reachable yet.",
+          });
         }
         return;
       }
@@ -405,7 +554,8 @@ export default function APIPageClient({ machineId }) {
       // Needs login: redirect pre-opened tab or open new
       if (data.needsLogin && data.authUrl) {
         if (tab) tab.location.href = data.authUrl;
-        else window.open(data.authUrl, "tailscale_auth", "width=600,height=700");
+        else
+          window.open(data.authUrl, "tailscale_auth", "width=600,height=700");
         setTsProgress("Waiting for login...");
         for (let i = 0; i < 40; i++) {
           await new Promise((r) => setTimeout(r, 3000));
@@ -415,7 +565,9 @@ export default function APIPageClient({ machineId }) {
               const check = await r2.json();
               if (check.loggedIn) {
                 setTsProgress("Starting funnel...");
-                const res2 = await fetch("/api/tunnel/tailscale-enable", { method: "POST" });
+                const res2 = await fetch("/api/tunnel/tailscale-enable", {
+                  method: "POST",
+                });
                 const data2 = await res2.json();
                 if (res2.ok && data2.success) {
                   if (tab) tab.close();
@@ -426,19 +578,30 @@ export default function APIPageClient({ machineId }) {
                     setTsStatus(null);
                   } else {
                     setTsEnabled(true);
-                    setTsStatus({ type: "warning", message: "Connected but not reachable yet." });
+                    setTsStatus({
+                      type: "warning",
+                      message: "Connected but not reachable yet.",
+                    });
                   }
                 } else if (data2.funnelNotEnabled && data2.enableUrl) {
                   await pollFunnelEnable(data2.enableUrl, tab);
                 } else {
-                  setTsStatus({ type: "error", message: data2.error || "Failed to start funnel" });
+                  setTsStatus({
+                    type: "error",
+                    message: data2.error || "Failed to start funnel",
+                  });
                 }
                 return;
               }
             }
-          } catch { /* retry */ }
+          } catch {
+            /* retry */
+          }
         }
-        setTsStatus({ type: "error", message: "Login timed out. Please try again." });
+        setTsStatus({
+          type: "error",
+          message: "Login timed out. Please try again.",
+        });
         return;
       }
 
@@ -449,7 +612,10 @@ export default function APIPageClient({ machineId }) {
       }
 
       if (tab) tab.close();
-      setTsStatus({ type: "error", message: data.error || "Failed to connect" });
+      setTsStatus({
+        type: "error",
+        message: data.error || "Failed to connect",
+      });
     } catch (error) {
       if (tab) tab.close();
       setTsStatus({ type: "error", message: error.message });
@@ -467,7 +633,9 @@ export default function APIPageClient({ machineId }) {
     for (let i = 0; i < 40; i++) {
       await new Promise((r) => setTimeout(r, 3000));
       try {
-        const res = await fetch("/api/tunnel/tailscale-enable", { method: "POST" });
+        const res = await fetch("/api/tunnel/tailscale-enable", {
+          method: "POST",
+        });
         const data = await res.json();
         if (res.ok && data.success) {
           if (tab) tab.close();
@@ -478,7 +646,10 @@ export default function APIPageClient({ machineId }) {
             setTsStatus(null);
           } else {
             setTsEnabled(true);
-            setTsStatus({ type: "warning", message: "Connected but not reachable yet." });
+            setTsStatus({
+              type: "warning",
+              message: "Connected but not reachable yet.",
+            });
           }
           return;
         }
@@ -487,16 +658,23 @@ export default function APIPageClient({ machineId }) {
           setTsStatus({ type: "error", message: data.error });
           return;
         }
-      } catch { /* retry */ }
+      } catch {
+        /* retry */
+      }
     }
-    setTsStatus({ type: "error", message: "Timed out waiting for Funnel to be enabled." });
+    setTsStatus({
+      type: "error",
+      message: "Timed out waiting for Funnel to be enabled.",
+    });
   };
 
   const handleDisableTailscale = async () => {
     setTsLoading(true);
     setTsStatus(null);
     try {
-      const res = await fetch("/api/tunnel/tailscale-disable", { method: "POST" });
+      const res = await fetch("/api/tunnel/tailscale-disable", {
+        method: "POST",
+      });
       const data = await res.json();
       if (res.ok) {
         setTsEnabled(false);
@@ -504,7 +682,10 @@ export default function APIPageClient({ machineId }) {
         setShowDisableTsModal(false);
         setTsStatus({ type: "success", message: "Tailscale disabled" });
       } else {
-        setTsStatus({ type: "error", message: data.error || "Failed to disable Tailscale" });
+        setTsStatus({
+          type: "error",
+          message: data.error || "Failed to disable Tailscale",
+        });
       }
     } catch (e) {
       setTsStatus({ type: "error", message: e.message });
@@ -527,7 +708,10 @@ export default function APIPageClient({ machineId }) {
       const res = await fetch("/api/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newKeyName }),
+        body: JSON.stringify({
+          name: newKeyName,
+          codexAdmissionPolicyOverride: null,
+        }),
       });
       const data = await res.json();
 
@@ -550,7 +734,7 @@ export default function APIPageClient({ machineId }) {
       if (res.ok) {
         setKeys(keys.filter((k) => k.id !== id));
         // Clean up visibility state
-        setVisibleKeys(prev => {
+        setVisibleKeys((prev) => {
           const next = new Set(prev);
           next.delete(id);
           return next;
@@ -569,10 +753,30 @@ export default function APIPageClient({ machineId }) {
         body: JSON.stringify({ isActive }),
       });
       if (res.ok) {
-        setKeys(prev => prev.map(k => k.id === id ? { ...k, isActive } : k));
+        setKeys((prev) =>
+          prev.map((k) => (k.id === id ? { ...k, isActive } : k)),
+        );
       }
     } catch (error) {
       console.log("Error toggling key:", error);
+    }
+  };
+
+  const handleKeyTypeChange = async (id, nextType) => {
+    try {
+      const res = await fetch(`/api/keys/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          codexAdmissionPolicyOverride: keyTypeToPolicy(nextType),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setKeys((prev) => prev.map((key) => (key.id === id ? data.key : key)));
+      }
+    } catch (error) {
+      console.log("Error updating key type:", error);
     }
   };
 
@@ -582,7 +786,7 @@ export default function APIPageClient({ machineId }) {
   };
 
   const toggleKeyVisibility = (keyId) => {
-    setVisibleKeys(prev => {
+    setVisibleKeys((prev) => {
       const next = new Set(prev);
       if (next.has(keyId)) next.delete(keyId);
       else next.add(keyId);
@@ -628,52 +832,85 @@ export default function APIPageClient({ machineId }) {
           />
           {/* Cloudflare Tunnel */}
           <div className="flex items-center gap-2">
-            <span className={`text-xs font-mono px-1.5 py-0.5 rounded shrink-0 min-w-[68px] text-center ${
-              tunnelEnabled ? "bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400" : "bg-sidebar text-text-muted"
-            }`}>Tunnel</span>
+            <span
+              className={`text-xs font-mono px-1.5 py-0.5 rounded shrink-0 min-w-[68px] text-center ${
+                tunnelEnabled
+                  ? "bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400"
+                  : "bg-sidebar text-text-muted"
+              }`}
+            >
+              Tunnel
+            </span>
             {tunnelEnabled && !tunnelLoading ? (
               <>
-                <Input value={`${tunnelPublicUrl || tunnelUrl}/v1`} readOnly className="flex-1 font-mono text-sm" />
+                <Input
+                  value={`${tunnelPublicUrl || tunnelUrl}/v1`}
+                  readOnly
+                  className="flex-1 font-mono text-sm"
+                />
                 <button
-                  onClick={() => copy(`${tunnelPublicUrl || tunnelUrl}/v1`, "tunnel_url")}
+                  onClick={() =>
+                    copy(`${tunnelPublicUrl || tunnelUrl}/v1`, "tunnel_url")
+                  }
                   className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-colors shrink-0"
                 >
-                  <span className="material-symbols-outlined text-[18px]">{copied === "tunnel_url" ? "check" : "content_copy"}</span>
+                  <span className="material-symbols-outlined text-[18px]">
+                    {copied === "tunnel_url" ? "check" : "content_copy"}
+                  </span>
                 </button>
                 <button
                   onClick={() => setShowDisableTunnelModal(true)}
                   className="p-2 hover:bg-red-500/10 rounded text-red-500 transition-colors shrink-0"
                   title="Disable Tunnel"
                 >
-                  <span className="material-symbols-outlined text-[18px]">power_settings_new</span>
+                  <span className="material-symbols-outlined text-[18px]">
+                    power_settings_new
+                  </span>
                 </button>
               </>
             ) : tunnelLoading ? (
               <>
                 <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded border border-border bg-input text-sm text-text-muted">
-                  <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
+                  <span className="material-symbols-outlined animate-spin text-sm">
+                    progress_activity
+                  </span>
                   {tunnelProgress || "Creating tunnel..."}
                 </div>
                 <button
-                  onClick={() => { setTunnelLoading(false); setTunnelProgress(""); }}
+                  onClick={() => {
+                    setTunnelLoading(false);
+                    setTunnelProgress("");
+                  }}
                   className="p-2 hover:bg-red-500/10 rounded text-red-500 transition-colors shrink-0"
                   title="Stop"
                 >
-                  <span className="material-symbols-outlined text-[18px]">power_settings_new</span>
+                  <span className="material-symbols-outlined text-[18px]">
+                    power_settings_new
+                  </span>
                 </button>
               </>
             ) : tunnelStatus?.type === "error" ? (
               <>
                 <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded border border-red-300 dark:border-red-800 bg-red-500/5 text-sm text-red-600 dark:text-red-400">
-                  <span className="material-symbols-outlined text-sm">error</span>
+                  <span className="material-symbols-outlined text-sm">
+                    error
+                  </span>
                   {tunnelStatus.message}
                 </div>
-                <Button size="sm" icon="cloud_upload" onClick={() => setShowEnableTunnelModal(true)}>Enable</Button>
+                <Button
+                  size="sm"
+                  icon="cloud_upload"
+                  onClick={() => setShowEnableTunnelModal(true)}
+                >
+                  Enable
+                </Button>
               </>
             ) : tunnelChecking ? (
               <>
                 <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded border border-border bg-input text-sm text-text-muted">
-                  <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
+                  <span className="material-symbols-outlined animate-spin text-sm">
+                    progress_activity
+                  </span>
                   Checking...
                 </div>
                 <button
@@ -681,7 +918,9 @@ export default function APIPageClient({ machineId }) {
                   className="p-2 hover:bg-red-500/10 rounded text-red-500 transition-colors shrink-0"
                   title="Stop"
                 >
-                  <span className="material-symbols-outlined text-[18px]">power_settings_new</span>
+                  <span className="material-symbols-outlined text-[18px]">
+                    power_settings_new
+                  </span>
                 </button>
               </>
             ) : (
@@ -690,7 +929,11 @@ export default function APIPageClient({ machineId }) {
                 icon="cloud_upload"
                 onClick={() => {
                   if (!requireApiKey) {
-                    setTunnelStatus({ type: "error", message: "Security required: Enable \"Require API key\" before activating the tunnel." });
+                    setTunnelStatus({
+                      type: "error",
+                      message:
+                        'Security required: Enable "Require API key" before activating the tunnel.',
+                    });
                     return;
                   }
                   setShowEnableTunnelModal(true);
@@ -703,47 +946,73 @@ export default function APIPageClient({ machineId }) {
           </div>
           {/* Tailscale */}
           <div className="flex items-center gap-2">
-            <span className={`text-xs font-mono px-1.5 py-0.5 rounded shrink-0 min-w-[68px] text-center ${
-              tsEnabled ? "bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400" : "bg-sidebar text-text-muted"
-            }`}>Tailscale</span>
+            <span
+              className={`text-xs font-mono px-1.5 py-0.5 rounded shrink-0 min-w-[68px] text-center ${
+                tsEnabled
+                  ? "bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400"
+                  : "bg-sidebar text-text-muted"
+              }`}
+            >
+              Tailscale
+            </span>
             {tsEnabled && !tsLoading ? (
               <>
-                <Input value={`${tsUrl}/v1`} readOnly className="flex-1 font-mono text-sm" />
+                <Input
+                  value={`${tsUrl}/v1`}
+                  readOnly
+                  className="flex-1 font-mono text-sm"
+                />
                 <button
                   onClick={() => copy(`${tsUrl}/v1`, "ts_url")}
                   className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-colors shrink-0"
                 >
-                  <span className="material-symbols-outlined text-[18px]">{copied === "ts_url" ? "check" : "content_copy"}</span>
+                  <span className="material-symbols-outlined text-[18px]">
+                    {copied === "ts_url" ? "check" : "content_copy"}
+                  </span>
                 </button>
                 <button
                   onClick={() => setShowDisableTsModal(true)}
                   className="p-2 hover:bg-red-500/10 rounded text-red-500 transition-colors shrink-0"
                   title="Disable Tailscale"
                 >
-                  <span className="material-symbols-outlined text-[18px]">power_settings_new</span>
+                  <span className="material-symbols-outlined text-[18px]">
+                    power_settings_new
+                  </span>
                 </button>
               </>
-            ) : (tsLoading || tsConnecting) ? (
+            ) : tsLoading || tsConnecting ? (
               <>
                 <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded border border-border bg-input text-sm text-text-muted">
-                  <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
+                  <span className="material-symbols-outlined animate-spin text-sm">
+                    progress_activity
+                  </span>
                   {tsProgress || "Connecting..."}
                 </div>
                 <button
-                  onClick={() => { setTsLoading(false); setTsConnecting(false); setTsProgress(""); }}
+                  onClick={() => {
+                    setTsLoading(false);
+                    setTsConnecting(false);
+                    setTsProgress("");
+                  }}
                   className="p-2 hover:bg-red-500/10 rounded text-red-500 transition-colors shrink-0"
                   title="Stop"
                 >
-                  <span className="material-symbols-outlined text-[18px]">power_settings_new</span>
+                  <span className="material-symbols-outlined text-[18px]">
+                    power_settings_new
+                  </span>
                 </button>
               </>
             ) : tsStatus?.type === "error" ? (
               <>
                 <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded border border-red-300 dark:border-red-800 bg-red-500/5 text-sm text-red-600 dark:text-red-400">
-                  <span className="material-symbols-outlined text-sm">error</span>
+                  <span className="material-symbols-outlined text-sm">
+                    error
+                  </span>
                   {tsStatus.message}
                 </div>
-                <Button size="sm" icon="vpn_lock" onClick={handleOpenTsModal}>Enable</Button>
+                <Button size="sm" icon="vpn_lock" onClick={handleOpenTsModal}>
+                  Enable
+                </Button>
               </>
             ) : (
               <Button
@@ -788,10 +1057,14 @@ export default function APIPageClient({ machineId }) {
           <div className="mt-4 pt-4 border-t border-border flex items-center gap-3">
             <Toggle
               checked={tunnelDashboardAccess}
-              onChange={() => handleTunnelDashboardAccess(!tunnelDashboardAccess)}
+              onChange={() =>
+                handleTunnelDashboardAccess(!tunnelDashboardAccess)
+              }
             />
             <div className="flex items-center gap-1.5">
-              <p className="font-medium text-sm">Allow dashboard access via tunnel</p>
+              <p className="font-medium text-sm">
+                Allow dashboard access via tunnel
+              </p>
               <Tooltip text="When enabled, the dashboard can be accessed through your tunnel or Tailscale URL (login still required). When disabled, dashboard access via tunnel/Tailscale is completely blocked." />
             </div>
           </div>
@@ -820,13 +1093,50 @@ export default function APIPageClient({ machineId }) {
           />
         </div>
 
+        <div className="flex items-center justify-between pb-4 mb-4 border-b border-border">
+          <div>
+            <p className="font-medium">Default Codex key type</p>
+            <p className="text-sm text-text-muted">
+              Used only when a request has no key-specific override.
+            </p>
+          </div>
+          <SegmentedControl
+            size="sm"
+            options={[
+              { value: "legacy", label: "Default -> Coding" },
+              { value: "managed", label: "Default -> Production" },
+            ]}
+            value={codexDefaultAdmissionPolicy}
+            onChange={async (value) => {
+              try {
+                const res = await fetch("/api/settings", {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    codexDefaultAdmissionPolicy: value,
+                  }),
+                });
+                if (res.ok) {
+                  setCodexDefaultAdmissionPolicy(value);
+                }
+              } catch (error) {
+                console.log("Error updating default Codex policy:", error);
+              }
+            }}
+          />
+        </div>
+
         {keys.length === 0 ? (
           <div className="text-center py-12">
             <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-primary/10 text-primary mb-4">
-              <span className="material-symbols-outlined text-[32px]">vpn_key</span>
+              <span className="material-symbols-outlined text-[32px]">
+                vpn_key
+              </span>
             </div>
             <p className="text-text-main font-medium mb-1">No API keys yet</p>
-            <p className="text-sm text-text-muted mb-4">Create your first API key to get started</p>
+            <p className="text-sm text-text-muted mb-4">
+              Create your first API key to get started
+            </p>
             <Button icon="add" onClick={() => setShowAddModal(true)}>
               Create Key
             </Button>
@@ -850,7 +1160,9 @@ export default function APIPageClient({ machineId }) {
                       title={visibleKeys.has(key.id) ? "Hide key" : "Show key"}
                     >
                       <span className="material-symbols-outlined text-[14px]">
-                        {visibleKeys.has(key.id) ? "visibility_off" : "visibility"}
+                        {visibleKeys.has(key.id)
+                          ? "visibility_off"
+                          : "visibility"}
                       </span>
                     </button>
                     <button
@@ -865,17 +1177,64 @@ export default function APIPageClient({ machineId }) {
                   <p className="text-xs text-text-muted mt-1">
                     Created {new Date(key.createdAt).toLocaleDateString()}
                   </p>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <Badge variant="info">
+                      Requested:{" "}
+                      {KEY_TYPE_OPTIONS.find(
+                        (option) =>
+                          option.value ===
+                          policyToKeyType(key.codexAdmissionPolicyOverride),
+                      )?.label || "Default"}
+                    </Badge>
+                    <Badge
+                      variant={
+                        getEffectiveCodexBehavior({
+                          key,
+                          runtimeMode: dispatcherRuntimeMode,
+                          defaultPolicy: codexDefaultAdmissionPolicy,
+                        }).tone
+                      }
+                    >
+                      Effective:{" "}
+                      {
+                        getEffectiveCodexBehavior({
+                          key,
+                          runtimeMode: dispatcherRuntimeMode,
+                          defaultPolicy: codexDefaultAdmissionPolicy,
+                        }).label
+                      }
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-text-muted mt-1">
+                    {
+                      getEffectiveCodexBehavior({
+                        key,
+                        runtimeMode: dispatcherRuntimeMode,
+                        defaultPolicy: codexDefaultAdmissionPolicy,
+                      }).detail
+                    }
+                  </p>
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
+                  <SegmentedControl
+                    size="sm"
+                    options={KEY_TYPE_OPTIONS}
+                    value={policyToKeyType(key.codexAdmissionPolicyOverride)}
+                    onChange={(value) => handleKeyTypeChange(key.id, value)}
+                  />
                   <Toggle
                     size="sm"
                     checked={key.isActive ?? true}
                     onChange={(checked) => {
                       if (key.isActive && !checked) {
-                        if (confirm(`Pause API key "${key.name}"?\n\nThis key will stop working immediately but can be resumed later.`)) {
+                        if (
+                          confirm(
+                            `Pause API key "${key.name}"?\n\nThis key will stop working immediately but can be resumed later.`,
+                          )
+                        ) {
                           handleToggleKey(key.id, checked);
                         }
                       } else {
@@ -888,7 +1247,9 @@ export default function APIPageClient({ machineId }) {
                     onClick={() => handleDeleteKey(key.id)}
                     className="p-2 hover:bg-red-500/10 rounded text-red-500 opacity-0 group-hover:opacity-100 transition-all"
                   >
-                    <span className="material-symbols-outlined text-[18px]">delete</span>
+                    <span className="material-symbols-outlined text-[18px]">
+                      delete
+                    </span>
                   </button>
                 </div>
               </div>
@@ -914,7 +1275,11 @@ export default function APIPageClient({ machineId }) {
             placeholder="Production Key"
           />
           <div className="flex gap-2">
-            <Button onClick={handleCreateKey} fullWidth disabled={!newKeyName.trim()}>
+            <Button
+              onClick={handleCreateKey}
+              fullWidth
+              disabled={!newKeyName.trim()}
+            >
               Create
             </Button>
             <Button
@@ -975,13 +1340,17 @@ export default function APIPageClient({ machineId }) {
         <div className="flex flex-col gap-4">
           <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
             <div className="flex items-start gap-3">
-              <span className="material-symbols-outlined text-blue-600 dark:text-blue-400">cloud_upload</span>
+              <span className="material-symbols-outlined text-blue-600 dark:text-blue-400">
+                cloud_upload
+              </span>
               <div>
                 <p className="text-sm text-blue-800 dark:text-blue-200 font-medium mb-1">
                   Cloudflare Tunnel
                 </p>
                 <p className="text-sm text-blue-700 dark:text-blue-300">
-                  Expose your local 9Router to the internet. No port forwarding, no static IP needed. Share endpoint URL with your team or use it in Cursor, Cline, and other AI tools from anywhere.
+                  Expose your local 9Router to the internet. No port forwarding,
+                  no static IP needed. Share endpoint URL with your team or use
+                  it in Cursor, Cline, and other AI tools from anywhere.
                 </p>
               </div>
             </div>
@@ -989,8 +1358,13 @@ export default function APIPageClient({ machineId }) {
 
           <div className="grid grid-cols-2 gap-3">
             {TUNNEL_BENEFITS.map((benefit) => (
-              <div key={benefit.title} className="flex flex-col items-center text-center p-3 rounded-lg bg-sidebar/50">
-                <span className="material-symbols-outlined text-xl text-primary mb-1">{benefit.icon}</span>
+              <div
+                key={benefit.title}
+                className="flex flex-col items-center text-center p-3 rounded-lg bg-sidebar/50"
+              >
+                <span className="material-symbols-outlined text-xl text-primary mb-1">
+                  {benefit.icon}
+                </span>
                 <p className="text-xs font-semibold">{benefit.title}</p>
                 <p className="text-xs text-text-muted">{benefit.desc}</p>
               </div>
@@ -1009,7 +1383,13 @@ export default function APIPageClient({ machineId }) {
             >
               Start Tunnel
             </Button>
-            <Button onClick={() => setShowEnableTunnelModal(false)} variant="ghost" fullWidth>Cancel</Button>
+            <Button
+              onClick={() => setShowEnableTunnelModal(false)}
+              variant="ghost"
+              fullWidth
+            >
+              Cancel
+            </Button>
           </div>
         </div>
       </Modal>
@@ -1021,12 +1401,27 @@ export default function APIPageClient({ machineId }) {
         onClose={() => !tunnelLoading && setShowDisableTunnelModal(false)}
       >
         <div className="flex flex-col gap-4">
-          <p className="text-sm text-text-muted">The Cloudflare tunnel will be disconnected. Remote access via tunnel URL will stop working.</p>
+          <p className="text-sm text-text-muted">
+            The Cloudflare tunnel will be disconnected. Remote access via tunnel
+            URL will stop working.
+          </p>
           <div className="flex gap-2">
-            <Button onClick={handleDisableTunnel} fullWidth disabled={tunnelLoading} className="bg-red-500! hover:bg-red-600! text-white!">
+            <Button
+              onClick={handleDisableTunnel}
+              fullWidth
+              disabled={tunnelLoading}
+              className="bg-red-500! hover:bg-red-600! text-white!"
+            >
               {tunnelLoading ? "Disabling..." : "Disable"}
             </Button>
-            <Button onClick={() => setShowDisableTunnelModal(false)} variant="ghost" fullWidth disabled={tunnelLoading}>Cancel</Button>
+            <Button
+              onClick={() => setShowDisableTunnelModal(false)}
+              variant="ghost"
+              fullWidth
+              disabled={tunnelLoading}
+            >
+              Cancel
+            </Button>
           </div>
         </div>
       </Modal>
@@ -1035,13 +1430,21 @@ export default function APIPageClient({ machineId }) {
       <Modal
         isOpen={showTsModal}
         title="Tailscale Funnel"
-        onClose={() => { if (!tsInstalling) { setShowTsModal(false); setTsSudoPassword(""); setTsStatus(null); } }}
+        onClose={() => {
+          if (!tsInstalling) {
+            setShowTsModal(false);
+            setTsSudoPassword("");
+            setTsStatus(null);
+          }
+        }}
       >
         <div className="flex flex-col gap-4">
           {/* Checking state */}
           {tsInstalled === null && (
             <p className="text-sm text-text-muted flex items-center gap-2">
-              <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
+              <span className="material-symbols-outlined animate-spin text-sm">
+                progress_activity
+              </span>
               Checking...
             </p>
           )}
@@ -1049,7 +1452,9 @@ export default function APIPageClient({ machineId }) {
           {/* Not installed */}
           {tsInstalled === false && !tsInstalling && (
             <div className="flex flex-col gap-3">
-              <p className="text-sm text-text-muted">Tailscale is not installed. Install it to enable Funnel.</p>
+              <p className="text-sm text-text-muted">
+                Tailscale is not installed. Install it to enable Funnel.
+              </p>
               <div className="flex gap-2">
                 <Button
                   onClick={handleInstallTailscale}
@@ -1058,7 +1463,13 @@ export default function APIPageClient({ machineId }) {
                 >
                   Install Tailscale
                 </Button>
-                <Button onClick={() => setShowTsModal(false)} variant="ghost" fullWidth>Cancel</Button>
+                <Button
+                  onClick={() => setShowTsModal(false)}
+                  variant="ghost"
+                  fullWidth
+                >
+                  Cancel
+                </Button>
               </div>
             </div>
           )}
@@ -1067,11 +1478,16 @@ export default function APIPageClient({ machineId }) {
           {tsInstalling && (
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2 text-sm text-text-muted">
-                <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
+                <span className="material-symbols-outlined animate-spin text-sm">
+                  progress_activity
+                </span>
                 Installing Tailscale...
               </div>
               {tsInstallLog.length > 0 && (
-                <div ref={tsLogRef} className="bg-black/5 dark:bg-white/5 rounded p-2 max-h-40 overflow-y-auto font-mono text-xs text-text-muted">
+                <div
+                  ref={tsLogRef}
+                  className="bg-black/5 dark:bg-white/5 rounded p-2 max-h-40 overflow-y-auto font-mono text-xs text-text-muted"
+                >
                   {tsInstallLog.map((line, i) => (
                     <div key={i}>{line}</div>
                   ))}
@@ -1084,14 +1500,23 @@ export default function APIPageClient({ machineId }) {
           {tsInstalled === true && !tsInstalling && (
             <div className="flex flex-col gap-3">
               <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
-                <span className="material-symbols-outlined text-[16px]">check_circle</span>
+                <span className="material-symbols-outlined text-[16px]">
+                  check_circle
+                </span>
                 Tailscale installed
               </div>
               <div className="flex gap-2">
                 <Button
                   onClick={() => {
-                    const tab = window.open("", "tailscale_auth", "width=600,height=700");
-                    if (tab) tab.document.write("<p style='font-family:sans-serif;text-align:center;margin-top:40px'>Connecting to Tailscale...</p>");
+                    const tab = window.open(
+                      "",
+                      "tailscale_auth",
+                      "width=600,height=700",
+                    );
+                    if (tab)
+                      tab.document.write(
+                        "<p style='font-family:sans-serif;text-align:center;margin-top:40px'>Connecting to Tailscale...</p>",
+                      );
                     handleConnectTailscale(tab);
                   }}
                   fullWidth
@@ -1099,7 +1524,13 @@ export default function APIPageClient({ machineId }) {
                 >
                   Connect
                 </Button>
-                <Button onClick={() => setShowTsModal(false)} variant="ghost" fullWidth>Cancel</Button>
+                <Button
+                  onClick={() => setShowTsModal(false)}
+                  variant="ghost"
+                  fullWidth
+                >
+                  Cancel
+                </Button>
               </div>
             </div>
           )}
@@ -1115,12 +1546,27 @@ export default function APIPageClient({ machineId }) {
         onClose={() => !tsLoading && setShowDisableTsModal(false)}
       >
         <div className="flex flex-col gap-4">
-          <p className="text-sm text-text-muted">Tailscale Funnel will be stopped. Remote access via Tailscale URL will stop working.</p>
+          <p className="text-sm text-text-muted">
+            Tailscale Funnel will be stopped. Remote access via Tailscale URL
+            will stop working.
+          </p>
           <div className="flex gap-2">
-            <Button onClick={handleDisableTailscale} fullWidth disabled={tsLoading} className="bg-red-500! hover:bg-red-600! text-white!">
+            <Button
+              onClick={handleDisableTailscale}
+              fullWidth
+              disabled={tsLoading}
+              className="bg-red-500! hover:bg-red-600! text-white!"
+            >
               {tsLoading ? "Disabling..." : "Disable"}
             </Button>
-            <Button onClick={() => setShowDisableTsModal(false)} variant="ghost" fullWidth disabled={tsLoading}>Cancel</Button>
+            <Button
+              onClick={() => setShowDisableTsModal(false)}
+              variant="ghost"
+              fullWidth
+              disabled={tsLoading}
+            >
+              Cancel
+            </Button>
           </div>
         </div>
       </Modal>
@@ -1132,16 +1578,25 @@ export default function APIPageClient({ machineId }) {
 function EndpointRow({ label, url, copyId, copied, onCopy, badge, actions }) {
   return (
     <div className="flex items-center gap-2">
-      <span className={`text-xs font-mono px-1.5 py-0.5 rounded shrink-0 min-w-[68px] text-center ${badge === "CF" ? "bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400" :
-          badge === "TS" ? "bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400" :
-            "bg-sidebar text-text-muted"
-        }`}>{label}</span>
+      <span
+        className={`text-xs font-mono px-1.5 py-0.5 rounded shrink-0 min-w-[68px] text-center ${
+          badge === "CF"
+            ? "bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400"
+            : badge === "TS"
+              ? "bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400"
+              : "bg-sidebar text-text-muted"
+        }`}
+      >
+        {label}
+      </span>
       <Input value={url} readOnly className="flex-1 font-mono text-sm" />
       <button
         onClick={() => onCopy(url, copyId)}
         className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-colors shrink-0"
       >
-        <span className="material-symbols-outlined text-[18px]">{copied === copyId ? "check" : "content_copy"}</span>
+        <span className="material-symbols-outlined text-[18px]">
+          {copied === copyId ? "check" : "content_copy"}
+        </span>
       </button>
       {actions}
     </div>
@@ -1154,18 +1609,34 @@ function StatusAlert({ status, className = "" }) {
   const renderMessage = (msg) => {
     const parts = msg.split(/(https?:\/\/[^\s]+)/g);
     return parts.map((part, i) =>
-      /^https?:\/\//.test(part)
-        ? <a key={i} href={part} target="_blank" rel="noreferrer" className="underline font-medium">{part}</a>
-        : part
+      /^https?:\/\//.test(part) ? (
+        <a
+          key={i}
+          href={part}
+          target="_blank"
+          rel="noreferrer"
+          className="underline font-medium"
+        >
+          {part}
+        </a>
+      ) : (
+        part
+      ),
     );
   };
 
   return (
-    <div className={`p-2 rounded text-sm ${className} ${status.type === "success" ? "bg-green-500/10 text-green-600 dark:text-green-400" :
-        status.type === "warning" ? "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400" :
-        status.type === "info" ? "bg-blue-500/10 text-blue-600 dark:text-blue-400" :
-          "bg-red-500/10 text-red-600 dark:text-red-400"
-      }`}>
+    <div
+      className={`p-2 rounded text-sm ${className} ${
+        status.type === "success"
+          ? "bg-green-500/10 text-green-600 dark:text-green-400"
+          : status.type === "warning"
+            ? "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
+            : status.type === "info"
+              ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+              : "bg-red-500/10 text-red-600 dark:text-red-400"
+      }`}
+    >
       {renderMessage(status.message)}
     </div>
   );
@@ -1175,7 +1646,9 @@ function StatusAlert({ status, className = "" }) {
 function Tooltip({ text }) {
   return (
     <span className="relative group inline-flex items-center">
-      <span className="material-symbols-outlined text-[14px] text-text-muted cursor-help">help</span>
+      <span className="material-symbols-outlined text-[14px] text-text-muted cursor-help">
+        help
+      </span>
       <span className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 z-50 w-64 rounded bg-gray-900 dark:bg-gray-800 text-white text-xs px-2.5 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">
         {text}
       </span>
@@ -1187,16 +1660,24 @@ function Tooltip({ text }) {
 function SecurityWarning({ message, action }) {
   return (
     <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400">
-      <span className="material-symbols-outlined text-[16px] shrink-0 mt-0.5">warning</span>
+      <span className="material-symbols-outlined text-[16px] shrink-0 mt-0.5">
+        warning
+      </span>
       <p className="text-xs flex-1">{message}</p>
       {action && (
         <a
           href={action.href}
           className="text-xs font-medium underline shrink-0 hover:opacity-80"
-          onClick={action.href.startsWith("#") ? (e) => {
-            e.preventDefault();
-            document.getElementById(action.href.slice(1))?.scrollIntoView({ behavior: "smooth" });
-          } : undefined}
+          onClick={
+            action.href.startsWith("#")
+              ? (e) => {
+                  e.preventDefault();
+                  document
+                    .getElementById(action.href.slice(1))
+                    ?.scrollIntoView({ behavior: "smooth" });
+                }
+              : undefined
+          }
         >
           {action.label}
         </a>

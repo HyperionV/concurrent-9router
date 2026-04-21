@@ -179,8 +179,13 @@ export function createDispatcherCore({
   ) {
     const conversationKey = request?.conversationKey;
     if (!conversationKey) return true;
+    const apiKeyScope =
+      request?.metadata?.admission?.apiKeyScope || "__no_key__";
 
-    const affinity = getDispatchConversationAffinity(conversationKey);
+    const affinity = getDispatchConversationAffinity(
+      conversationKey,
+      apiKeyScope,
+    );
     if (
       affinity &&
       affinity.connectionId &&
@@ -195,6 +200,8 @@ export function createDispatcherCore({
         (request.conversationKey &&
           getDispatchRequest(attempt.requestId)?.conversationKey ===
             request.conversationKey &&
+          (getDispatchRequest(attempt.requestId)?.metadata?.admission
+            ?.apiKeyScope || "__no_key__") === apiKeyScope &&
           attempt.connectionId !== connectionId),
     );
   }

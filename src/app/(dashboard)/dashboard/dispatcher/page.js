@@ -344,6 +344,9 @@ function ConnectionsTable({ connections }) {
 
 function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
   const [mode, setMode] = useState(snapshot.mode);
+  const [defaultPolicy, setDefaultPolicy] = useState(
+    snapshot.settings.codexDefaultAdmissionPolicy || "legacy",
+  );
   const [slots, setSlots] = useState(
     String(snapshot.settings.dispatcherSlotsPerConnection || 1),
   );
@@ -353,11 +356,18 @@ function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
 
   useEffect(() => {
     setMode(snapshot.mode);
+    setDefaultPolicy(snapshot.settings.codexDefaultAdmissionPolicy || "legacy");
     setSlots(String(snapshot.settings.dispatcherSlotsPerConnection || 1));
-  }, [snapshot.mode, snapshot.settings.dispatcherSlotsPerConnection]);
+  }, [
+    snapshot.mode,
+    snapshot.settings.codexDefaultAdmissionPolicy,
+    snapshot.settings.dispatcherSlotsPerConnection,
+  ]);
 
   const hasChanges =
     mode !== snapshot.mode ||
+    defaultPolicy !==
+      (snapshot.settings.codexDefaultAdmissionPolicy || "legacy") ||
     Number(slots) !==
       Number(snapshot.settings.dispatcherSlotsPerConnection || 1);
 
@@ -373,6 +383,7 @@ function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
         },
         body: JSON.stringify({
           mode,
+          codexDefaultAdmissionPolicy: defaultPolicy,
           dispatcherSlotsPerConnection: Number(slots),
         }),
       });
@@ -393,7 +404,7 @@ function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
   return (
     <Card
       title="Dispatcher controls"
-      subtitle="Choose the operating mode and concurrency ceiling for Codex accounts."
+      subtitle="Runtime mode controls dispatcher enforcement; default policy controls untyped Codex keys."
       icon="tune"
     >
       <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
@@ -417,6 +428,24 @@ function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
             value={mode}
             onChange={setMode}
           />
+          <div className="pt-2">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-text-muted/70">
+              Default Codex policy
+            </p>
+            <p className="mt-2 text-sm text-text-muted">
+              Applies to Codex requests without a per-key override.
+            </p>
+            <div className="mt-3">
+              <SegmentedControl
+                options={[
+                  { value: "legacy", label: "Legacy" },
+                  { value: "managed", label: "Managed" },
+                ]}
+                value={defaultPolicy}
+                onChange={setDefaultPolicy}
+              />
+            </div>
+          </div>
         </Card.Section>
 
         <Card.Section className="flex flex-col gap-3">
@@ -442,6 +471,9 @@ function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
               variant="outline"
               onClick={() => {
                 setMode(snapshot.mode);
+                setDefaultPolicy(
+                  snapshot.settings.codexDefaultAdmissionPolicy || "legacy",
+                );
                 setSlots(
                   String(snapshot.settings.dispatcherSlotsPerConnection || 1),
                 );
@@ -555,6 +587,13 @@ export default function DispatcherPage() {
         </Button>
       </div>
       <DispatcherOverview snapshot={snapshot} />
+      <Card
+        title="Coverage note"
+        subtitle={
+          snapshot.coverage?.summary || "Mixed-mode awareness unavailable."
+        }
+        icon="info"
+      />
       <DispatcherControlsCard
         snapshot={snapshot}
         onRefresh={() => fetchStatus({ silent: true })}

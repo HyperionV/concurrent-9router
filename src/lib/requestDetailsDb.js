@@ -125,6 +125,7 @@ async function flushToDatabase() {
         latency: item.latency || {},
         tokens: item.tokens || {},
         request: item.request || {},
+        routing: item.routing || {},
         providerRequest: item.providerRequest || {},
         providerResponse: item.providerResponse || {},
         response: item.response || {},
@@ -134,6 +135,7 @@ async function flushToDatabase() {
       const maxSize = config.maxJsonSize;
       for (const field of [
         "request",
+        "routing",
         "providerRequest",
         "providerResponse",
         "response",

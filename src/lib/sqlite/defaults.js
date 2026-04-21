@@ -1,6 +1,7 @@
 export const DEFAULT_MITM_ROUTER_BASE = "http://localhost:20128";
 
 export const DEFAULT_SETTINGS = {
+  requireApiKey: false,
   cloudEnabled: false,
   cloudUrl: "",
   tunnelEnabled: false,
@@ -27,6 +28,7 @@ export const DEFAULT_SETTINGS = {
   dispatcherEnabled: false,
   dispatcherShadowMode: false,
   dispatcherCodexOnly: true,
+  codexDefaultAdmissionPolicy: "legacy",
   dispatcherSlotsPerConnection: 1,
   mitmRouterBaseUrl: DEFAULT_MITM_ROUTER_BASE,
 };
@@ -44,6 +46,9 @@ export function normalizeSettings(input = {}) {
 
   if (typeof source.enableObservability === "boolean") {
     next.observabilityEnabled = source.enableObservability;
+  }
+  if (typeof source.requireApiKey === "boolean") {
+    next.requireApiKey = source.requireApiKey;
   }
   if (typeof source.observabilityEnabled === "boolean") {
     next.observabilityEnabled = source.observabilityEnabled;

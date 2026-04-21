@@ -240,7 +240,11 @@ function generateShortKey() {
   return result;
 }
 
-export async function createApiKey(name, machineId) {
+export async function createApiKey(
+  name,
+  machineId,
+  { codexAdmissionPolicyOverride = null } = {},
+) {
   if (!machineId) throw new Error("machineId is required");
 
   await ensureSqliteReady();
@@ -255,6 +259,7 @@ export async function createApiKey(name, machineId) {
     key: result.key,
     machineId: machineId,
     isActive: true,
+    codexAdmissionPolicyOverride,
     createdAt: now,
   };
 
@@ -280,6 +285,14 @@ export async function validateApiKey(key) {
   await ensureSqliteReady();
   const found = getApiKeyByValue(key);
   return found && found.isActive !== false;
+}
+
+export async function getActiveApiKeyRecordByValue(key) {
+  await ensureSqliteReady();
+  if (!key) return null;
+  const found = getApiKeyByValue(key);
+  if (!found || found.isActive === false) return null;
+  return found;
 }
 
 export async function cleanupProviderConnections() {

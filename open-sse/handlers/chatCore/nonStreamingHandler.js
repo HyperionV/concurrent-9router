@@ -183,6 +183,7 @@ export async function handleNonStreamingResponse({
   apiKey,
   clientRawRequest,
   onRequestSuccess,
+  routingDecision = null,
   reqLogger,
   trackDone,
   appendLog,
@@ -305,6 +306,7 @@ export async function handleNonStreamingResponse({
         latency: { ttft: totalLatency, total: totalLatency },
         tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
         request: extractRequestConfig(body, stream),
+        routing: routingDecision,
         providerRequest: finalBody || translatedBody || null,
         providerResponse: responseBody || null,
         response: {

@@ -6,6 +6,10 @@ import {
   withSettingsAliases,
 } from "@/lib/sqlite/defaults.js";
 import {
+  normalizeCodexAdmissionPolicyOverride,
+  normalizeCodexDefaultAdmissionPolicy,
+} from "@/lib/dispatcher/admissionPolicy.js";
+import {
   asBool,
   fromBool,
   nowIso,
@@ -24,6 +28,7 @@ function mapSettingsRow(row) {
 
   return withSettingsAliases(
     normalizeSettings({
+      requireApiKey: fromBool(row.require_api_key),
       cloudEnabled: fromBool(row.cloud_enabled),
       cloudUrl: row.cloud_url || "",
       tunnelEnabled: fromBool(row.tunnel_enabled),
@@ -53,6 +58,9 @@ function mapSettingsRow(row) {
         row.dispatcher_codex_only == null
           ? DEFAULT_SETTINGS.dispatcherCodexOnly
           : fromBool(row.dispatcher_codex_only),
+      codexDefaultAdmissionPolicy: normalizeCodexDefaultAdmissionPolicy(
+        row.codex_default_admission_policy || "legacy",
+      ),
       dispatcherSlotsPerConnection:
         row.dispatcher_slots_per_connection ??
         DEFAULT_SETTINGS.dispatcherSlotsPerConnection,
@@ -88,6 +96,7 @@ export function writeSettings(updates) {
     UPDATE app_settings
     SET
       cloud_enabled = @cloudEnabled,
+      require_api_key = @requireApiKey,
       cloud_url = @cloudUrl,
       tunnel_enabled = @tunnelEnabled,
       tunnel_url = @tunnelUrl,
@@ -112,6 +121,7 @@ export function writeSettings(updates) {
       dispatcher_enabled = @dispatcherEnabled,
       dispatcher_shadow_mode = @dispatcherShadowMode,
       dispatcher_codex_only = @dispatcherCodexOnly,
+      codex_default_admission_policy = @codexDefaultAdmissionPolicy,
       dispatcher_slots_per_connection = @dispatcherSlotsPerConnection,
       mitm_router_base_url = @mitmRouterBaseUrl,
       password = @password,
@@ -121,6 +131,7 @@ export function writeSettings(updates) {
     )
     .run({
       cloudEnabled: asBool(next.cloudEnabled),
+      requireApiKey: asBool(next.requireApiKey),
       cloudUrl: next.cloudUrl || "",
       tunnelEnabled: asBool(next.tunnelEnabled),
       tunnelUrl: next.tunnelUrl || "",
@@ -145,6 +156,9 @@ export function writeSettings(updates) {
       dispatcherEnabled: asBool(next.dispatcherEnabled),
       dispatcherShadowMode: asBool(next.dispatcherShadowMode),
       dispatcherCodexOnly: asBool(next.dispatcherCodexOnly !== false),
+      codexDefaultAdmissionPolicy: normalizeCodexDefaultAdmissionPolicy(
+        next.codexDefaultAdmissionPolicy,
+      ),
       dispatcherSlotsPerConnection:
         next.dispatcherSlotsPerConnection ??
         DEFAULT_SETTINGS.dispatcherSlotsPerConnection,
@@ -924,6 +938,9 @@ function mapApiKey(row) {
         key: row.key_value,
         machineId: row.machine_id,
         isActive: fromBool(row.is_active),
+        codexAdmissionPolicyOverride: normalizeCodexAdmissionPolicyOverride(
+          row.codex_admission_policy_override,
+        ),
         createdAt: row.created_at,
       }
     : null;
@@ -950,8 +967,10 @@ export function createApiKeyRecord(record) {
   db()
     .prepare(
       `
-    INSERT INTO api_keys(id, name, key_value, machine_id, is_active, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO api_keys(
+      id, name, key_value, machine_id, is_active, codex_admission_policy_override, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
@@ -960,6 +979,9 @@ export function createApiKeyRecord(record) {
       record.key,
       record.machineId || null,
       asBool(record.isActive !== false),
+      normalizeCodexAdmissionPolicyOverride(
+        record.codexAdmissionPolicyOverride,
+      ),
       record.createdAt,
     );
   return getApiKeyRecord(record.id);
@@ -973,7 +995,7 @@ export function updateApiKeyRecord(id, data) {
     .prepare(
       `
     UPDATE api_keys
-    SET name = ?, key_value = ?, machine_id = ?, is_active = ?, created_at = ?
+    SET name = ?, key_value = ?, machine_id = ?, is_active = ?, codex_admission_policy_override = ?, created_at = ?
     WHERE id = ?
   `,
     )
@@ -982,6 +1004,7 @@ export function updateApiKeyRecord(id, data) {
       next.key,
       next.machineId || null,
       asBool(next.isActive !== false),
+      normalizeCodexAdmissionPolicyOverride(next.codexAdmissionPolicyOverride),
       next.createdAt,
       id,
     );
@@ -1188,8 +1211,8 @@ export function insertOrReplaceRequestDetail(record) {
       `
     INSERT INTO request_details(
       id, timestamp, provider, model_id, connection_id, status, latency_json, tokens_json,
-      request_json, provider_request_json, provider_response_json, response_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      request_json, routing_json, provider_request_json, provider_response_json, response_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       timestamp = excluded.timestamp,
       provider = excluded.provider,
@@ -1199,6 +1222,7 @@ export function insertOrReplaceRequestDetail(record) {
       latency_json = excluded.latency_json,
       tokens_json = excluded.tokens_json,
       request_json = excluded.request_json,
+      routing_json = excluded.routing_json,
       provider_request_json = excluded.provider_request_json,
       provider_response_json = excluded.provider_response_json,
       response_json = excluded.response_json
@@ -1214,6 +1238,7 @@ export function insertOrReplaceRequestDetail(record) {
       stringifyJson(record.latency, {}),
       stringifyJson(record.tokens, {}),
       stringifyJson(record.request, {}),
+      stringifyJson(record.routing, {}),
       stringifyJson(record.providerRequest, {}),
       stringifyJson(record.providerResponse, {}),
       stringifyJson(record.response, {}),
@@ -1234,6 +1259,7 @@ export function listRequestDetails() {
       latency: parseJson(row.latency_json, {}),
       tokens: parseJson(row.tokens_json, {}),
       request: parseJson(row.request_json, {}),
+      routing: parseJson(row.routing_json, {}),
       providerRequest: parseJson(row.provider_request_json, {}),
       providerResponse: parseJson(row.provider_response_json, {}),
       response: parseJson(row.response_json, {}),
@@ -1253,6 +1279,7 @@ function mapRequestDetailRow(row) {
     latency: parseJson(row.latency_json, {}),
     tokens: parseJson(row.tokens_json, {}),
     request: parseJson(row.request_json, {}),
+    routing: parseJson(row.routing_json, {}),
     providerRequest: parseJson(row.provider_request_json, {}),
     providerResponse: parseJson(row.provider_response_json, {}),
     response: parseJson(row.response_json, {}),

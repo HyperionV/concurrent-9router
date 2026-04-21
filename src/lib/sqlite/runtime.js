@@ -36,6 +36,68 @@ function ensureColumn(db, tableName, columnName, columnDef) {
   }
 }
 
+function getPrimaryKeyColumns(db, tableName) {
+  return db
+    .prepare(`PRAGMA table_info(${tableName})`)
+    .all()
+    .filter((row) => Number(row.pk) > 0)
+    .sort((a, b) => Number(a.pk) - Number(b.pk))
+    .map((row) => row.name);
+}
+
+function rebuildDispatchConversationAffinityTable(db) {
+  const currentPk = getPrimaryKeyColumns(db, "dispatch_conversation_affinity");
+  if (
+    currentPk.length === 2 &&
+    currentPk[0] === "conversation_key" &&
+    currentPk[1] === "api_key_scope"
+  ) {
+    return;
+  }
+
+  db.exec(`
+    ALTER TABLE dispatch_conversation_affinity RENAME TO dispatch_conversation_affinity_legacy;
+
+    CREATE TABLE dispatch_conversation_affinity (
+      conversation_key TEXT NOT NULL,
+      api_key_scope TEXT NOT NULL DEFAULT '__no_key__',
+      provider TEXT NOT NULL,
+      model_id TEXT,
+      connection_id TEXT NOT NULL,
+      session_id TEXT,
+      api_key_id TEXT,
+      state TEXT NOT NULL DEFAULT 'active',
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (conversation_key, api_key_scope)
+    );
+
+    INSERT INTO dispatch_conversation_affinity(
+      conversation_key,
+      api_key_scope,
+      provider,
+      model_id,
+      connection_id,
+      session_id,
+      api_key_id,
+      state,
+      updated_at
+    )
+    SELECT
+      conversation_key,
+      COALESCE(api_key_scope, '__no_key__'),
+      provider,
+      model_id,
+      connection_id,
+      session_id,
+      api_key_id,
+      state,
+      updated_at
+    FROM dispatch_conversation_affinity_legacy;
+
+    DROP TABLE dispatch_conversation_affinity_legacy;
+  `);
+}
+
 function runMigrations(db) {
   db.exec(`
     PRAGMA journal_mode = WAL;
@@ -54,6 +116,7 @@ function runMigrations(db) {
 
     CREATE TABLE IF NOT EXISTS app_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
+      require_api_key INTEGER NOT NULL DEFAULT 0,
       cloud_enabled INTEGER NOT NULL DEFAULT 0,
       cloud_url TEXT NOT NULL DEFAULT '',
       tunnel_enabled INTEGER NOT NULL DEFAULT 0,
@@ -79,6 +142,7 @@ function runMigrations(db) {
       dispatcher_enabled INTEGER NOT NULL DEFAULT 0,
       dispatcher_shadow_mode INTEGER NOT NULL DEFAULT 0,
       dispatcher_codex_only INTEGER NOT NULL DEFAULT 1,
+      codex_default_admission_policy TEXT NOT NULL DEFAULT 'legacy',
       dispatcher_slots_per_connection INTEGER NOT NULL DEFAULT 1,
       mitm_router_base_url TEXT NOT NULL DEFAULT 'http://localhost:20128',
       password TEXT,
@@ -190,6 +254,7 @@ function runMigrations(db) {
       key_value TEXT NOT NULL UNIQUE,
       machine_id TEXT,
       is_active INTEGER NOT NULL DEFAULT 1,
+      codex_admission_policy_override TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -248,6 +313,7 @@ function runMigrations(db) {
       latency_json TEXT NOT NULL DEFAULT '{}',
       tokens_json TEXT NOT NULL DEFAULT '{}',
       request_json TEXT NOT NULL DEFAULT '{}',
+      routing_json TEXT NOT NULL DEFAULT '{}',
       provider_request_json TEXT NOT NULL DEFAULT '{}',
       provider_response_json TEXT NOT NULL DEFAULT '{}',
       response_json TEXT NOT NULL DEFAULT '{}'
@@ -319,19 +385,28 @@ function runMigrations(db) {
       ON dispatch_attempt_events(attempt_id, at ASC);
 
     CREATE TABLE IF NOT EXISTS dispatch_conversation_affinity (
-      conversation_key TEXT PRIMARY KEY,
+      conversation_key TEXT NOT NULL,
+      api_key_scope TEXT NOT NULL DEFAULT '__no_key__',
       provider TEXT NOT NULL,
       model_id TEXT,
       connection_id TEXT NOT NULL,
       session_id TEXT,
+      api_key_id TEXT,
       state TEXT NOT NULL DEFAULT 'active',
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (conversation_key, api_key_scope)
     );
 
     INSERT OR IGNORE INTO schema_migrations(version, applied_at)
     VALUES ('0001_initial', datetime('now'));
   `);
 
+  ensureColumn(
+    db,
+    "app_settings",
+    "require_api_key",
+    "INTEGER NOT NULL DEFAULT 0",
+  );
   ensureColumn(
     db,
     "app_settings",
@@ -353,9 +428,30 @@ function runMigrations(db) {
   ensureColumn(
     db,
     "app_settings",
+    "codex_default_admission_policy",
+    "TEXT NOT NULL DEFAULT 'legacy'",
+  );
+  ensureColumn(
+    db,
+    "app_settings",
     "dispatcher_slots_per_connection",
     "INTEGER NOT NULL DEFAULT 1",
   );
+  ensureColumn(db, "api_keys", "codex_admission_policy_override", "TEXT");
+  ensureColumn(
+    db,
+    "request_details",
+    "routing_json",
+    "TEXT NOT NULL DEFAULT '{}'",
+  );
+  ensureColumn(
+    db,
+    "dispatch_conversation_affinity",
+    "api_key_scope",
+    "TEXT NOT NULL DEFAULT '__no_key__'",
+  );
+  ensureColumn(db, "dispatch_conversation_affinity", "api_key_id", "TEXT");
+  rebuildDispatchConversationAffinityTable(db);
 
   db.prepare(
     `
@@ -371,6 +467,7 @@ function seedDefaults(db) {
     `
     INSERT OR IGNORE INTO app_settings (
       id,
+      require_api_key,
       cloud_enabled,
       cloud_url,
       tunnel_enabled,
@@ -396,23 +493,25 @@ function seedDefaults(db) {
       dispatcher_enabled,
       dispatcher_shadow_mode,
       dispatcher_codex_only,
+      codex_default_admission_policy,
       dispatcher_slots_per_connection,
       mitm_router_base_url,
       password,
       mitm_enabled
     ) VALUES (
-      1, @cloudEnabled, @cloudUrl, @tunnelEnabled, @tunnelUrl, @tunnelProvider,
+      1, @requireApiKey, @cloudEnabled, @cloudUrl, @tunnelEnabled, @tunnelUrl, @tunnelProvider,
       @tailscaleEnabled, @tailscaleUrl, @fallbackStrategy, @stickyRoundRobinLimit,
       @providerStrategiesJson, @comboStrategy, @comboStrategiesJson,
       @requireLogin, @tunnelDashboardAccess, @observabilityEnabled,
       @observabilityMaxRecords, @observabilityBatchSize,
       @observabilityFlushIntervalMs, @observabilityMaxJsonSize,
       @outboundProxyEnabled, @outboundProxyUrl, @outboundNoProxy,
-      @dispatcherEnabled, @dispatcherShadowMode, @dispatcherCodexOnly, @dispatcherSlotsPerConnection,
+      @dispatcherEnabled, @dispatcherShadowMode, @dispatcherCodexOnly, @codexDefaultAdmissionPolicy, @dispatcherSlotsPerConnection,
       @mitmRouterBaseUrl, @password, @mitmEnabled
     )
   `,
   ).run({
+    requireApiKey: settings.requireApiKey ? 1 : 0,
     cloudEnabled: settings.cloudEnabled ? 1 : 0,
     cloudUrl: settings.cloudUrl || "",
     tunnelEnabled: settings.tunnelEnabled ? 1 : 0,
@@ -438,6 +537,8 @@ function seedDefaults(db) {
     dispatcherEnabled: settings.dispatcherEnabled ? 1 : 0,
     dispatcherShadowMode: settings.dispatcherShadowMode ? 1 : 0,
     dispatcherCodexOnly: settings.dispatcherCodexOnly !== false ? 1 : 0,
+    codexDefaultAdmissionPolicy:
+      settings.codexDefaultAdmissionPolicy || "legacy",
     dispatcherSlotsPerConnection: settings.dispatcherSlotsPerConnection ?? 1,
     mitmRouterBaseUrl: settings.mitmRouterBaseUrl,
     password: settings.password || null,

@@ -49,10 +49,12 @@ function normalizeAffinity(row) {
   if (!row) return null;
   return {
     conversationKey: row.conversation_key,
+    apiKeyScope: row.api_key_scope,
     provider: row.provider,
     modelId: row.model_id,
     connectionId: row.connection_id,
     sessionId: row.session_id,
+    apiKeyId: row.api_key_id || null,
     state: row.state,
     updatedAt: row.updated_at,
   };
@@ -350,41 +352,51 @@ export function upsertDispatchConversationAffinity(record) {
     .prepare(
       `
         INSERT INTO dispatch_conversation_affinity(
-          conversation_key, provider, model_id, connection_id, session_id, state, updated_at
+          conversation_key, api_key_scope, provider, model_id, connection_id, session_id, api_key_id, state, updated_at
         ) VALUES (
-          @conversationKey, @provider, @modelId, @connectionId, @sessionId, @state, @updatedAt
+          @conversationKey, @apiKeyScope, @provider, @modelId, @connectionId, @sessionId, @apiKeyId, @state, @updatedAt
         )
-        ON CONFLICT(conversation_key) DO UPDATE SET
+        ON CONFLICT(conversation_key, api_key_scope) DO UPDATE SET
           provider = excluded.provider,
           model_id = excluded.model_id,
           connection_id = excluded.connection_id,
           session_id = excluded.session_id,
+          api_key_id = excluded.api_key_id,
           state = excluded.state,
           updated_at = excluded.updated_at
       `,
     )
     .run({
       conversationKey: record.conversationKey,
+      apiKeyScope: record.apiKeyScope,
       provider: record.provider,
       modelId: record.modelId || null,
       connectionId: record.connectionId,
       sessionId: record.sessionId || null,
+      apiKeyId: record.apiKeyId || null,
       state: record.state || "active",
       updatedAt,
     });
-  return getDispatchConversationAffinity(record.conversationKey);
+  return getDispatchConversationAffinity(
+    record.conversationKey,
+    record.apiKeyScope,
+  );
 }
 
-export function getDispatchConversationAffinity(conversationKey) {
+export function getDispatchConversationAffinity(
+  conversationKey,
+  apiKeyScope = "__no_key__",
+) {
   const row = getSqlite()
     .prepare(
       `
         SELECT *
         FROM dispatch_conversation_affinity
         WHERE conversation_key = ?
+          AND api_key_scope = ?
       `,
     )
-    .get(conversationKey);
+    .get(conversationKey, apiKeyScope);
   return normalizeAffinity(row);
 }
 

@@ -5,6 +5,7 @@ import {
   deriveDispatcherMode,
   normalizeDispatcherSlotsPerConnection,
 } from "@/lib/dispatcher/settings.js";
+import { normalizeCodexDefaultAdmissionPolicy } from "@/lib/dispatcher/admissionPolicy.js";
 
 function toSafeDispatcherSettings(settings) {
   return {
@@ -12,6 +13,8 @@ function toSafeDispatcherSettings(settings) {
     dispatcherEnabled: settings.dispatcherEnabled === true,
     dispatcherShadowMode: settings.dispatcherShadowMode === true,
     dispatcherCodexOnly: settings.dispatcherCodexOnly !== false,
+    codexDefaultAdmissionPolicy:
+      settings.codexDefaultAdmissionPolicy || "legacy",
     dispatcherSlotsPerConnection:
       Number(settings.dispatcherSlotsPerConnection) || 1,
   };
@@ -48,6 +51,11 @@ export async function PATCH(request) {
 
     if (body.dispatcherCodexOnly !== undefined) {
       updates.dispatcherCodexOnly = body.dispatcherCodexOnly === true;
+    }
+
+    if (body.codexDefaultAdmissionPolicy !== undefined) {
+      updates.codexDefaultAdmissionPolicy =
+        normalizeCodexDefaultAdmissionPolicy(body.codexDefaultAdmissionPolicy);
     }
 
     if (Object.keys(updates).length === 0) {

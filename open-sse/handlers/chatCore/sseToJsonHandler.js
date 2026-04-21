@@ -136,6 +136,7 @@ export async function handleForcedSSEToJson({
   apiKey,
   clientRawRequest,
   onRequestSuccess,
+  routingDecision = null,
   trackDone,
   appendLog,
   dispatcherHooks = null,
@@ -153,6 +154,7 @@ export async function handleForcedSSEToJson({
     model,
     connectionId,
     request: extractRequestConfig(body, stream),
+    routing: routingDecision,
     providerRequest: finalBody || translatedBody || null,
   };
 

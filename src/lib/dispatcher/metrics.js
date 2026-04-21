@@ -313,8 +313,16 @@ export function getDispatcherStatusSnapshot({
       dispatcherEnabled: settings.dispatcherEnabled === true,
       dispatcherShadowMode: settings.dispatcherShadowMode === true,
       dispatcherCodexOnly: settings.dispatcherCodexOnly !== false,
+      codexDefaultAdmissionPolicy:
+        settings.codexDefaultAdmissionPolicy || "legacy",
       dispatcherSlotsPerConnection:
         Number(settings.dispatcherSlotsPerConnection) || 1,
+    },
+    coverage: {
+      summary:
+        "These metrics cover dispatcher-managed traffic and shadow-tracked Codex traffic, not all Codex requests.",
+      managedOnly: true,
+      mixedModeAware: true,
     },
     capacity: buildCapacitySummary({
       connectionViews,

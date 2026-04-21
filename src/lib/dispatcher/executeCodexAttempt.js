@@ -1,10 +1,12 @@
-import { getProviderConnectionById, getSettings } from "@/lib/localDb.js";
+import { getProviderConnectionById } from "@/lib/localDb.js";
 import { buildManagedCredentials } from "@/lib/dispatcher/connectionState.js";
 import { getCodexDispatcher } from "@/lib/dispatcher/index.js";
 import {
+  getConversationAffinity,
   persistConversationAffinity,
   resolveConversationKey,
 } from "@/lib/dispatcher/conversationAffinity.js";
+import { computeCodexAdmissionDecisionFromSettings } from "@/lib/dispatcher/admissionPolicy.js";
 import {
   checkAndRefreshToken,
   updateProviderCredentials,
@@ -20,13 +22,6 @@ import { createErrorResult } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 
 const LEASE_POLL_INTERVAL_MS = 100;
-
-function shouldManageCodexRequest(settings, provider) {
-  if (!settings.dispatcherEnabled) return false;
-  if (settings.dispatcherCodexOnly !== false && provider !== "codex")
-    return false;
-  return provider === "codex";
-}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -54,11 +49,29 @@ export async function maybeHandleManagedCodexRequest({
   request,
   clientRawRequest,
   apiKey,
+  apiKeyRecord,
+  settings,
   providerThinking,
   ccFilterNaming,
 }) {
-  const settings = await getSettings();
-  if (!shouldManageCodexRequest(settings, provider)) {
+  if (provider !== "codex") {
+    return null;
+  }
+
+  const conversationKey = resolveConversationKey({
+    body,
+    clientRawRequest,
+  });
+  const affinity = getConversationAffinity(
+    conversationKey,
+    apiKeyRecord?.id || null,
+  );
+  const decision = computeCodexAdmissionDecisionFromSettings({
+    settings,
+    apiKeyRecord,
+    hasManagedAffinity: affinity?.state === "active",
+  });
+  if (decision.effectiveBehavior !== "managed") {
     return null;
   }
 
@@ -70,6 +83,8 @@ export async function maybeHandleManagedCodexRequest({
     request,
     clientRawRequest,
     apiKey,
+    apiKeyRecord,
+    decision,
     providerThinking,
     ccFilterNaming,
     requestId: null,
@@ -85,6 +100,8 @@ async function executeManagedCodexRequest({
   request,
   clientRawRequest,
   apiKey,
+  apiKeyRecord,
+  decision,
   providerThinking,
   ccFilterNaming,
   requestId = null,
@@ -100,6 +117,7 @@ async function executeManagedCodexRequest({
         metadataPatch: {
           routeModel: modelStr,
           retryBudget,
+          admission: decision,
         },
       })
     : await dispatcher.enqueueRequest({
@@ -114,6 +132,7 @@ async function executeManagedCodexRequest({
         metadata: {
           routeModel: modelStr,
           retryBudget,
+          admission: decision,
         },
       });
 
@@ -185,6 +204,7 @@ async function executeManagedCodexRequest({
         sessionId:
           credentials?.providerSpecificData?.dispatchSessionId ||
           lease.connectionId,
+        apiKeyId: apiKeyRecord?.id || null,
       });
       persistedContinuationKey = continuationKey;
     },
@@ -220,6 +240,7 @@ async function executeManagedCodexRequest({
     apiKey,
     ccFilterNaming: !!ccFilterNaming,
     providerThinking,
+    routingDecision: decision,
     sourceFormatOverride: request?.url
       ? detectFormatByEndpoint(new URL(request.url).pathname, body)
       : null,

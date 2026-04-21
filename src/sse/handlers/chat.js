@@ -6,6 +6,7 @@ import {
   clearAccountError,
   extractApiKey,
   isValidApiKey,
+  resolveActiveApiKeyRecord,
 } from "../services/auth.js";
 import { cacheClaudeHeaders } from "open-sse/utils/claudeHeaderCache.js";
 import { getSettings } from "@/lib/localDb";
@@ -24,6 +25,11 @@ import {
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { maybeHandleManagedCodexRequest } from "@/lib/dispatcher/executeCodexAttempt.js";
 import { beginShadowCodexAttempt } from "@/lib/dispatcher/shadowMode.js";
+import { computeCodexAdmissionDecisionFromSettings } from "@/lib/dispatcher/admissionPolicy.js";
+import {
+  getConversationAffinity,
+  resolveConversationKey,
+} from "@/lib/dispatcher/conversationAffinity.js";
 
 /**
  * Handle chat completion request
@@ -75,12 +81,19 @@ export async function handleChat(request, clientRawRequest = null) {
 
   // Enforce API key if enabled in settings
   const settings = await getSettings();
+  const activeApiKeyRecord = apiKey
+    ? await resolveActiveApiKeyRecord(apiKey)
+    : null;
+  if (apiKey && !activeApiKeyRecord) {
+    log.warn("AUTH", "Invalid or inactive API key supplied");
+    return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
+  }
   if (settings.requireApiKey) {
     if (!apiKey) {
       log.warn("AUTH", "Missing API key (requireApiKey=true)");
       return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
     }
-    const valid = await isValidApiKey(apiKey);
+    const valid = activeApiKeyRecord || (await isValidApiKey(apiKey));
     if (!valid) {
       log.warn("AUTH", "Invalid API key (requireApiKey=true)");
       return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
@@ -119,7 +132,14 @@ export async function handleChat(request, clientRawRequest = null) {
       body,
       models: comboModels,
       handleSingleModel: (b, m) =>
-        handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        handleSingleModelChat(
+          b,
+          m,
+          clientRawRequest,
+          request,
+          apiKey,
+          activeApiKeyRecord,
+        ),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -133,6 +153,7 @@ export async function handleChat(request, clientRawRequest = null) {
     clientRawRequest,
     request,
     apiKey,
+    activeApiKeyRecord,
   );
 }
 
@@ -145,6 +166,7 @@ async function handleSingleModelChat(
   clientRawRequest = null,
   request = null,
   apiKey = null,
+  activeApiKeyRecord = null,
 ) {
   const modelInfo = await getModelInfo(modelStr);
 
@@ -167,7 +189,14 @@ async function handleSingleModelChat(
         body,
         models: comboModels,
         handleSingleModel: (b, m) =>
-          handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+          handleSingleModelChat(
+            b,
+            m,
+            clientRawRequest,
+            request,
+            apiKey,
+            activeApiKeyRecord,
+          ),
         log,
         comboName: modelStr,
         comboStrategy,
@@ -192,6 +221,24 @@ async function handleSingleModelChat(
   const chatSettings = await getSettings();
   const providerThinking =
     (chatSettings.providerThinking || {})[provider] || null;
+  const existingAffinity =
+    provider === "codex"
+      ? getConversationAffinity(
+          resolveConversationKey({
+            body,
+            clientRawRequest,
+          }),
+          activeApiKeyRecord?.id || null,
+        )
+      : null;
+  const codexRoutingDecision =
+    provider === "codex"
+      ? computeCodexAdmissionDecisionFromSettings({
+          settings: chatSettings,
+          apiKeyRecord: activeApiKeyRecord,
+          hasManagedAffinity: existingAffinity?.state === "active",
+        })
+      : null;
   const managedCodexResponse = await maybeHandleManagedCodexRequest({
     body,
     provider,
@@ -200,6 +247,8 @@ async function handleSingleModelChat(
     request,
     clientRawRequest,
     apiKey,
+    apiKeyRecord: activeApiKeyRecord,
+    settings: chatSettings,
     providerThinking,
     ccFilterNaming: !!chatSettings.ccFilterNaming,
   });
@@ -283,9 +332,7 @@ async function handleSingleModelChat(
 
     // Use shared chatCore
     const shadowTracker =
-      provider === "codex" &&
-      chatSettings.dispatcherEnabled !== true &&
-      chatSettings.dispatcherShadowMode === true
+      provider === "codex" && codexRoutingDecision?.shadowTracked === true
         ? beginShadowCodexAttempt({
             provider: "codex",
             modelId: model,
@@ -297,6 +344,7 @@ async function handleSingleModelChat(
             targetFormat: "openai-responses",
             connectionId: credentials.connectionId,
             sessionId: credentials.connectionId,
+            apiKeyId: activeApiKeyRecord?.id || null,
           })
         : null;
     const result = await handleChatCore({
@@ -310,6 +358,7 @@ async function handleSingleModelChat(
       apiKey,
       ccFilterNaming: !!chatSettings.ccFilterNaming,
       providerThinking,
+      routingDecision: codexRoutingDecision,
       // Detect source format by endpoint + body
       sourceFormatOverride: request?.url
         ? detectFormatByEndpoint(new URL(request.url).pathname, body)

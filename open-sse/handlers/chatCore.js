@@ -61,6 +61,7 @@ export async function handleChatCore({
   sourceFormatOverride,
   providerThinking,
   dispatcherHooks = null,
+  routingDecision = null,
 }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
@@ -413,6 +414,7 @@ export async function handleChatCore({
     connectionId,
     apiKey,
     clientRawRequest,
+    routingDecision,
     onRequestSuccess,
   };
   const appendLog = (extra) =>

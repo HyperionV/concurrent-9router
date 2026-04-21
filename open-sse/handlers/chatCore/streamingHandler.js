@@ -123,6 +123,7 @@ export function handleStreamingResponse({
   apiKey,
   clientRawRequest,
   onRequestSuccess,
+  routingDecision = null,
   reqLogger,
   toolNameMap,
   streamController,
@@ -186,6 +187,7 @@ export function handleStreamingResponse({
         latency: { ttft: 0, total: Date.now() - requestStartTime },
         tokens: { prompt_tokens: 0, completion_tokens: 0 },
         request: extractRequestConfig(body, stream),
+        routing: routingDecision,
         providerRequest: finalBody || translatedBody || null,
         providerResponse: "[Streaming - raw response not captured]",
         response: {
@@ -224,6 +226,7 @@ export function buildOnStreamComplete({
   finalBody,
   translatedBody,
   clientRawRequest,
+  routingDecision = null,
 }) {
   const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
@@ -244,6 +247,7 @@ export function buildOnStreamComplete({
           latency,
           tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
           request: extractRequestConfig(body, stream),
+          routing: routingDecision,
           providerRequest: finalBody || translatedBody || null,
           providerResponse: safeContent,
           response: {

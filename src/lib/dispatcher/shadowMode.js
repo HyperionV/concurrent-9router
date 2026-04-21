@@ -20,6 +20,7 @@ export function beginShadowCodexAttempt({
   connectionId = null,
   pathMode = null,
   sessionId = null,
+  apiKeyId = null,
 } = {}) {
   const requestId = randomUUID();
   const attemptId = randomUUID();
@@ -40,6 +41,7 @@ export function beginShadowCodexAttempt({
     metadata: {
       executionMode: "shadow",
       routeModel,
+      apiKeyId,
     },
   });
 
@@ -164,17 +166,7 @@ export function beginShadowCodexAttempt({
             lastProgressAt: nowIso(),
           },
         ),
-      onResponseIdentity: async (responseId) => {
-        if (typeof responseId !== "string" || responseId.trim() === "")
-          return null;
-        return persistConversationAffinity({
-          conversationKey: responseId.trim(),
-          provider,
-          modelId,
-          connectionId,
-          sessionId: sessionId || connectionId,
-        });
-      },
+      onResponseIdentity: async () => null,
     },
     finalizeSuccess: async (terminalReason = "success") =>
       finalize("completed", terminalReason),
