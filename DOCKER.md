@@ -2,6 +2,8 @@
 
 This project ships with a `Dockerfile` for building and running 9Router in a container.
 
+The runtime is Node-based. Bun is not a supported production runtime for this branch because the app now uses `better-sqlite3` for SQLite persistence.
+
 ## Build image
 
 ```bash
@@ -28,19 +30,19 @@ The app listens on port `20128` in the container.
 -e DATA_DIR=/app/data
 ```
 
-`9router` stores its database at `path.join(DATA_DIR, "db.json")`.
-Without `DATA_DIR`, the app falls back to the current user's home directory (for example `~/.9router/db.json` on macOS/Linux). In the container, set `DATA_DIR=/app/data` so the bind mount is actually used.
+`9router` stores its runtime database at `path.join(DATA_DIR, "state.sqlite")`.
+Without `DATA_DIR`, the app falls back to the current user's home directory. In the container, set `DATA_DIR=/app/data` so the bind mount is actually used.
 
 With the example above, the database file is:
 
 ```text
-/app/data/db.json
+/app/data/state.sqlite
 ```
 
 and it is persisted on the host at:
 
 ```text
-$HOME/.9router/db.json
+$HOME/.9router/state.sqlite
 ```
 
 ## Stop container
@@ -91,3 +93,9 @@ docker build -t 9router .
 ```
 
 Then restart the container.
+
+## Runtime requirements
+
+- build and run the image with Node, not Bun
+- do not mount a host `node_modules` into the container
+- if `better-sqlite3` fails to load, rebuild the image instead of reusing dependencies built under another runtime
