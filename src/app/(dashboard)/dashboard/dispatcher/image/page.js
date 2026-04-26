@@ -232,15 +232,11 @@ export default function ImageDispatcherPage() {
             key: connection.connectionId,
             name: connection.connectionName,
             capacity: `${connection.occupiedSlots}/${connection.capacity}`,
-            available: connection.availableSlots,
-            path: connection.proxyPoolId || "Direct",
           }))}
           emptyLabel="No active Codex image accounts are available."
           columns={[
             { key: "name", label: "Account" },
-            { key: "capacity", label: "Image slot" },
-            { key: "available", label: "Available" },
-            { key: "path", label: "Effective path" },
+            { key: "capacity", label: "Slot" },
           ]}
         />
 

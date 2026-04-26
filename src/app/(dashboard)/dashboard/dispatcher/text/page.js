@@ -274,7 +274,6 @@ function ConnectionsTable({ connections }) {
     capacity: `${connection.occupiedSlots}/${connection.capacity}`,
     lastActivity: formatTimestamp(connection.lastAttemptAt),
     recentAttempts: connection.recentAttempts,
-    effectivePath: connection.proxyPoolId || "Direct",
     terminalReasons: Object.entries(
       connection.recentTerminalReasonCounts || {},
     ).map(([reason, count]) => `${reason}: ${count}`),
@@ -296,24 +295,12 @@ function ConnectionsTable({ connections }) {
               <span className="font-medium text-text-main">
                 {row.connectionName}
               </span>
-              <span className="text-xs text-text-muted">
-                {row.effectivePath}
-              </span>
             </div>
           ),
         },
         { key: "capacity", label: "Slots" },
         { key: "recentAttempts", label: "Recent activity" },
         { key: "lastActivity", label: "Last activity" },
-        {
-          key: "effectivePath",
-          label: "Effective path",
-          render: (row) => (
-            <Badge variant="default" size="sm">
-              {row.effectivePath}
-            </Badge>
-          ),
-        },
         {
           key: "terminalReasons",
           label: "Terminal reasons",
@@ -585,13 +572,6 @@ export default function DispatcherPage() {
         </Button>
       </div>
       <DispatcherOverview snapshot={snapshot} />
-      <Card
-        title="Coverage note"
-        subtitle={
-          snapshot.coverage?.summary || "Mixed-mode awareness unavailable."
-        }
-        icon="info"
-      />
       <DispatcherControlsCard
         snapshot={snapshot}
         onRefresh={() => fetchStatus({ silent: true })}
