@@ -7,7 +7,8 @@ import { buildTtsProviderModels } from "./ttsModels.js";
 
 export const PROVIDER_MODELS = {
   // OAuth Providers (using alias)
-  cc: [  // Claude Code
+  cc: [
+    // Claude Code
     { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
     { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
     { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
@@ -15,7 +16,8 @@ export const PROVIDER_MODELS = {
     { id: "claude-sonnet-4-5-20250929", name: "Claude 4.5 Sonnet" },
     { id: "claude-haiku-4-5-20251001", name: "Claude 4.5 Haiku" },
   ],
-  cx: [  // OpenAI Codex
+  cx: [
+    // OpenAI Codex
     { id: "gpt-5.4", name: "GPT 5.4" },
     // GPT 5.3 Codex - all thinking levels
     { id: "gpt-5.3-codex", name: "GPT 5.3 Codex" },
@@ -35,19 +37,61 @@ export const PROVIDER_MODELS = {
     { id: "gpt-5.1", name: "GPT 5.1" },
     { id: "gpt-5-codex", name: "GPT 5 Codex" },
     { id: "gpt-5-codex-mini", name: "GPT 5 Codex Mini" },
+    {
+      id: "gpt-5.4-image",
+      name: "GPT 5.4 Image",
+      type: "image",
+      capabilities: ["text2img", "edit"],
+      params: [
+        "size",
+        "quality",
+        "background",
+        "image_detail",
+        "output_format",
+      ],
+    },
+    {
+      id: "gpt-5.3-image",
+      name: "GPT 5.3 Image",
+      type: "image",
+      capabilities: ["text2img", "edit"],
+      params: [
+        "size",
+        "quality",
+        "background",
+        "image_detail",
+        "output_format",
+      ],
+    },
+    {
+      id: "gpt-5.2-image",
+      name: "GPT 5.2 Image",
+      type: "image",
+      capabilities: ["text2img", "edit"],
+      params: [
+        "size",
+        "quality",
+        "background",
+        "image_detail",
+        "output_format",
+      ],
+    },
   ],
-  gc: [  // Gemini CLI
+  gc: [
+    // Gemini CLI
     { id: "gemini-3-flash-preview", name: "Gemini 3 Flash Preview" },
     { id: "gemini-3-pro-preview", name: "Gemini 3 Pro Preview" },
   ],
-  qw: [  // Qwen Code
+  qw: [
+    // Qwen Code
     // { id: "qwen3-coder-next", name: "Qwen3 Coder Next" },
     { id: "qwen3-coder-plus", name: "Qwen3 Coder Plus" },
     { id: "qwen3-coder-flash", name: "Qwen3 Coder Flash" },
     { id: "vision-model", name: "Qwen3 Vision Model" },
     { id: "coder-model", name: "Qwen3.6 Coder Model" },
   ],
-  if: [  // iFlow AI
+  if: [
+    // iFlow AI
     { id: "qwen3-coder-plus", name: "Qwen3 Coder Plus" },
     { id: "qwen3-max", name: "Qwen3 Max" },
     { id: "qwen3-vl-plus", name: "Qwen3 VL Plus" },
@@ -64,7 +108,8 @@ export const PROVIDER_MODELS = {
     { id: "glm-4.7", name: "GLM 4.7" },
     { id: "iflow-rome-30ba3b", name: "iFlow ROME" },
   ],
-  ag: [  // Antigravity - special case: models call different backends
+  ag: [
+    // Antigravity - special case: models call different backends
     { id: "gemini-3.1-pro-high", name: "Gemini 3 Pro High" },
     { id: "gemini-3.1-pro-low", name: "Gemini 3 Pro Low" },
     { id: "gemini-3-flash", name: "Gemini 3 Flash", thinking: false }, // AG strips thinking for this model
@@ -72,7 +117,8 @@ export const PROVIDER_MODELS = {
     { id: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 Thinking" },
     { id: "gpt-oss-120b-medium", name: "GPT OSS 120B Medium" },
   ],
-  gh: [  // GitHub Copilot - OpenAI models
+  gh: [
+    // GitHub Copilot - OpenAI models
     { id: "gpt-3.5-turbo", name: "GPT-3.5 Turbo" },
     { id: "gpt-4", name: "GPT-4" },
     { id: "gpt-4o", name: "GPT-4o" },
@@ -105,19 +151,28 @@ export const PROVIDER_MODELS = {
     { id: "grok-code-fast-1", name: "Grok Code Fast 1" },
     { id: "oswe-vscode-prime", name: "Raptor Mini" },
   ],
-  kr: [  // Kiro AI
+  kr: [
+    // Kiro AI
     // { id: "claude-opus-4.5", name: "Claude Opus 4.5" },
     { id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5" },
     { id: "claude-haiku-4.5", name: "Claude Haiku 4.5" },
     { id: "deepseek-3.2", name: "DeepSeek 3.2", strip: ["image", "audio"] },
     { id: "deepseek-3.1", name: "DeepSeek 3.1", strip: ["image", "audio"] },
-    { id: "qwen3-coder-next", name: "Qwen3 Coder Next", strip: ["image", "audio"] },
+    {
+      id: "qwen3-coder-next",
+      name: "Qwen3 Coder Next",
+      strip: ["image", "audio"],
+    },
     { id: "glm-5", name: "GLM 5" },
     { id: "MiniMax-M2.5", name: "MiniMax M2.5" },
   ],
-  cu: [  // Cursor IDE
+  cu: [
+    // Cursor IDE
     { id: "default", name: "Auto (Server Picks)" },
-    { id: "claude-4.5-opus-high-thinking", name: "Claude 4.5 Opus High Thinking" },
+    {
+      id: "claude-4.5-opus-high-thinking",
+      name: "Claude 4.5 Opus High Thinking",
+    },
     { id: "claude-4.5-opus-high", name: "Claude 4.5 Opus High" },
     { id: "claude-4.5-sonnet-thinking", name: "Claude 4.5 Sonnet Thinking" },
     { id: "claude-4.5-sonnet", name: "Claude 4.5 Sonnet" },
@@ -125,18 +180,23 @@ export const PROVIDER_MODELS = {
     { id: "claude-4.5-opus", name: "Claude 4.5 Opus" },
     { id: "gpt-5.2-codex", name: "GPT 5.2 Codex" },
     { id: "claude-4.6-opus-max", name: "Claude 4.6 Opus Max" },
-    { id: "claude-4.6-sonnet-medium-thinking", name: "Claude 4.6 Sonnet Medium Thinking" },
+    {
+      id: "claude-4.6-sonnet-medium-thinking",
+      name: "Claude 4.6 Sonnet Medium Thinking",
+    },
     { id: "kimi-k2.5", name: "Kimi K2.5" },
     { id: "gemini-3-flash-preview", name: "Gemini 3 Flash Preview" },
     { id: "gpt-5.2", name: "GPT 5.2" },
     { id: "gpt-5.3-codex", name: "GPT 5.3 Codex" },
   ],
-  kmc: [  // Kimi Coding
+  kmc: [
+    // Kimi Coding
     { id: "kimi-k2.5", name: "Kimi K2.5" },
     { id: "kimi-k2.5-thinking", name: "Kimi K2.5 Thinking" },
     { id: "kimi-latest", name: "Kimi Latest" },
   ],
-  kc: [  // KiloCode
+  kc: [
+    // KiloCode
     { id: "anthropic/claude-sonnet-4-20250514", name: "Claude Sonnet 4" },
     { id: "anthropic/claude-opus-4-20250514", name: "Claude Opus 4" },
     { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
@@ -146,7 +206,8 @@ export const PROVIDER_MODELS = {
     { id: "deepseek/deepseek-chat", name: "DeepSeek Chat" },
     { id: "deepseek/deepseek-reasoner", name: "DeepSeek Reasoner" },
   ],
-  oc: [  // OpenCode
+  oc: [
+    // OpenCode
     // { id: "nemotron-3-super-free", name: "Nemotron 3 Super" },
     // { id: "qwen3.6-plus-free", name: "Qwen 3.6 Plus" },
     // { id: "big-pickle", name: "Big Pickle", targetFormat: "claude" },
@@ -154,14 +215,18 @@ export const PROVIDER_MODELS = {
     // { id: "trinity-large-preview-free", name: "Trinity Large Preview" },
   ],
 
-  cl: [  // Cline
+  cl: [
+    // Cline
     { id: "anthropic/claude-opus-4.7", name: "Claude Opus 4.7" },
     { id: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet 4.6" },
     { id: "anthropic/claude-opus-4.6", name: "Claude Opus 4.6" },
     { id: "openai/gpt-5.3-codex", name: "GPT-5.3 Codex" },
     { id: "openai/gpt-5.4", name: "GPT-5.4" },
     { id: "google/gemini-3.1-pro-preview", name: "Gemini 3.1 Pro Preview" },
-    { id: "google/gemini-3.1-flash-lite-preview", name: "Gemini 3.1 Flash Lite Preview" },
+    {
+      id: "google/gemini-3.1-flash-lite-preview",
+      name: "Gemini 3.1 Flash Lite Preview",
+    },
     { id: "kwaipilot/kat-coder-pro", name: "KAT Coder Pro" },
   ],
 
@@ -190,9 +255,21 @@ export const PROVIDER_MODELS = {
     { id: "o1", name: "O1" },
     { id: "o1-mini", name: "O1 Mini" },
     // Embedding models
-    { id: "text-embedding-3-large", name: "Text Embedding 3 Large", type: "embedding" },
-    { id: "text-embedding-3-small", name: "Text Embedding 3 Small", type: "embedding" },
-    { id: "text-embedding-ada-002", name: "Text Embedding Ada 002", type: "embedding" },
+    {
+      id: "text-embedding-3-large",
+      name: "Text Embedding 3 Large",
+      type: "embedding",
+    },
+    {
+      id: "text-embedding-3-small",
+      name: "Text Embedding 3 Small",
+      type: "embedding",
+    },
+    {
+      id: "text-embedding-ada-002",
+      name: "Text Embedding Ada 002",
+      type: "embedding",
+    },
     // TTS models
     { id: "tts-1", name: "TTS-1", type: "tts" },
     { id: "tts-1-hd", name: "TTS-1 HD", type: "tts" },
@@ -206,8 +283,14 @@ export const PROVIDER_MODELS = {
   gemini: [
     // Gemini 3.1 series
     { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro Preview" },
-    { id: "gemini-3.1-flash-lite-preview", name: "Gemini 3.1 Flash Lite Preview" },
-    { id: "gemini-3.1-flash-image-preview", name: "Gemini 3.1 Flash Image Preview" },
+    {
+      id: "gemini-3.1-flash-lite-preview",
+      name: "Gemini 3.1 Flash Lite Preview",
+    },
+    {
+      id: "gemini-3.1-flash-image-preview",
+      name: "Gemini 3.1 Flash Image Preview",
+    },
     // Gemini 3 series
     { id: "gemini-3-flash-preview", name: "Gemini 3 Flash Preview" },
     // Gemini 2.5 series
@@ -220,24 +303,64 @@ export const PROVIDER_MODELS = {
     { id: "gemma-4-31b-it", name: "Gemma 4 31B IT" },
 
     // Embedding models
-    { id: "gemini-embedding-2-preview", name: "Gemini Embedding 2 Preview", type: "embedding" },
-    { id: "gemini-embedding-001", name: "Gemini Embedding 001", type: "embedding" },
+    {
+      id: "gemini-embedding-2-preview",
+      name: "Gemini Embedding 2 Preview",
+      type: "embedding",
+    },
+    {
+      id: "gemini-embedding-001",
+      name: "Gemini Embedding 001",
+      type: "embedding",
+    },
     { id: "text-embedding-005", name: "Text Embedding 005", type: "embedding" },
-    { id: "text-embedding-004", name: "Text Embedding 004 (Legacy)", type: "embedding" },
+    {
+      id: "text-embedding-004",
+      name: "Text Embedding 004 (Legacy)",
+      type: "embedding",
+    },
   ],
   openrouter: [
     // Embedding models
-    { id: "openai/text-embedding-3-large", name: "OpenAI Text Embedding 3 Large", type: "embedding" },
-    { id: "openai/text-embedding-3-small", name: "OpenAI Text Embedding 3 Small", type: "embedding" },
-    { id: "openai/text-embedding-ada-002", name: "OpenAI Text Embedding Ada 002", type: "embedding" },
-    { id: "qwen/qwen3-embedding-8b", name: "Qwen3 Embedding 8B", type: "embedding" },
-    { id: "perplexity/pplx-embed-v1-4b", name: "Perplexity Embed V1 4B", type: "embedding" },
-    { id: "perplexity/pplx-embed-v1-0.6b", name: "Perplexity Embed V1 0.6B", type: "embedding" },
-    { id: "nvidia/llama-nemotron-embed-vl-1b-v2:free", name: "NVIDIA Nemotron Embed VL 1B V2 (Free)", type: "embedding" },
+    {
+      id: "openai/text-embedding-3-large",
+      name: "OpenAI Text Embedding 3 Large",
+      type: "embedding",
+    },
+    {
+      id: "openai/text-embedding-3-small",
+      name: "OpenAI Text Embedding 3 Small",
+      type: "embedding",
+    },
+    {
+      id: "openai/text-embedding-ada-002",
+      name: "OpenAI Text Embedding Ada 002",
+      type: "embedding",
+    },
+    {
+      id: "qwen/qwen3-embedding-8b",
+      name: "Qwen3 Embedding 8B",
+      type: "embedding",
+    },
+    {
+      id: "perplexity/pplx-embed-v1-4b",
+      name: "Perplexity Embed V1 4B",
+      type: "embedding",
+    },
+    {
+      id: "perplexity/pplx-embed-v1-0.6b",
+      name: "Perplexity Embed V1 0.6B",
+      type: "embedding",
+    },
+    {
+      id: "nvidia/llama-nemotron-embed-vl-1b-v2:free",
+      name: "NVIDIA Nemotron Embed VL 1B V2 (Free)",
+      type: "embedding",
+    },
     // TTS models
     { id: "openai/gpt-4o-mini-tts", name: "GPT-4o Mini TTS", type: "tts" },
-    { id: "openai/tts-1-hd",        name: "TTS-1 HD",        type: "tts" },
-    { id: "openai/tts-1",           name: "TTS-1",           type: "tts" },
+    { id: "openai/tts-1-hd", name: "TTS-1 HD", type: "tts" },
+    { id: "openai/tts-1", name: "TTS-1", type: "tts" },
   ],
   glm: [
     { id: "glm-5.1", name: "GLM 5.1" },
@@ -311,7 +434,10 @@ export const PROVIDER_MODELS = {
   ],
   groq: [
     { id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B" },
-    { id: "meta-llama/llama-4-maverick-17b-128e-instruct", name: "Llama 4 Maverick" },
+    {
+      id: "meta-llama/llama-4-maverick-17b-128e-instruct",
+      name: "Llama 4 Maverick",
+    },
     { id: "qwen/qwen3-32b", name: "Qwen3 32B" },
     { id: "openai/gpt-oss-120b", name: "GPT-OSS 120B" },
   ],
@@ -331,14 +457,23 @@ export const PROVIDER_MODELS = {
     { id: "sonar", name: "Sonar" },
   ],
   together: [
-    { id: "meta-llama/Llama-3.3-70B-Instruct-Turbo", name: "Llama 3.3 70B Turbo" },
+    {
+      id: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+      name: "Llama 3.3 70B Turbo",
+    },
     { id: "deepseek-ai/DeepSeek-R1", name: "DeepSeek R1" },
     { id: "Qwen/Qwen3-235B-A22B", name: "Qwen3 235B" },
-    { id: "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8", name: "Llama 4 Maverick" },
+    {
+      id: "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+      name: "Llama 4 Maverick",
+    },
   ],
   fireworks: [
     { id: "accounts/fireworks/models/deepseek-v3p1", name: "DeepSeek V3.1" },
-    { id: "accounts/fireworks/models/llama-v3p3-70b-instruct", name: "Llama 3.3 70B" },
+    {
+      id: "accounts/fireworks/models/llama-v3p3-70b-instruct",
+      name: "Llama 3.3 70B",
+    },
     { id: "accounts/fireworks/models/qwen3-235b-a22b", name: "Qwen3 235B" },
   ],
   cerebras: [
@@ -393,14 +528,23 @@ export const PROVIDER_MODELS = {
   ],
   vertex: [
     { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro Preview" },
-    { id: "gemini-3.1-flash-lite-preview", name: "Gemini 3.1 Flash Lite Preview" },
+    {
+      id: "gemini-3.1-flash-lite-preview",
+      name: "Gemini 3.1 Flash Lite Preview",
+    },
     { id: "gemini-3-flash-preview", name: "Gemini 3 Flash Preview" },
     { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
   ],
   "vertex-partner": [
     { id: "deepseek-ai/deepseek-v3.2-maas", name: "DeepSeek V3.2 (Vertex)" },
-    { id: "qwen/qwen3-next-80b-a3b-thinking-maas", name: "Qwen3 Next 80B Thinking (Vertex)" },
-    { id: "qwen/qwen3-next-80b-a3b-instruct-maas", name: "Qwen3 Next 80B Instruct (Vertex)" },
+    {
+      id: "qwen/qwen3-next-80b-a3b-thinking-maas",
+      name: "Qwen3 Next 80B Thinking (Vertex)",
+    },
+    {
+      id: "qwen/qwen3-next-80b-a3b-instruct-maas",
+      name: "Qwen3 Next 80B Instruct (Vertex)",
+    },
     { id: "zai-org/glm-5-maas", name: "GLM-5 (Vertex)" },
   ],
 
@@ -418,24 +562,28 @@ export function getDefaultModel(aliasOrId) {
   return models?.[0]?.id || null;
 }
 
-export function isValidModel(aliasOrId, modelId, passthroughProviders = new Set()) {
+export function isValidModel(
+  aliasOrId,
+  modelId,
+  passthroughProviders = new Set(),
+) {
   if (passthroughProviders.has(aliasOrId)) return true;
   const models = PROVIDER_MODELS[aliasOrId];
   if (!models) return false;
-  return models.some(m => m.id === modelId);
+  return models.some((m) => m.id === modelId);
 }
 
 export function findModelName(aliasOrId, modelId) {
   const models = PROVIDER_MODELS[aliasOrId];
   if (!models) return modelId;
-  const found = models.find(m => m.id === modelId);
+  const found = models.find((m) => m.id === modelId);
   return found?.name || modelId;
 }
 
 export function getModelTargetFormat(aliasOrId, modelId) {
   const models = PROVIDER_MODELS[aliasOrId];
   if (!models) return null;
-  const found = models.find(m => m.id === modelId);
+  const found = models.find((m) => m.id === modelId);
   return found?.targetFormat || null;
 }
 
@@ -460,7 +608,7 @@ const OAUTH_ALIASES = {
 
 // Derived from PROVIDERS — no need to maintain manually
 export const PROVIDER_ID_TO_ALIAS = Object.fromEntries(
-  Object.keys(PROVIDERS).map(id => [id, OAUTH_ALIASES[id] || id])
+  Object.keys(PROVIDERS).map((id) => [id, OAUTH_ALIASES[id] || id]),
 );
 
 export function getModelsByProviderId(providerId) {
@@ -471,6 +619,6 @@ export function getModelsByProviderId(providerId) {
 // Get strip list for a model entry (explicit opt-in only)
 // Returns array of content types to strip, e.g. ["image", "audio"]
 export function getModelStrip(alias, modelId) {
-  const entry = PROVIDER_MODELS[alias]?.find(m => m.id === modelId);
+  const entry = PROVIDER_MODELS[alias]?.find((m) => m.id === modelId);
   return entry?.strip || [];
 }

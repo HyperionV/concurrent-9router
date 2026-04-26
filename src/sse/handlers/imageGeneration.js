@@ -49,7 +49,10 @@ function buildCredentialsFromConnection(connection) {
 }
 
 function shouldMarkUnavailableForImageFailure(status, terminalReason) {
-  if (terminalReason === "client_disconnect" || terminalReason === "cancelled") {
+  if (
+    terminalReason === "client_disconnect" ||
+    terminalReason === "cancelled"
+  ) {
     return false;
   }
   return Number(status) >= 400;

@@ -143,7 +143,10 @@ export function createImageDispatcherCore({
   }
 
   async function tryLeaseRequest(requestId) {
-    const [connections] = await Promise.all([getConnections(), syncOccupancy()]);
+    const [connections] = await Promise.all([
+      getConnections(),
+      syncOccupancy(),
+    ]);
     const queuedRequests = sortRequestsByQueueTime(
       listQueuedImageDispatchRequests(provider, 500),
     );

@@ -37,6 +37,11 @@ export const OAUTH_PROVIDERS = {
     icon: "code",
     color: "#3B82F6",
     thinkingConfig: THINKING_CONFIG.effort,
+    serviceKinds: ["llm", "image"],
+    kindNotice: {
+      image:
+        "Requires a ChatGPT Plus (or higher) account. Free accounts are not supported for image generation.",
+    },
   },
 };
 
@@ -147,6 +152,15 @@ export function getProvidersByKind(kind) {
     return true;
   });
 }
+
+export const MEDIA_PROVIDER_KINDS = [
+  {
+    id: "image",
+    label: "Text to Image",
+    icon: "brush",
+    endpoint: { method: "POST", path: "/v1/images/generations" },
+  },
+];
 
 // Providers that support usage/quota API
 export const USAGE_SUPPORTED_PROVIDERS = [

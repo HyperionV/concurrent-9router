@@ -343,11 +343,9 @@ export async function handleImageGenerationCore({
   if (abortSignal) {
     if (abortSignal.aborted) upstreamController.abort();
     else {
-      abortSignal.addEventListener(
-        "abort",
-        () => upstreamController.abort(),
-        { once: true },
-      );
+      abortSignal.addEventListener("abort", () => upstreamController.abort(), {
+        once: true,
+      });
     }
   }
 
@@ -430,19 +428,15 @@ export async function handleImageGenerationCore({
       if (dispatcherHooks?.onStreamStart) await dispatcherHooks.onStreamStart();
       return {
         success: true,
-        response: buildCodexSseResponse(
-          providerResponse,
-          log,
-          {
-            onSuccess: async () => {
-              if (onRequestSuccess) await onRequestSuccess();
-              if (dispatcherHooks?.onSuccess) await dispatcherHooks.onSuccess();
-            },
-            onFailure: dispatcherHooks?.onFailure,
-            onProgress: dispatcherHooks?.onProgress,
-            upstreamController,
+        response: buildCodexSseResponse(providerResponse, log, {
+          onSuccess: async () => {
+            if (onRequestSuccess) await onRequestSuccess();
+            if (dispatcherHooks?.onSuccess) await dispatcherHooks.onSuccess();
           },
-        ),
+          onFailure: dispatcherHooks?.onFailure,
+          onProgress: dispatcherHooks?.onProgress,
+          upstreamController,
+        }),
       };
     }
 

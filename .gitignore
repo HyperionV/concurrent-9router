@@ -72,6 +72,10 @@ ecosystem.config.*
 scripts/proxy_results.json
 scripts/proxy_list.txt
 responses_probe.py
-tests/
+tests/*
+!tests/dispatcher/
+!tests/dispatcher/*.mjs
+!tests/image/
+!tests/image/*.mjs
 .claude
 setup-9router-vm.sh

@@ -193,18 +193,14 @@ export default function Sidebar({ onClose }) {
                   : "text-text-muted hover:bg-surface/50 hover:text-text-main",
               )}
             >
-              <span className="material-symbols-outlined text-[18px]">
-                hub
-              </span>
+              <span className="material-symbols-outlined text-[18px]">hub</span>
               <span className="text-sm font-medium flex-1 text-left">
                 Dispatcher
               </span>
               <span
                 className="material-symbols-outlined text-[14px] transition-transform"
                 style={{
-                  transform: dispatcherOpen
-                    ? "rotate(180deg)"
-                    : "rotate(0deg)",
+                  transform: dispatcherOpen ? "rotate(180deg)" : "rotate(0deg)",
                 }}
               >
                 expand_more
