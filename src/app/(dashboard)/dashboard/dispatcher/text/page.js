@@ -274,8 +274,7 @@ function ConnectionsTable({ connections }) {
     capacity: `${connection.occupiedSlots}/${connection.capacity}`,
     lastActivity: formatTimestamp(connection.lastAttemptAt),
     recentAttempts: connection.recentAttempts,
-    proxy: connection.strictProxy ? "Strict proxy" : "Flexible path",
-    proxyPoolId: connection.proxyPoolId || "No pool",
+    effectivePath: connection.proxyPoolId || "Direct",
     terminalReasons: Object.entries(
       connection.recentTerminalReasonCounts || {},
     ).map(([reason, count]) => `${reason}: ${count}`),
@@ -297,7 +296,9 @@ function ConnectionsTable({ connections }) {
               <span className="font-medium text-text-main">
                 {row.connectionName}
               </span>
-              <span className="text-xs text-text-muted">{row.proxyPoolId}</span>
+              <span className="text-xs text-text-muted">
+                {row.effectivePath}
+              </span>
             </div>
           ),
         },
@@ -305,14 +306,11 @@ function ConnectionsTable({ connections }) {
         { key: "recentAttempts", label: "Recent activity" },
         { key: "lastActivity", label: "Last activity" },
         {
-          key: "proxy",
-          label: "Path policy",
+          key: "effectivePath",
+          label: "Effective path",
           render: (row) => (
-            <Badge
-              variant={row.proxy === "Strict proxy" ? "success" : "default"}
-              size="sm"
-            >
-              {row.proxy}
+            <Badge variant="default" size="sm">
+              {row.effectivePath}
             </Badge>
           ),
         },

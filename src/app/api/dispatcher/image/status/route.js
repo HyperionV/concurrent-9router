@@ -63,7 +63,6 @@ export async function GET() {
           (snapshot.occupancyByConnection[connection.id] || 0) > 0 ? 0 : 1,
         proxyPoolId:
           connection.providerSpecificData?.connectionProxyPoolId || null,
-        strictProxy: connection.providerSpecificData?.strictProxy === true,
       })),
       inMemory: {
         occupancyByConnection: snapshot.occupancyByConnection,

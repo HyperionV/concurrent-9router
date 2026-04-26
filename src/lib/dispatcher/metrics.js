@@ -187,7 +187,6 @@ function summarizeConnections({
         availableSlots: Math.max(0, slotsPerConnection - occupiedSlots),
         proxyPoolId:
           connection.providerSpecificData?.connectionProxyPoolId || null,
-        strictProxy: connection.providerSpecificData?.strictProxy === true,
         recentAttempts: health.recentAttempts,
         recentTerminalReasonCounts: health.recentTerminalReasonCounts,
         lastAttemptAt: health.lastAttemptAt,

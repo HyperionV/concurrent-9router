@@ -1,7 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Badge, Button, Card, CardSkeleton, Spinner } from "@/shared/components";
+import {
+  Badge,
+  Button,
+  Card,
+  CardSkeleton,
+  Spinner,
+} from "@/shared/components";
 
 const REFRESH_INTERVAL_MS = 5000;
 
@@ -227,14 +233,14 @@ export default function ImageDispatcherPage() {
             name: connection.connectionName,
             capacity: `${connection.occupiedSlots}/${connection.capacity}`,
             available: connection.availableSlots,
-            proxy: connection.strictProxy ? "Strict proxy" : "Flexible path",
+            path: connection.proxyPoolId || "Direct",
           }))}
           emptyLabel="No active Codex image accounts are available."
           columns={[
             { key: "name", label: "Account" },
             { key: "capacity", label: "Image slot" },
             { key: "available", label: "Available" },
-            { key: "proxy", label: "Path policy" },
+            { key: "path", label: "Effective path" },
           ]}
         />
 
