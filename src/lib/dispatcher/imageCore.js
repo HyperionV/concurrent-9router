@@ -194,6 +194,18 @@ export function createImageDispatcherCore({
     };
   }
 
+  async function tryLeaseAvailableWork() {
+    const queuedRequests = sortRequestsByQueueTime(
+      listQueuedImageDispatchRequests(provider, 500),
+    );
+    const leases = [];
+    for (const request of queuedRequests) {
+      const lease = await tryLeaseRequest(request.id);
+      if (lease) leases.push(lease);
+    }
+    return leases;
+  }
+
   function releaseConnectionOccupancy(connectionId) {
     if (!connectionId) return;
     occupancyByConnection[connectionId] = Math.max(
@@ -353,12 +365,25 @@ export function createImageDispatcherCore({
     return attempt;
   }
 
-  function getStatusSnapshot() {
+  async function getStatusSnapshot({ connectionViews = null } = {}) {
+    const activeAttempts = await syncOccupancy();
+    const connections = connectionViews || (await getConnections());
     const queuedRequests = listQueuedImageDispatchRequests(provider, 500);
-    const activeAttempts = listActiveImageDispatchAttempts(provider);
+    const capacity = {
+      activeConnections: connections.length,
+      capacityPerConnection: 1,
+      totalCapacity: connections.length,
+      activeLeases: activeAttempts.length,
+      availableLeases: Math.max(0, connections.length - activeAttempts.length),
+    };
+    capacity.utilization =
+      capacity.totalCapacity > 0
+        ? capacity.activeLeases / capacity.totalCapacity
+        : 0;
+
     return {
       provider,
-      capacityPerConnection: 1,
+      capacity,
       queuedRequests,
       activeAttempts,
       occupancyByConnection: { ...occupancyByConnection },
@@ -373,6 +398,7 @@ export function createImageDispatcherCore({
 
   return {
     enqueueRequest,
+    tryLeaseAvailableWork,
     tryLeaseRequest,
     markAttemptConnecting,
     markAttemptStreamStarted,

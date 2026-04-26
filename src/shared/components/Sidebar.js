@@ -6,8 +6,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/shared/utils/cn";
 import { APP_CONFIG } from "@/shared/constants/config";
+import { MEDIA_PROVIDER_KINDS } from "@/shared/constants/providers";
 import Button from "./Button";
 import { ConfirmModal } from "./Modal";
+
+const VISIBLE_MEDIA_KINDS = ["image"];
 
 const navItems = [
   { href: "/dashboard/endpoint", label: "Endpoint", icon: "api" },
@@ -24,12 +27,13 @@ const debugItems = [
 ];
 
 const systemItems = [
-  { href: "/dashboard/dispatcher", label: "Dispatcher", icon: "hub" },
   { href: "/dashboard/proxy-pools", label: "Proxy Pools", icon: "lan" },
 ];
 
 export default function Sidebar({ onClose }) {
   const pathname = usePathname();
+  const [mediaOpen, setMediaOpen] = useState(false);
+  const [dispatcherOpen, setDispatcherOpen] = useState(false);
   const [showShutdownModal, setShowShutdownModal] = useState(false);
   const [isShuttingDown, setIsShuttingDown] = useState(false);
   const [isDisconnected, setIsDisconnected] = useState(false);
@@ -127,6 +131,119 @@ export default function Sidebar({ onClose }) {
             <p className="px-4 text-xs font-semibold text-text-muted/60 uppercase tracking-wider mb-2">
               System
             </p>
+
+            <button
+              onClick={() => setMediaOpen((value) => !value)}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-all group",
+                pathname.startsWith("/dashboard/media-providers")
+                  ? "bg-primary/10 text-primary"
+                  : "text-text-muted hover:bg-surface/50 hover:text-text-main",
+              )}
+            >
+              <span className="material-symbols-outlined text-[18px]">
+                perm_media
+              </span>
+              <span className="text-sm font-medium flex-1 text-left">
+                Media Providers
+              </span>
+              <span
+                className="material-symbols-outlined text-[14px] transition-transform"
+                style={{
+                  transform: mediaOpen ? "rotate(180deg)" : "rotate(0deg)",
+                }}
+              >
+                expand_more
+              </span>
+            </button>
+
+            {mediaOpen && (
+              <div className="pl-4">
+                {MEDIA_PROVIDER_KINDS.filter((kind) =>
+                  VISIBLE_MEDIA_KINDS.includes(kind.id),
+                ).map((kind) => (
+                  <Link
+                    key={kind.id}
+                    href={`/dashboard/media-providers/${kind.id}`}
+                    onClick={onClose}
+                    className={cn(
+                      "flex items-center gap-3 px-4 py-1.5 rounded-lg transition-all group",
+                      pathname.startsWith(
+                        `/dashboard/media-providers/${kind.id}`,
+                      )
+                        ? "bg-primary/10 text-primary"
+                        : "text-text-muted hover:bg-surface/50 hover:text-text-main",
+                    )}
+                  >
+                    <span className="material-symbols-outlined text-[16px]">
+                      {kind.icon}
+                    </span>
+                    <span className="text-sm">{kind.label}</span>
+                  </Link>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={() => setDispatcherOpen((value) => !value)}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-all group",
+                pathname.startsWith("/dashboard/dispatcher")
+                  ? "bg-primary/10 text-primary"
+                  : "text-text-muted hover:bg-surface/50 hover:text-text-main",
+              )}
+            >
+              <span className="material-symbols-outlined text-[18px]">
+                hub
+              </span>
+              <span className="text-sm font-medium flex-1 text-left">
+                Dispatcher
+              </span>
+              <span
+                className="material-symbols-outlined text-[14px] transition-transform"
+                style={{
+                  transform: dispatcherOpen
+                    ? "rotate(180deg)"
+                    : "rotate(0deg)",
+                }}
+              >
+                expand_more
+              </span>
+            </button>
+
+            {dispatcherOpen && (
+              <div className="pl-4">
+                {[
+                  {
+                    href: "/dashboard/dispatcher/text",
+                    label: "Text Dispatcher",
+                    icon: "chat",
+                  },
+                  {
+                    href: "/dashboard/dispatcher/image",
+                    label: "Image Dispatcher",
+                    icon: "image",
+                  },
+                ].map((item) => (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={onClose}
+                    className={cn(
+                      "flex items-center gap-3 px-4 py-1.5 rounded-lg transition-all group",
+                      pathname.startsWith(item.href)
+                        ? "bg-primary/10 text-primary"
+                        : "text-text-muted hover:bg-surface/50 hover:text-text-main",
+                    )}
+                  >
+                    <span className="material-symbols-outlined text-[16px]">
+                      {item.icon}
+                    </span>
+                    <span className="text-sm">{item.label}</span>
+                  </Link>
+                ))}
+              </div>
+            )}
 
             {systemItems.map((item) => (
               <Link
