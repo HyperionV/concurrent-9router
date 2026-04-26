@@ -384,6 +384,73 @@ function runMigrations(db) {
     CREATE INDEX IF NOT EXISTS dispatch_attempt_events_attempt_idx
       ON dispatch_attempt_events(attempt_id, at ASC);
 
+    CREATE TABLE IF NOT EXISTS image_dispatch_requests (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      source_endpoint TEXT,
+      source_format TEXT,
+      target_format TEXT,
+      conversation_key TEXT,
+      request_kind TEXT NOT NULL DEFAULT 'image',
+      status TEXT NOT NULL,
+      queued_at TEXT NOT NULL,
+      expires_at TEXT,
+      completed_at TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE INDEX IF NOT EXISTS image_dispatch_requests_status_idx
+      ON image_dispatch_requests(status, queued_at ASC);
+    CREATE INDEX IF NOT EXISTS image_dispatch_requests_connection_idx
+      ON image_dispatch_requests(json_extract(metadata_json, '$.preferredConnectionId'), queued_at ASC);
+    CREATE INDEX IF NOT EXISTS image_dispatch_requests_model_idx
+      ON image_dispatch_requests(model_id, queued_at DESC);
+
+    CREATE TABLE IF NOT EXISTS image_dispatch_attempts (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      attempt_index INTEGER NOT NULL,
+      provider TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      connection_id TEXT,
+      lease_key TEXT,
+      state TEXT NOT NULL,
+      path_mode TEXT,
+      queue_entered_at TEXT NOT NULL,
+      leased_at TEXT,
+      connect_started_at TEXT,
+      stream_started_at TEXT,
+      first_progress_at TEXT,
+      last_progress_at TEXT,
+      finished_at TEXT,
+      timeout_kind TEXT,
+      terminal_reason TEXT,
+      error_json TEXT NOT NULL DEFAULT '{}',
+      FOREIGN KEY (request_id) REFERENCES image_dispatch_requests(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS image_dispatch_attempts_state_idx
+      ON image_dispatch_attempts(state, queue_entered_at ASC);
+    CREATE INDEX IF NOT EXISTS image_dispatch_attempts_connection_state_idx
+      ON image_dispatch_attempts(connection_id, state);
+    CREATE INDEX IF NOT EXISTS image_dispatch_attempts_request_idx
+      ON image_dispatch_attempts(request_id, attempt_index ASC);
+    CREATE INDEX IF NOT EXISTS image_dispatch_attempts_model_idx
+      ON image_dispatch_attempts(model_id, queue_entered_at DESC);
+
+    CREATE TABLE IF NOT EXISTS image_dispatch_events (
+      id TEXT PRIMARY KEY,
+      attempt_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      at TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      FOREIGN KEY (attempt_id) REFERENCES image_dispatch_attempts(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS image_dispatch_events_attempt_idx
+      ON image_dispatch_events(attempt_id, at ASC);
+
     CREATE TABLE IF NOT EXISTS dispatch_conversation_affinity (
       conversation_key TEXT NOT NULL,
       api_key_scope TEXT NOT NULL DEFAULT '__no_key__',
