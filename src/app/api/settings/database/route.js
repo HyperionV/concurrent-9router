@@ -9,9 +9,20 @@ import {
   backupEnvelopeFromFile,
 } from "@/lib/sqlite/backup.js";
 import { restoreFromBackupPayload } from "@/lib/sqlite/restore.js";
+import {
+  createTypedExportPayload,
+  importTypedPayload,
+  normalizeExportType,
+} from "@/lib/sqlite/typedBackup.js";
 
-export async function GET() {
+export async function GET(request) {
   try {
+    const { searchParams } = new URL(request.url);
+    const type = normalizeExportType(searchParams.get("type") || "full");
+    if (type !== "full") {
+      return NextResponse.json(createTypedExportPayload(type));
+    }
+
     const tempDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "nine-router-export-"),
     );
@@ -31,8 +42,14 @@ export async function GET() {
 
 export async function POST(request) {
   try {
+    const { searchParams } = new URL(request.url);
+    const type = normalizeExportType(searchParams.get("type") || "full");
     const payload = await request.json();
-    await restoreFromBackupPayload(payload);
+    if (type === "full") {
+      await restoreFromBackupPayload(payload);
+    } else {
+      importTypedPayload(payload, type);
+    }
 
     // Ensure proxy settings take effect immediately after a DB import.
     try {

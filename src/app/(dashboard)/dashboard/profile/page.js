@@ -6,6 +6,27 @@ import { useTheme } from "@/shared/hooks/useTheme";
 import { cn } from "@/shared/utils/cn";
 import { APP_CONFIG } from "@/shared/constants/config";
 
+const EXPORT_TYPES = [
+  {
+    value: "full",
+    label: "Full backup",
+    description: "Everything in local SQLite, including credentials and settings.",
+    sensitive: true,
+  },
+  {
+    value: "accounts",
+    label: "Account list",
+    description: "Provider accounts and credentials only. Merges on import.",
+    sensitive: true,
+  },
+  {
+    value: "usage",
+    label: "Usage data",
+    description: "Usage events and request details. No account credentials.",
+    sensitive: false,
+  },
+];
+
 export default function ProfilePage() {
   const { theme, setTheme, isDark } = useTheme();
   const [settings, setSettings] = useState({ fallbackStrategy: "fill-first" });
@@ -19,6 +40,7 @@ export default function ProfilePage() {
   const [passLoading, setPassLoading] = useState(false);
   const [dbLoading, setDbLoading] = useState(false);
   const [dbStatus, setDbStatus] = useState({ type: "", message: "" });
+  const [exportType, setExportType] = useState("full");
   const importFileRef = useRef(null);
   const [proxyForm, setProxyForm] = useState({
     outboundProxyEnabled: false,
@@ -287,10 +309,11 @@ export default function ProfilePage() {
   };
 
   const handleExportDatabase = async () => {
+    const selectedType = exportType;
     setDbLoading(true);
     setDbStatus({ type: "", message: "" });
     try {
-      const res = await fetch("/api/settings/database");
+      const res = await fetch(`/api/settings/database?type=${selectedType}`);
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to export database");
@@ -303,13 +326,16 @@ export default function ProfilePage() {
       const anchor = document.createElement("a");
       const stamp = new Date().toISOString().replace(/[.:]/g, "-");
       anchor.href = url;
-      anchor.download = `9router-backup-v2-${stamp}.json`;
+      anchor.download =
+        selectedType === "full"
+          ? `9router-backup-v2-${stamp}.json`
+          : `9router-${selectedType}-export-${stamp}.json`;
       document.body.appendChild(anchor);
       anchor.click();
       document.body.removeChild(anchor);
       URL.revokeObjectURL(url);
 
-      setDbStatus({ type: "success", message: "SQLite backup downloaded" });
+      setDbStatus({ type: "success", message: "Export downloaded" });
     } catch (err) {
       setDbStatus({
         type: "error",
@@ -331,7 +357,7 @@ export default function ProfilePage() {
       const raw = await file.text();
       const payload = JSON.parse(raw);
 
-      const res = await fetch("/api/settings/database", {
+      const res = await fetch(`/api/settings/database?type=${exportType}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -342,8 +368,8 @@ export default function ProfilePage() {
         throw new Error(data.error || "Failed to import database");
       }
 
-      await reloadSettings();
-      setDbStatus({ type: "success", message: "Backup imported successfully" });
+      if (exportType === "full") await reloadSettings();
+      setDbStatus({ type: "success", message: "Import completed successfully" });
     } catch (err) {
       setDbStatus({
         type: "error",
@@ -410,6 +436,64 @@ export default function ProfilePage() {
                 </p>
               </div>
             </div>
+          </div>
+        </Card>
+
+        {/* Export & Backup */}
+        <Card>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-500">
+              <span className="material-symbols-outlined text-[20px]">
+                archive
+              </span>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold">Export & Backup</h3>
+              <p className="text-sm text-text-muted">
+                Download or import a full backup, accounts, or usage data.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              {EXPORT_TYPES.map((type) => (
+                <button
+                  key={type.value}
+                  type="button"
+                  onClick={() => setExportType(type.value)}
+                  className={cn(
+                    "text-left p-3 rounded-lg border transition-colors",
+                    exportType === type.value
+                      ? "border-primary bg-primary/5"
+                      : "border-border bg-bg hover:bg-black/[0.02] dark:hover:bg-white/[0.02]",
+                  )}
+                >
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="font-medium">{type.label}</span>
+                    {type.sensitive && (
+                      <span className="text-[10px] uppercase tracking-wide text-orange-500">
+                        Sensitive
+                      </span>
+                    )}
+                  </span>
+                  <span className="mt-1 block text-xs text-text-muted">
+                    {type.description}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            <div className="rounded-lg border border-border bg-bg p-3">
+              <p className="text-sm text-text-muted">
+                {exportType === "full"
+                  ? "Full import replaces the local SQLite database with the selected backup."
+                  : exportType === "accounts"
+                    ? "Account import merges provider accounts and includes credentials or OAuth tokens."
+                    : "Usage import appends usage events and upserts request detail records."}
+              </p>
+            </div>
+
             <div className="flex flex-wrap gap-2">
               <Button
                 variant="secondary"
@@ -417,7 +501,7 @@ export default function ProfilePage() {
                 onClick={handleExportDatabase}
                 loading={dbLoading}
               >
-                Download Backup
+                Export {EXPORT_TYPES.find((type) => type.value === exportType)?.label}
               </Button>
               <Button
                 variant="outline"
@@ -425,7 +509,7 @@ export default function ProfilePage() {
                 onClick={() => importFileRef.current?.click()}
                 disabled={dbLoading}
               >
-                Import Backup
+                Import {EXPORT_TYPES.find((type) => type.value === exportType)?.label}
               </Button>
               <input
                 ref={importFileRef}
@@ -435,6 +519,7 @@ export default function ProfilePage() {
                 onChange={handleImportDatabase}
               />
             </div>
+
             {dbStatus.message && (
               <p
                 className={`text-sm ${dbStatus.type === "error" ? "text-red-500" : "text-green-600 dark:text-green-400"}`}

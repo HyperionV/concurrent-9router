@@ -5,6 +5,7 @@ import ProviderIcon from "@/shared/components/ProviderIcon";
 import QuotaTable from "./QuotaTable";
 import Toggle from "@/shared/components/Toggle";
 import { parseQuotaData, calculatePercentage } from "./utils";
+import { getConnectionDisplayLabel } from "@/shared/utils/connectionDisplay";
 import Card from "@/shared/components/Card";
 import Button from "@/shared/components/Button";
 import { EditConnectionModal } from "@/shared/components";
@@ -461,6 +462,7 @@ export default function ProviderLimits() {
           const quota = quotaData[conn.id];
           const isLoading = loading[conn.id];
           const error = errors[conn.id];
+          const connectionLabel = getConnectionDisplayLabel(conn);
 
           // Use table layout for all providers
           const isInactive = conn.isActive === false;
@@ -490,9 +492,9 @@ export default function ProviderLimits() {
                       <h3 className="text-sm font-semibold text-text-primary capitalize truncate">
                         {conn.provider}
                       </h3>
-                      {conn.name && (
+                      {connectionLabel && (
                         <p className="text-xs text-text-muted truncate">
-                          {conn.name}
+                          {connectionLabel}
                         </p>
                       )}
                     </div>

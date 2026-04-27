@@ -21,6 +21,25 @@ function db() {
   return getSqlite();
 }
 
+const BASE64_BLOCK_SIZE = 4;
+
+function extractEmailFromJwt(token) {
+  try {
+    if (!token || typeof token !== "string") return null;
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const missingPadding =
+      (BASE64_BLOCK_SIZE - (base64.length % BASE64_BLOCK_SIZE)) %
+      BASE64_BLOCK_SIZE;
+    const padded = base64 + "=".repeat(missingPadding);
+    const payload = JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+    return payload.email || payload.preferred_username || payload.sub || null;
+  } catch {
+    return null;
+  }
+}
+
 function mapSettingsRow(row) {
   if (!row) {
     return withSettingsAliases(normalizeSettings(DEFAULT_SETTINGS));
@@ -411,6 +430,7 @@ function readConnectionCooldowns(connectionId) {
 function mapConnectionRow(row) {
   if (!row) return null;
   const extra = parseJson(row.extra_fields_json, {});
+  const email = row.email || extractEmailFromJwt(row.id_token);
   return {
     id: row.id,
     provider: row.provider,
@@ -421,7 +441,7 @@ function mapConnectionRow(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.display_name != null ? { displayName: row.display_name } : {}),
-    ...(row.email != null ? { email: row.email } : {}),
+    ...(email != null ? { email } : {}),
     ...(row.global_priority != null
       ? { globalPriority: row.global_priority }
       : {}),
@@ -506,6 +526,23 @@ export function listProviderConnections(filter = {}) {
   if (filter.isActive !== undefined)
     connections = connections.filter((row) => row.isActive === filter.isActive);
   return connections;
+}
+
+export function importProviderConnections(records = []) {
+  let imported = 0;
+  const tx = db().transaction(() => {
+    for (const record of records) {
+      if (!record?.id || !record?.provider) continue;
+      if (getProviderConnection(record.id)) {
+        updateProviderConnectionRecord(record.id, record);
+      } else {
+        createProviderConnectionRecord(record);
+      }
+      imported += 1;
+    }
+  });
+  tx();
+  return imported;
 }
 
 export function getProviderConnection(id) {
@@ -1107,6 +1144,19 @@ export function insertUsageEvent(entry) {
     });
 }
 
+export function importUsageEvents(entries = []) {
+  let imported = 0;
+  const tx = db().transaction(() => {
+    for (const entry of entries) {
+      if (!entry?.timestamp) continue;
+      insertUsageEvent(entry);
+      imported += 1;
+    }
+  });
+  tx();
+  return imported;
+}
+
 export function queryUsageEvents(whereSql = "", params = []) {
   const sql = `
     SELECT
@@ -1264,6 +1314,19 @@ export function listRequestDetails() {
       providerResponse: parseJson(row.provider_response_json, {}),
       response: parseJson(row.response_json, {}),
     }));
+}
+
+export function importRequestDetails(records = []) {
+  let imported = 0;
+  const tx = db().transaction(() => {
+    for (const record of records) {
+      if (!record?.id || !record?.timestamp) continue;
+      insertOrReplaceRequestDetail(record);
+      imported += 1;
+    }
+  });
+  tx();
+  return imported;
 }
 
 function mapRequestDetailRow(row) {
