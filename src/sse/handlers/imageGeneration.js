@@ -20,6 +20,7 @@ import * as log from "../utils/logger.js";
 
 const IMAGE_QUEUE_POLL_MS = 250;
 const IMAGE_QUEUE_TIMEOUT_MS = 10 * 60 * 1000;
+const IMAGE_EDIT_FILE_FIELDS = ["image", "image[]"];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -58,14 +59,60 @@ function shouldMarkUnavailableForImageFailure(status, terminalReason) {
   return Number(status) >= 400;
 }
 
-export async function handleImageGeneration(request) {
-  let body;
+async function fileToDataUrl(file) {
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const mimeType = file.type || "image/png";
+  return `data:${mimeType};base64,${buffer.toString("base64")}`;
+}
+
+async function parseImageEditBody(request) {
+  let form;
   try {
-    body = await request.json();
+    form = await request.formData();
   } catch {
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
+    return {
+      error: errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid multipart body"),
+    };
   }
 
+  const images = [];
+  for (const fieldName of IMAGE_EDIT_FILE_FIELDS) {
+    for (const value of form.getAll(fieldName)) {
+      if (value instanceof File && value.size > 0) {
+        images.push(await fileToDataUrl(value));
+      }
+    }
+  }
+
+  if (form.get("mask")) {
+    return {
+      error: errorResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        "Codex image edits do not support mask uploads yet",
+      ),
+    };
+  }
+
+  return {
+    body: {
+      model: String(form.get("model") || ""),
+      prompt: String(form.get("prompt") || ""),
+      images,
+      size: String(form.get("size") || ""),
+      quality: String(form.get("quality") || ""),
+      background: String(form.get("background") || ""),
+      output_format: String(form.get("output_format") || ""),
+      image_detail: String(form.get("image_detail") || ""),
+    },
+  };
+}
+
+async function runCodexImageRequest({
+  request,
+  body,
+  sourceEndpoint,
+  requireImages = false,
+}) {
   const url = new URL(request.url);
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
   const wantsStream = (request.headers.get("accept") || "").includes(
@@ -117,6 +164,12 @@ export async function handleImageGeneration(request) {
       "Missing required field: prompt",
     );
   }
+  if (requireImages && !body.images?.length) {
+    return errorResponse(
+      HTTP_STATUS.BAD_REQUEST,
+      "Missing required field: image",
+    );
+  }
 
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) {
@@ -135,6 +188,7 @@ export async function handleImageGeneration(request) {
   const queued = await dispatcher.enqueueRequest({
     provider,
     modelId: model,
+    sourceEndpoint,
     metadata: {
       preferredConnectionId,
       apiKeyId: activeApiKeyRecord?.id || null,
@@ -253,4 +307,31 @@ export async function handleImageGeneration(request) {
     terminalReason: "provider_error",
   });
   return result.response;
+}
+
+export async function handleImageGeneration(request) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
+  }
+
+  return runCodexImageRequest({
+    request,
+    body,
+    sourceEndpoint: "/v1/images/generations",
+  });
+}
+
+export async function handleImageEdit(request) {
+  const parsed = await parseImageEditBody(request);
+  if (parsed.error) return parsed.error;
+
+  return runCodexImageRequest({
+    request,
+    body: parsed.body,
+    sourceEndpoint: "/v1/images/edits",
+    requireImages: true,
+  });
 }

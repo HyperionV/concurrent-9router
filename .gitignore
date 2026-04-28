@@ -79,3 +79,5 @@ tests/*
 !tests/image/*.mjs
 .claude
 setup-9router-vm.sh
+
+scripts/ref_images/

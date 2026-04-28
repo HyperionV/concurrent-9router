@@ -184,6 +184,24 @@ const IMAGE_CONFIG = {
   ],
 };
 
+const IMAGE_ENDPOINTS = {
+  generations: {
+    label: "Generate",
+    method: "POST",
+    path: "/v1/images/generations",
+    bodyFormat: "json",
+    description:
+      "JSON prompt request with optional reference image URL/base64.",
+  },
+  edits: {
+    label: "Edit",
+    method: "POST",
+    path: "/v1/images/edits",
+    bodyFormat: "multipart",
+    description: "Multipart upload request for one or more reference images.",
+  },
+};
+
 function maskB64(obj) {
   if (!obj || typeof obj !== "object") return obj;
   if (Array.isArray(obj)) return obj.map(maskB64);
@@ -243,8 +261,10 @@ export default function CodexImageProviderPage() {
   const selectedModelObj = availableImageModels.find(
     (model) => model.id === selectedModel,
   );
+  const [endpointMode, setEndpointMode] = useState("generations");
   const [input, setInput] = useState(IMAGE_CONFIG.defaultInput);
   const [refImage, setRefImage] = useState("");
+  const [uploadedImages, setUploadedImages] = useState([]);
   const [extraValues, setExtraValues] = useState(() =>
     IMAGE_CONFIG.extraFields.reduce((acc, field) => {
       acc[field.key] = field.default;
@@ -374,28 +394,137 @@ export default function CodexImageProviderPage() {
     selectedModelObj,
   ]);
 
+  const selectedEndpoint = IMAGE_ENDPOINTS[endpointMode];
   const endpoint = useTunnel ? tunnelEndpoint : localEndpoint;
   const wantBinary = imageOutputFormat === "binary";
-  const useStreaming = !wantBinary;
-  const apiPathWithQuery = `${kindConfig.endpoint.path}${wantBinary ? "?response_format=binary" : ""}`;
+  const useStreaming = !wantBinary && endpointMode === "generations";
+  const apiPathWithQuery = `${selectedEndpoint.path}${wantBinary ? "?response_format=binary" : ""}`;
+  const canRun =
+    !running &&
+    Boolean(input.trim()) &&
+    Boolean(requestBody.model) &&
+    (endpointMode !== "edits" || uploadedImages.length > 0);
   const curlSnippet = useMemo(() => {
+    if (selectedEndpoint.bodyFormat === "multipart") {
+      const fileFlags = uploadedImages.length
+        ? uploadedImages
+            .map((file) => `  -F "image[]=@${file.name}"`)
+            .join(" \\\n")
+        : `  -F "image[]=@reference.png"`;
+      const fields = Object.entries(requestBody)
+        .filter(([key, value]) => {
+          if (key === "image" || key === "images") return false;
+          return value !== "" && value !== null && value !== undefined;
+        })
+        .map(([key, value]) => `  -F "${key}=${String(value)}"`)
+        .join(" \\\n");
+      return `curl -X ${selectedEndpoint.method} ${endpoint}${apiPathWithQuery} \\
+  -H "Authorization: Bearer ${apiKey || "YOUR_KEY"}"${pinnedConnectionId ? ` \\\n  -H "x-connection-id: ${pinnedConnectionId}"` : ""} \\
+${fields} \\
+${fileFlags}${wantBinary ? " \\\n  --output image.png" : ""}`;
+    }
+
     const headersPreview = `-H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${apiKey || "YOUR_KEY"}"${pinnedConnectionId ? ` \\\n  -H "x-connection-id: ${pinnedConnectionId}"` : ""}${useStreaming ? ` \\\n  -H "Accept: text/event-stream"` : ""}`;
-    return `curl -X ${kindConfig.endpoint.method} ${endpoint}${apiPathWithQuery} \\
+    return `curl -X ${selectedEndpoint.method} ${endpoint}${apiPathWithQuery} \\
   ${headersPreview.replace(/\\\n  /g, "\\\n  ")} \\
   -d '${JSON.stringify(requestBody)}'${wantBinary ? " \\\n  --output image.png" : ""}`;
   }, [
     apiKey,
     apiPathWithQuery,
     endpoint,
-    kindConfig.endpoint.method,
     pinnedConnectionId,
     requestBody,
+    selectedEndpoint.bodyFormat,
+    selectedEndpoint.method,
+    uploadedImages,
     useStreaming,
     wantBinary,
   ]);
 
+  const uploadedImageSummary = useMemo(
+    () =>
+      uploadedImages.map((file) => ({
+        name: file.name,
+        type: file.type || "application/octet-stream",
+        sizeKb: Math.max(1, Math.round(file.size / 1024)),
+      })),
+    [uploadedImages],
+  );
+
+  function handleUploadChange(event) {
+    setUploadedImages(Array.from(event.target.files || []));
+  }
+
+  function buildEditFormData() {
+    const formData = new FormData();
+    Object.entries(requestBody).forEach(([key, value]) => {
+      if (key === "image" || key === "images") return;
+      if (value === "" || value === null || value === undefined) return;
+      formData.append(key, String(value));
+    });
+    uploadedImages.forEach((file) => formData.append("image[]", file));
+    return formData;
+  }
+
+  function buildRequestInit() {
+    const headers = {};
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    if (pinnedConnectionId) headers["x-connection-id"] = pinnedConnectionId;
+
+    if (selectedEndpoint.bodyFormat === "multipart") {
+      return {
+        method: selectedEndpoint.method,
+        headers,
+        body: buildEditFormData(),
+      };
+    }
+
+    headers["Content-Type"] = "application/json";
+    if (useStreaming) headers.Accept = "text/event-stream";
+    return {
+      method: selectedEndpoint.method,
+      headers,
+      body: JSON.stringify(requestBody),
+    };
+  }
+
+  useEffect(() => {
+    if (endpointMode === "edits") setImageOutputFormat("json");
+  }, [endpointMode]);
+
+  const requestPreview = useMemo(() => {
+    if (selectedEndpoint.bodyFormat !== "multipart") return requestBody;
+    return {
+      ...Object.fromEntries(
+        Object.entries(requestBody).filter(([key, value]) => {
+          if (key === "image" || key === "images") return false;
+          return value !== "" && value !== null && value !== undefined;
+        }),
+      ),
+      image: uploadedImageSummary,
+    };
+  }, [requestBody, selectedEndpoint.bodyFormat, uploadedImageSummary]);
+
+  const requestPreviewJson = JSON.stringify(requestPreview, null, 2);
+
+  const runDisabledReason =
+    endpointMode === "edits" && uploadedImages.length === 0
+      ? "Upload at least one image for edits"
+      : "";
+
+  const runButtonTitle = runDisabledReason || undefined;
+  const endpointModeOptions = Object.entries(IMAGE_ENDPOINTS);
+  const uploadInputId = "codex-image-upload";
+  const outputFormatOptions =
+    endpointMode === "generations"
+      ? [
+          ["json", "JSON (Base64)"],
+          ["binary", "Binary File"],
+        ]
+      : [["json", "JSON (Base64)"]];
+
   async function handleRun() {
-    if (!input.trim() || !requestBody.model) return;
+    if (!canRun) return;
     setRunning(true);
     setError("");
     setResult(null);
@@ -410,15 +539,8 @@ export default function CodexImageProviderPage() {
 
     const start = Date.now();
     try {
-      const headers = { "Content-Type": "application/json" };
-      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-      if (pinnedConnectionId) headers["x-connection-id"] = pinnedConnectionId;
-      if (useStreaming) headers.Accept = "text/event-stream";
-
       const response = await fetch(`/api${apiPathWithQuery}`, {
-        method: kindConfig.endpoint.method,
-        headers,
-        body: JSON.stringify(requestBody),
+        ...buildRequestInit(),
       });
 
       if (!response.ok) {
@@ -573,23 +695,40 @@ export default function CodexImageProviderPage() {
           </Row>
 
           <Row label="Endpoint">
-            <div className="flex items-center gap-2">
-              <span className="flex-1 truncate rounded-lg bg-sidebar px-3 py-1.5 font-mono text-sm text-text-main">
-                {endpoint}
-                {kindConfig.endpoint.path}
-              </span>
-              {tunnelEndpoint && (
-                <button
-                  onClick={() => setUseTunnel((value) => !value)}
-                  title={useTunnel ? "Using tunnel" : "Using local"}
-                  className={`flex shrink-0 items-center gap-1 rounded-lg border px-2 py-1.5 text-xs transition-colors ${useTunnel ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-text-muted hover:text-primary"}`}
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <select
+                  aria-label="Image endpoint"
+                  value={endpointMode}
+                  onChange={(event) => setEndpointMode(event.target.value)}
+                  className="rounded-lg border border-border bg-background px-3 py-1.5 text-sm focus:border-primary focus:outline-none sm:w-44"
                 >
-                  <span className="material-symbols-outlined text-[14px]">
-                    wifi_tethering
-                  </span>
-                  Tunnel
-                </button>
-              )}
+                  {endpointModeOptions.map(([key, config]) => (
+                    <option key={key} value={key}>
+                      {config.label} ({config.path})
+                    </option>
+                  ))}
+                </select>
+                <span className="flex-1 truncate rounded-lg bg-sidebar px-3 py-1.5 font-mono text-sm text-text-main">
+                  {endpoint}
+                  {selectedEndpoint.path}
+                </span>
+                {tunnelEndpoint && (
+                  <button
+                    onClick={() => setUseTunnel((value) => !value)}
+                    title={useTunnel ? "Using tunnel" : "Using local"}
+                    className={`flex shrink-0 items-center gap-1 rounded-lg border px-2 py-1.5 text-xs transition-colors ${useTunnel ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-text-muted hover:text-primary"}`}
+                  >
+                    <span className="material-symbols-outlined text-[14px]">
+                      wifi_tethering
+                    </span>
+                    Tunnel
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-text-muted">
+                {selectedEndpoint.description}
+              </p>
             </div>
           </Row>
 
@@ -652,36 +791,96 @@ export default function CodexImageProviderPage() {
             </div>
           </Row>
 
-          <Row label="Ref Image (URL)">
-            <div className="flex flex-col gap-2">
-              <div className="relative">
-                <input
-                  value={refImage}
-                  onChange={(event) => setRefImage(event.target.value)}
-                  placeholder="https://example.com/source.png"
-                  className="w-full rounded-lg border border-border bg-background px-3 py-1.5 pr-7 text-sm focus:border-primary focus:outline-none"
-                />
-                {refImage && (
-                  <button
-                    type="button"
-                    onClick={() => setRefImage("")}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted transition-colors hover:text-primary"
-                  >
-                    <span className="material-symbols-outlined text-[14px]">
-                      close
-                    </span>
-                  </button>
+          {endpointMode === "generations" ? (
+            <Row label="Ref Image (URL)">
+              <div className="flex flex-col gap-2">
+                <div className="relative">
+                  <input
+                    value={refImage}
+                    onChange={(event) => setRefImage(event.target.value)}
+                    placeholder="https://example.com/source.png"
+                    className="w-full rounded-lg border border-border bg-background px-3 py-1.5 pr-7 text-sm focus:border-primary focus:outline-none"
+                  />
+                  {refImage && (
+                    <button
+                      type="button"
+                      onClick={() => setRefImage("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted transition-colors hover:text-primary"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">
+                        close
+                      </span>
+                    </button>
+                  )}
+                </div>
+                {refImage.trim() && (
+                  <img
+                    src={refImage.trim()}
+                    alt="Reference"
+                    className="max-h-40 rounded-lg border border-border bg-sidebar object-contain"
+                  />
                 )}
               </div>
-              {refImage.trim() && (
-                <img
-                  src={refImage.trim()}
-                  alt="Reference"
-                  className="max-h-40 rounded-lg border border-border bg-sidebar object-contain"
-                />
-              )}
-            </div>
-          </Row>
+            </Row>
+          ) : (
+            <Row label="Uploads">
+              <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border bg-sidebar/70 px-3 py-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    id={uploadInputId}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    multiple
+                    onChange={handleUploadChange}
+                    className="hidden"
+                  />
+                  <label
+                    htmlFor={uploadInputId}
+                    className="inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-text-main transition-colors hover:border-primary/40 hover:text-primary"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">
+                      upload_file
+                    </span>
+                    {uploadedImages.length ? "Replace Files" : "Choose Files"}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setUploadedImages([])}
+                    disabled={uploadedImages.length === 0}
+                    className="text-xs text-text-muted transition-colors hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Clear uploads
+                  </button>
+                  <span className="text-xs text-text-muted">
+                    {uploadedImages.length
+                      ? `${uploadedImages.length} file${uploadedImages.length === 1 ? "" : "s"} ready`
+                      : "PNG, JPEG, or WebP reference files"}
+                  </span>
+                </div>
+                {uploadedImageSummary.length > 0 && (
+                  <div className="flex flex-col gap-1">
+                    {uploadedImageSummary.map((file) => (
+                      <div
+                        key={`${file.name}-${file.sizeKb}`}
+                        className="flex items-center justify-between gap-3 rounded-md bg-background px-2 py-1.5 text-xs"
+                      >
+                        <span className="truncate text-text-main">
+                          {file.name}
+                        </span>
+                        <span className="shrink-0 text-text-muted">
+                          {file.type} · {file.sizeKb} KB
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-xs text-text-muted">
+                  Files are sent as <code>image[]</code> form parts to the edit
+                  endpoint. Mask uploads are intentionally unsupported.
+                </p>
+              </div>
+            </Row>
+          )}
 
           {IMAGE_CONFIG.extraFields
             .filter(
@@ -716,15 +915,21 @@ export default function CodexImageProviderPage() {
               onChange={(event) => setImageOutputFormat(event.target.value)}
               className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm focus:border-primary focus:outline-none"
             >
-              <option value="json">JSON (Base64)</option>
-              <option value="binary">Binary File</option>
+              {outputFormatOptions.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
             </select>
           </Row>
 
           <div className="mt-1">
             <div className="mb-1.5 flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wider text-text-muted">
-                Request
+                Request{" "}
+                <span className="font-normal normal-case text-text-muted">
+                  {selectedEndpoint.bodyFormat}
+                </span>
               </span>
               <div className="flex items-center gap-2">
                 <button
@@ -738,7 +943,8 @@ export default function CodexImageProviderPage() {
                 </button>
                 <button
                   onClick={handleRun}
-                  disabled={running || !input.trim() || !requestBody.model}
+                  disabled={!canRun}
+                  title={runButtonTitle}
                   className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <span
@@ -749,14 +955,26 @@ export default function CodexImageProviderPage() {
                         : undefined
                     }
                   >
-                    play_arrow
+                    {running ? "progress_activity" : "play_arrow"}
                   </span>
-                  {running ? "Running..." : "Run"}
+                  {running
+                    ? "Running..."
+                    : endpointMode === "edits"
+                      ? "Run Edit"
+                      : "Run"}
                 </button>
               </div>
             </div>
+            <p className="mb-1.5 text-xs text-text-muted">
+              {selectedEndpoint.bodyFormat === "multipart"
+                ? "Uploaded files are sent as form-data; contents are summarized below."
+                : "JSON request body sent to the generation endpoint."}
+            </p>
             <pre className="overflow-x-auto whitespace-pre rounded-lg bg-sidebar px-3 py-2.5 font-mono text-xs text-text-main">
               {curlSnippet}
+            </pre>
+            <pre className="mt-2 overflow-x-auto whitespace-pre rounded-lg bg-sidebar/70 px-3 py-2.5 font-mono text-xs text-text-muted">
+              {requestPreviewJson}
             </pre>
           </div>
 

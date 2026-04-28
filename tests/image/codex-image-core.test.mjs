@@ -201,3 +201,75 @@ test("image auth accepts active router API key before codex request", async () =
   closeSqlite();
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
+
+test("codex image edits accept multipart image uploads", async () => {
+  const tempDir = makeTempDataDir();
+  process.env.DATA_DIR = tempDir;
+
+  const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
+  closeSqlite();
+
+  const { createProviderConnectionRecord } =
+    await import("@/lib/sqlite/store.js");
+  createProviderConnectionRecord({
+    id: "conn-codex-edit",
+    provider: "codex",
+    name: "Codex Edit Test",
+    accessToken: "access-token",
+    isActive: true,
+    priority: 1,
+    providerSpecificData: { chatgptAccountId: "account-1" },
+  });
+
+  const fetchCalls = [];
+  globalThis.fetch = async (...args) => {
+    fetchCalls.push(args);
+    return new Response(makeCodexStream("ZWRpdGVk"), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  };
+
+  const form = new FormData();
+  form.set("model", "cx/gpt-5.4-image");
+  form.set("prompt", "turn these into a gift basket");
+  form.append(
+    "image[]",
+    new File([Buffer.from("image-one")], "body-lotion.png", {
+      type: "image/png",
+    }),
+  );
+  form.append(
+    "image[]",
+    new File([Buffer.from("image-two")], "soap.jpeg", {
+      type: "image/jpeg",
+    }),
+  );
+  form.set("output_format", "webp");
+  form.set("size", "1024x1024");
+
+  const request = new Request("http://localhost/v1/images/edits", {
+    method: "POST",
+    body: form,
+  });
+
+  const { handleImageEdit } = await import("@/sse/handlers/imageGeneration.js");
+  const response = await handleImageEdit(request);
+
+  assert.equal(response.status, 200);
+  const json = await response.json();
+  assert.equal(json.data[0].b64_json, "ZWRpdGVk");
+
+  const sent = JSON.parse(fetchCalls[0][1].body);
+  assert.equal(sent.model, "gpt-5.4");
+  assert.equal(sent.tools[0].output_format, "webp");
+  const imageBlocks = sent.input[0].content.filter(
+    (item) => item.type === "input_image",
+  );
+  assert.equal(imageBlocks.length, 2);
+  assert.match(imageBlocks[0].image_url, /^data:image\/png;base64,/);
+  assert.match(imageBlocks[1].image_url, /^data:image\/jpeg;base64,/);
+
+  closeSqlite();
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
