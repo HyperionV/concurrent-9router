@@ -17,6 +17,15 @@ function makeCodexStream(resultB64 = "aW1hZ2U=") {
   ].join("\n");
 }
 
+function makePartialOnlyCodexStream() {
+  return [
+    "event: response.image_generation_call.partial_image",
+    'data: {"partial_image_b64":"cGFydGlhbA==","partial_image_index":0}',
+    "",
+    "",
+  ].join("\n");
+}
+
 test.afterEach(() => {
   globalThis.fetch = originalFetch;
 });
@@ -384,4 +393,191 @@ test("codex image edits stay JSON when client does not request SSE", async () =>
 
   closeSqlite();
   fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test("codex image protocol builds request body from normalized edit inputs", async () => {
+  const { buildCodexImageRequest } =
+    await import("open-sse/handlers/codexImageProtocol.js");
+
+  const requestBody = buildCodexImageRequest("gpt-5.5-image", {
+    prompt: "compose a product shot",
+    images: ["iVBORw0KGgo=", "data:image/jpeg;base64,/9j/"],
+    image_detail: "original",
+    output_format: "webp",
+    size: "1536x1024",
+    quality: "high",
+    background: "transparent",
+  });
+
+  assert.equal(requestBody.model, "gpt-5.5");
+  assert.deepEqual(requestBody.tools, [
+    {
+      type: "image_generation",
+      output_format: "webp",
+      size: "1536x1024",
+      quality: "high",
+      background: "transparent",
+    },
+  ]);
+  const imageBlocks = requestBody.input[0].content.filter(
+    (item) => item.type === "input_image",
+  );
+  assert.equal(imageBlocks.length, 2);
+  assert.match(imageBlocks[0].image_url, /^data:image\/png;base64,/);
+  assert.equal(imageBlocks[0].detail, "original");
+  assert.equal(imageBlocks[1].image_url, "data:image/jpeg;base64,/9j/");
+});
+
+test("codex image protocol parses SSE into final base64 image", async () => {
+  const { parseCodexImageStream } =
+    await import("open-sse/handlers/codexImageProtocol.js");
+
+  const response = new Response(makeCodexStream("cHJvdG9jb2w="), {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+
+  const result = await parseCodexImageStream(response, null);
+  assert.equal(result, "cHJvdG9jb2w=");
+});
+
+test("codex image protocol builds headers from credentials", async () => {
+  const { buildCodexImageHeaders } =
+    await import("open-sse/handlers/codexImageProtocol.js");
+
+  const headers = buildCodexImageHeaders({
+    accessToken: "access-token",
+    providerSpecificData: { chatgptAccountId: "account-123" },
+  });
+
+  assert.equal(headers.authorization, "Bearer access-token");
+  assert.equal(headers["chatgpt-account-id"], "account-123");
+  assert.equal(headers.accept, "text/event-stream, application/json");
+  assert.equal(headers.originator, "codex_cli_rs");
+  assert.equal(headers.version, "0.129.0");
+  assert.ok(headers.session_id);
+  assert.ok(headers["x-client-request-id"]);
+});
+
+test("codex image core returns no-image failure when stream never yields final result", async () => {
+  globalThis.fetch = async () =>
+    new Response(makePartialOnlyCodexStream(), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+  const { handleImageGenerationCore } =
+    await import("open-sse/handlers/imageGenerationCore.js");
+
+  const result = await handleImageGenerationCore({
+    body: { prompt: "draw a router" },
+    modelInfo: { provider: "codex", model: "gpt-5.4-image" },
+    credentials: { accessToken: "access-token" },
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.status, 502);
+  assert.match(
+    result.error,
+    /Codex did not return an image\. Account may not be entitled/,
+  );
+});
+
+test("codex image core streams error event when no final image is produced", async () => {
+  globalThis.fetch = async () =>
+    new Response(makePartialOnlyCodexStream(), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+  const { handleImageGenerationCore } =
+    await import("open-sse/handlers/imageGenerationCore.js");
+
+  const result = await handleImageGenerationCore({
+    body: { prompt: "draw a router" },
+    modelInfo: { provider: "codex", model: "gpt-5.4-image" },
+    credentials: { accessToken: "access-token" },
+    streamToClient: true,
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(
+    result.response.headers.get("Content-Type"),
+    "text/event-stream",
+  );
+  const text = await result.response.text();
+  assert.match(text, /event: progress/);
+  assert.match(text, /event: partial_image/);
+  assert.match(text, /event: error/);
+  assert.doesNotMatch(text, /event: done/);
+});
+
+test("codex image edit parser normalizes multipart image uploads", async () => {
+  const { parseCodexImageEditBody } =
+    await import("@/sse/handlers/codexImageRequest.js");
+
+  const form = new FormData();
+  form.set("model", "cx/gpt-5.4-image");
+  form.set("prompt", "compose a catalog shot");
+  form.set("size", "1024x1024");
+  form.append(
+    "image[]",
+    new File([Buffer.from("image-one")], "body-lotion.png", {
+      type: "image/png",
+    }),
+  );
+  form.append(
+    "image[]",
+    new File([Buffer.from("image-two")], "soap.jpeg", {
+      type: "image/jpeg",
+    }),
+  );
+
+  const parsed = await parseCodexImageEditBody(
+    new Request("http://localhost/v1/images/edits", {
+      method: "POST",
+      body: form,
+    }),
+  );
+
+  assert.ok(!parsed.error);
+  assert.equal(parsed.body.model, "cx/gpt-5.4-image");
+  assert.equal(parsed.body.prompt, "compose a catalog shot");
+  assert.equal(parsed.body.size, "1024x1024");
+  assert.equal(parsed.body.images.length, 2);
+  assert.match(parsed.body.images[0], /^data:image\/png;base64,/);
+  assert.match(parsed.body.images[1], /^data:image\/jpeg;base64,/);
+});
+
+test("codex image edit parser rejects mask uploads", async () => {
+  const { parseCodexImageEditBody } =
+    await import("@/sse/handlers/codexImageRequest.js");
+
+  const form = new FormData();
+  form.set("model", "cx/gpt-5.4-image");
+  form.set("prompt", "compose a catalog shot");
+  form.append(
+    "image[]",
+    new File([Buffer.from("image-one")], "body-lotion.png", {
+      type: "image/png",
+    }),
+  );
+  form.append(
+    "mask",
+    new File([Buffer.from("mask-one")], "mask.png", {
+      type: "image/png",
+    }),
+  );
+
+  const parsed = await parseCodexImageEditBody(
+    new Request("http://localhost/v1/images/edits", {
+      method: "POST",
+      body: form,
+    }),
+  );
+
+  assert.ok(parsed.error);
+  assert.equal(parsed.error.status, 400);
+  const errorJson = await parsed.error.json();
+  assert.match(errorJson.error.message, /do not support mask uploads yet/);
 });

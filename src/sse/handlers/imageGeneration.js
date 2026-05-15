@@ -17,10 +17,10 @@ import {
 } from "../services/tokenRefresh.js";
 import { DISPATCH_ATTEMPT_STATE } from "@/lib/dispatcher/types.js";
 import * as log from "../utils/logger.js";
+import { parseCodexImageEditBody } from "./codexImageRequest.js";
 
 const IMAGE_QUEUE_POLL_MS = 250;
 const IMAGE_QUEUE_TIMEOUT_MS = 10 * 60 * 1000;
-const IMAGE_EDIT_FILE_FIELDS = ["image", "image[]"];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -57,54 +57,6 @@ function shouldMarkUnavailableForImageFailure(status, terminalReason) {
     return false;
   }
   return Number(status) >= 400;
-}
-
-async function fileToDataUrl(file) {
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const mimeType = file.type || "image/png";
-  return `data:${mimeType};base64,${buffer.toString("base64")}`;
-}
-
-async function parseImageEditBody(request) {
-  let form;
-  try {
-    form = await request.formData();
-  } catch {
-    return {
-      error: errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid multipart body"),
-    };
-  }
-
-  const images = [];
-  for (const fieldName of IMAGE_EDIT_FILE_FIELDS) {
-    for (const value of form.getAll(fieldName)) {
-      if (value instanceof File && value.size > 0) {
-        images.push(await fileToDataUrl(value));
-      }
-    }
-  }
-
-  if (form.get("mask")) {
-    return {
-      error: errorResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        "Codex image edits do not support mask uploads yet",
-      ),
-    };
-  }
-
-  return {
-    body: {
-      model: String(form.get("model") || ""),
-      prompt: String(form.get("prompt") || ""),
-      images,
-      size: String(form.get("size") || ""),
-      quality: String(form.get("quality") || ""),
-      background: String(form.get("background") || ""),
-      output_format: String(form.get("output_format") || ""),
-      image_detail: String(form.get("image_detail") || ""),
-    },
-  };
 }
 
 async function runCodexImageRequest({
@@ -325,7 +277,7 @@ export async function handleImageGeneration(request) {
 }
 
 export async function handleImageEdit(request) {
-  const parsed = await parseImageEditBody(request);
+  const parsed = await parseCodexImageEditBody(request);
   if (parsed.error) return parsed.error;
 
   return runCodexImageRequest({
