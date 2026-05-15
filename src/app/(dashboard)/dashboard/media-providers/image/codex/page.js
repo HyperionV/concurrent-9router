@@ -134,6 +134,18 @@ function AddImageModelModal({ isOpen, onClose, onSave }) {
   );
 }
 
+const CUSTOM_SIZE_OPTION = "__custom__";
+const SIZE_VALUE_PATTERN = /^\d+x\d+$/i;
+const SIZE_OPTIONS = [
+  { value: "auto", label: "Auto" },
+  { value: "1024x1024", label: "1:1 (1024 x 1024)" },
+  { value: "1024x1536", label: "2:3 (1024 x 1536)" },
+  { value: "1536x1024", label: "3:2 (1536 x 1024)" },
+  { value: "1024x1792", label: "4:7 (1024 x 1792)" },
+  { value: "1792x1024", label: "7:4 (1792 x 1024)" },
+  { value: "2048x1536", label: "5:4 (2048 x 1536)" },
+];
+
 const IMAGE_CONFIG = {
   inputLabel: "Prompt",
   inputPlaceholder: "A cute cat wearing a hat",
@@ -285,8 +297,14 @@ export default function CodexImageProviderPage() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
   const [showAddModel, setShowAddModel] = useState(false);
+  const [customSizeDraft, setCustomSizeDraft] = useState("");
+  const [sizeInputMode, setSizeInputMode] = useState("preset");
   const { copied: copiedCurl, copy: copyCurl } = useCopyToClipboard();
   const { copied: copiedRes, copy: copyRes } = useCopyToClipboard();
+  const sizePresetValues = useMemo(
+    () => new Set(SIZE_OPTIONS.map((option) => option.value)),
+    [],
+  );
 
   const fetchAliases = useCallback(async () => {
     try {
@@ -339,6 +357,37 @@ export default function CodexImageProviderPage() {
       setSelectedModel(availableImageModels[0]?.id ?? "");
     }
   }, [availableImageModels, selectedModel]);
+
+  const sizeValue = extraValues.size ?? "";
+  const isCustomSize = Boolean(sizeValue) && !sizePresetValues.has(sizeValue);
+  const sizeSelectValue =
+    sizeInputMode === "custom" ? CUSTOM_SIZE_OPTION : sizeValue;
+  const customSizeMessage =
+    sizeSelectValue !== CUSTOM_SIZE_OPTION
+      ? ""
+      : !customSizeDraft.trim()
+        ? "Enter a custom size like 2048x1536."
+        : !SIZE_VALUE_PATTERN.test(customSizeDraft.trim())
+          ? "Expected WIDTHxHEIGHT, for example 2048x1536."
+          : "Custom value will be sent exactly as entered.";
+
+  useEffect(() => {
+    if (isCustomSize && customSizeDraft !== sizeValue) {
+      setCustomSizeDraft(sizeValue);
+    }
+  }, [customSizeDraft, isCustomSize, sizeValue]);
+
+  useEffect(() => {
+    if (isCustomSize && sizeInputMode !== "custom") {
+      setSizeInputMode("custom");
+    } else if (
+      !isCustomSize &&
+      sizeInputMode !== "preset" &&
+      sizeValue !== ""
+    ) {
+      setSizeInputMode("preset");
+    }
+  }, [isCustomSize, sizeInputMode, sizeValue]);
 
   async function handleAddCustomModel(modelId) {
     const fullModel = `${providerAlias}/${modelId}`;
@@ -406,6 +455,10 @@ export default function CodexImageProviderPage() {
     (endpointMode !== "edits" || uploadedImages.length > 0);
   const curlSnippet = useMemo(() => {
     if (selectedEndpoint.bodyFormat === "multipart") {
+      const multipartAcceptHeader =
+        imageOutputFormat === "json"
+          ? ` \\\n  -H "Accept: text/event-stream"`
+          : "";
       const fileFlags = uploadedImages.length
         ? uploadedImages
             .map((file) => `  -F "image[]=@${file.name}"`)
@@ -419,7 +472,7 @@ export default function CodexImageProviderPage() {
         .map(([key, value]) => `  -F "${key}=${String(value)}"`)
         .join(" \\\n");
       return `curl -X ${selectedEndpoint.method} ${endpoint}${apiPathWithQuery} \\
-  -H "Authorization: Bearer ${apiKey || "YOUR_KEY"}"${pinnedConnectionId ? ` \\\n  -H "x-connection-id: ${pinnedConnectionId}"` : ""} \\
+  -H "Authorization: Bearer ${apiKey || "YOUR_KEY"}"${pinnedConnectionId ? ` \\\n  -H "x-connection-id: ${pinnedConnectionId}"` : ""}${multipartAcceptHeader} \\
 ${fields} \\
 ${fileFlags}${wantBinary ? " \\\n  --output image.png" : ""}`;
     }
@@ -437,6 +490,7 @@ ${fileFlags}${wantBinary ? " \\\n  --output image.png" : ""}`;
     selectedEndpoint.bodyFormat,
     selectedEndpoint.method,
     uploadedImages,
+    imageOutputFormat,
     useStreaming,
     wantBinary,
   ]);
@@ -472,6 +526,9 @@ ${fileFlags}${wantBinary ? " \\\n  --output image.png" : ""}`;
     if (pinnedConnectionId) headers["x-connection-id"] = pinnedConnectionId;
 
     if (selectedEndpoint.bodyFormat === "multipart") {
+      if (imageOutputFormat === "json") {
+        headers.Accept = "text/event-stream";
+      }
       return {
         method: selectedEndpoint.method,
         headers,
@@ -888,26 +945,89 @@ ${fileFlags}${wantBinary ? " \\\n  --output image.png" : ""}`;
                 Array.isArray(selectedModelObj?.params) &&
                 selectedModelObj.params.includes(field.key),
             )
-            .map((field) => (
-              <Row key={field.key} label={field.label}>
-                <select
-                  value={extraValues[field.key] ?? ""}
-                  onChange={(event) =>
-                    setExtraValues((state) => ({
-                      ...state,
-                      [field.key]: event.target.value,
-                    }))
-                  }
-                  className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm focus:border-primary focus:outline-none"
-                >
-                  {field.options.map((option) => (
-                    <option key={option} value={option}>
-                      {option === "" ? "(default)" : option}
-                    </option>
-                  ))}
-                </select>
-              </Row>
-            ))}
+            .map((field) => {
+              if (field.key === "size") {
+                return (
+                  <Row key={field.key} label={field.label}>
+                    <div className="flex flex-col gap-2">
+                      <select
+                        value={sizeSelectValue}
+                        onChange={(event) => {
+                          const nextValue = event.target.value;
+                          if (nextValue === CUSTOM_SIZE_OPTION) {
+                            setSizeInputMode("custom");
+                            const draft = isCustomSize
+                              ? sizeValue
+                              : customSizeDraft.trim();
+                            setCustomSizeDraft(draft);
+                            setExtraValues((state) => ({
+                              ...state,
+                              size: draft,
+                            }));
+                            return;
+                          }
+                          setSizeInputMode("preset");
+                          setExtraValues((state) => ({
+                            ...state,
+                            size: nextValue,
+                          }));
+                        }}
+                        className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm focus:border-primary focus:outline-none"
+                      >
+                        {SIZE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                        <option value={CUSTOM_SIZE_OPTION}>Custom...</option>
+                      </select>
+                      {sizeSelectValue === CUSTOM_SIZE_OPTION && (
+                        <div className="flex flex-col gap-1">
+                          <input
+                            type="text"
+                            value={customSizeDraft}
+                            onChange={(event) => {
+                              const nextValue = event.target.value;
+                              setCustomSizeDraft(nextValue);
+                              setExtraValues((state) => ({
+                                ...state,
+                                size: nextValue,
+                              }));
+                            }}
+                            placeholder="2048x1536"
+                            className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm focus:border-primary focus:outline-none"
+                          />
+                          <p className="text-xs text-text-muted">
+                            {customSizeMessage}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </Row>
+                );
+              }
+
+              return (
+                <Row key={field.key} label={field.label}>
+                  <select
+                    value={extraValues[field.key] ?? ""}
+                    onChange={(event) =>
+                      setExtraValues((state) => ({
+                        ...state,
+                        [field.key]: event.target.value,
+                      }))
+                    }
+                    className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm focus:border-primary focus:outline-none"
+                  >
+                    {field.options.map((option) => (
+                      <option key={option} value={option}>
+                        {option === "" ? "(default)" : option}
+                      </option>
+                    ))}
+                  </select>
+                </Row>
+              );
+            })}
 
           <Row label="Output Format">
             <select
@@ -978,24 +1098,27 @@ ${fileFlags}${wantBinary ? " \\\n  --output image.png" : ""}`;
             </pre>
           </div>
 
-          {(running || progress) && useStreaming && (
-            <div className="flex items-center gap-3 rounded-lg border border-border bg-sidebar px-3 py-2">
-              <span
-                className="material-symbols-outlined text-[16px] text-primary"
-                style={
-                  running ? { animation: "spin 1s linear infinite" } : undefined
-                }
-              >
-                {running ? "progress_activity" : "check_circle"}
-              </span>
-              <span className="text-xs text-text-muted">
-                {progress?.stage || "starting"}
-                {!running && progress?.bytesReceived
-                  ? ` · ${(progress.bytesReceived / 1024).toFixed(1)} KB`
-                  : ""}
-              </span>
-            </div>
-          )}
+          {(running || progress) &&
+            (useStreaming || endpointMode === "edits") && (
+              <div className="flex items-center gap-3 rounded-lg border border-border bg-sidebar px-3 py-2">
+                <span
+                  className="material-symbols-outlined text-[16px] text-primary"
+                  style={
+                    running
+                      ? { animation: "spin 1s linear infinite" }
+                      : undefined
+                  }
+                >
+                  {running ? "progress_activity" : "check_circle"}
+                </span>
+                <span className="text-xs text-text-muted">
+                  {progress?.stage || "starting"}
+                  {!running && progress?.bytesReceived
+                    ? ` · ${(progress.bytesReceived / 1024).toFixed(1)} KB`
+                    : ""}
+                </span>
+              </div>
+            )}
 
           {partialImage?.b64_json && !result && (
             <div>

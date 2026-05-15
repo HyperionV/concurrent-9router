@@ -38,6 +38,19 @@ export const PROVIDER_MODELS = {
     { id: "gpt-5-codex", name: "GPT 5 Codex" },
     { id: "gpt-5-codex-mini", name: "GPT 5 Codex Mini" },
     {
+      id: "gpt-5.5-image",
+      name: "GPT 5.5 Image",
+      type: "image",
+      capabilities: ["text2img", "edit"],
+      params: [
+        "size",
+        "quality",
+        "background",
+        "image_detail",
+        "output_format",
+      ],
+    },
+    {
       id: "gpt-5.4-image",
       name: "GPT 5.4 Image",
       type: "image",

@@ -273,3 +273,115 @@ test("codex image edits accept multipart image uploads", async () => {
   closeSqlite();
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
+
+test("codex image edits stream SSE when client requests text/event-stream", async () => {
+  const tempDir = makeTempDataDir();
+  process.env.DATA_DIR = tempDir;
+
+  const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
+  closeSqlite();
+
+  const { createProviderConnectionRecord } =
+    await import("@/lib/sqlite/store.js");
+  createProviderConnectionRecord({
+    id: "conn-codex-edit-stream",
+    provider: "codex",
+    name: "Codex Edit Stream Test",
+    accessToken: "access-token",
+    isActive: true,
+    priority: 1,
+    providerSpecificData: { chatgptAccountId: "account-1" },
+  });
+
+  globalThis.fetch = async () =>
+    new Response(makeCodexStream("c3RyZWFtZWQ="), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+  const form = new FormData();
+  form.set("model", "cx/gpt-5.4-image");
+  form.set("prompt", "turn these into a gift basket");
+  form.append(
+    "image[]",
+    new File([Buffer.from("image-one")], "body-lotion.png", {
+      type: "image/png",
+    }),
+  );
+
+  const request = new Request("http://localhost/v1/images/edits", {
+    method: "POST",
+    headers: { Accept: "text/event-stream" },
+    body: form,
+  });
+
+  const { handleImageEdit } = await import("@/sse/handlers/imageGeneration.js");
+  const response = await handleImageEdit(request);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Content-Type"), "text/event-stream");
+
+  const text = await response.text();
+  assert.match(text, /event: progress/);
+  assert.match(text, /event: partial_image/);
+  assert.match(text, /event: done/);
+  const doneMatch = text.match(/event: done\s+data: (.+)/);
+  assert.ok(doneMatch, "expected done event payload");
+  const donePayload = JSON.parse(doneMatch[1]);
+  assert.equal(donePayload.data[0].b64_json, "c3RyZWFtZWQ=");
+
+  closeSqlite();
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test("codex image edits stay JSON when client does not request SSE", async () => {
+  const tempDir = makeTempDataDir();
+  process.env.DATA_DIR = tempDir;
+
+  const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
+  closeSqlite();
+
+  const { createProviderConnectionRecord } =
+    await import("@/lib/sqlite/store.js");
+  createProviderConnectionRecord({
+    id: "conn-codex-edit-json",
+    provider: "codex",
+    name: "Codex Edit JSON Test",
+    accessToken: "access-token",
+    isActive: true,
+    priority: 1,
+    providerSpecificData: { chatgptAccountId: "account-1" },
+  });
+
+  globalThis.fetch = async () =>
+    new Response(makeCodexStream("anNvbg=="), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+  const form = new FormData();
+  form.set("model", "cx/gpt-5.4-image");
+  form.set("prompt", "turn these into a gift basket");
+  form.append(
+    "image[]",
+    new File([Buffer.from("image-one")], "body-lotion.png", {
+      type: "image/png",
+    }),
+  );
+
+  const request = new Request("http://localhost/v1/images/edits", {
+    method: "POST",
+    body: form,
+  });
+
+  const { handleImageEdit } = await import("@/sse/handlers/imageGeneration.js");
+  const response = await handleImageEdit(request);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Content-Type"), "application/json");
+  const json = await response.json();
+  assert.equal(json.data[0].b64_json, "anNvbg==");
+
+  closeSqlite();
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
