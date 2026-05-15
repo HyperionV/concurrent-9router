@@ -1,5 +1,6 @@
 import { getSqlite } from "@/lib/sqlite/runtime.js";
 import {
+  createConnectionCollectionRecord,
   createProviderConnectionRecord,
   createProviderNodeRecord,
   createProxyPoolRecord,
@@ -8,6 +9,7 @@ import {
   resetAllPricingOverrides,
   setMitmAliases,
   setModelAliasRecord,
+  setConnectionCollectionsForConnection,
   upsertPricingOverrides,
   writeSettings,
 } from "@/lib/sqlite/store.js";
@@ -15,6 +17,8 @@ import {
 function clearAllTables(db) {
   db.exec(`
     DELETE FROM connection_model_cooldowns;
+    DELETE FROM connection_collection_memberships;
+    DELETE FROM connection_collections;
     DELETE FROM provider_connections;
     DELETE FROM provider_nodes;
     DELETE FROM proxy_pools;
@@ -53,6 +57,18 @@ export async function importLegacyPayload(
 
     for (const connection of payload.providerConnections || []) {
       createProviderConnectionRecord(connection);
+    }
+
+    for (const collection of payload.connectionCollections || []) {
+      createConnectionCollectionRecord(collection);
+    }
+    for (const connection of payload.providerConnections || []) {
+      if (connection?.id && Array.isArray(connection.collectionIds)) {
+        setConnectionCollectionsForConnection(
+          connection.id,
+          connection.collectionIds,
+        );
+      }
     }
 
     for (const [alias, modelId] of Object.entries(payload.modelAliases || {})) {

@@ -25,11 +25,13 @@ export const DEFAULT_SETTINGS = {
   outboundProxyEnabled: false,
   outboundProxyUrl: "",
   outboundNoProxy: "",
-  dispatcherEnabled: false,
+  dispatcherEnabled: true,
   dispatcherShadowMode: false,
   dispatcherCodexOnly: true,
-  codexDefaultAdmissionPolicy: "legacy",
+  codexDefaultAdmissionPolicy: "managed",
   dispatcherSlotsPerConnection: 1,
+  textDispatcherCollectionId: null,
+  imageDispatcherCollectionId: null,
   mitmRouterBaseUrl: DEFAULT_MITM_ROUTER_BASE,
 };
 
@@ -61,6 +63,11 @@ export function normalizeSettings(input = {}) {
   ) {
     next.outboundProxyEnabled = true;
   }
+
+  // Dispatcher configuration is now operator-facing managed-only.
+  next.dispatcherEnabled = true;
+  next.dispatcherShadowMode = false;
+  next.codexDefaultAdmissionPolicy = "managed";
 
   return next;
 }

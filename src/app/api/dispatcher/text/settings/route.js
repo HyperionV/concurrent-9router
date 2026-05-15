@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
-import { getSettings, updateSettings } from "@/lib/localDb.js";
 import {
-  buildDispatcherModePatch,
+  getConnectionCollections,
+  getSettings,
+  updateSettings,
+} from "@/lib/localDb.js";
+import {
   deriveDispatcherMode,
   normalizeDispatcherSlotsPerConnection,
 } from "@/lib/dispatcher/settings.js";
-import { normalizeCodexDefaultAdmissionPolicy } from "@/lib/dispatcher/admissionPolicy.js";
 
 function toSafeDispatcherSettings(settings) {
   return {
@@ -14,9 +16,10 @@ function toSafeDispatcherSettings(settings) {
     dispatcherShadowMode: settings.dispatcherShadowMode === true,
     dispatcherCodexOnly: settings.dispatcherCodexOnly !== false,
     codexDefaultAdmissionPolicy:
-      settings.codexDefaultAdmissionPolicy || "legacy",
+      settings.codexDefaultAdmissionPolicy || "managed",
     dispatcherSlotsPerConnection:
       Number(settings.dispatcherSlotsPerConnection) || 1,
+    textDispatcherCollectionId: settings.textDispatcherCollectionId || null,
   };
 }
 
@@ -38,10 +41,6 @@ export async function PATCH(request) {
     const body = await request.json();
     const updates = {};
 
-    if (body.mode !== undefined) {
-      Object.assign(updates, buildDispatcherModePatch(body.mode));
-    }
-
     if (body.dispatcherSlotsPerConnection !== undefined) {
       updates.dispatcherSlotsPerConnection =
         normalizeDispatcherSlotsPerConnection(
@@ -49,13 +48,18 @@ export async function PATCH(request) {
         );
     }
 
-    if (body.dispatcherCodexOnly !== undefined) {
-      updates.dispatcherCodexOnly = body.dispatcherCodexOnly === true;
-    }
-
-    if (body.codexDefaultAdmissionPolicy !== undefined) {
-      updates.codexDefaultAdmissionPolicy =
-        normalizeCodexDefaultAdmissionPolicy(body.codexDefaultAdmissionPolicy);
+    if (body.textDispatcherCollectionId !== undefined) {
+      const validCollectionIds = new Set(
+        (await getConnectionCollections()).map((collection) => collection.id),
+      );
+      if (!validCollectionIds.has(body.textDispatcherCollectionId)) {
+        return NextResponse.json(
+          { error: "Selected dispatcher collection was not found" },
+          { status: 400 },
+        );
+      }
+      updates.textDispatcherCollectionId =
+        body.textDispatcherCollectionId || null;
     }
 
     if (Object.keys(updates).length === 0) {
@@ -65,7 +69,13 @@ export async function PATCH(request) {
       );
     }
 
-    const settings = await updateSettings(updates);
+    const settings = await updateSettings({
+      ...updates,
+      dispatcherEnabled: true,
+      dispatcherShadowMode: false,
+      dispatcherCodexOnly: true,
+      codexDefaultAdmissionPolicy: "managed",
+    });
     return NextResponse.json(toSafeDispatcherSettings(settings));
   } catch (error) {
     console.error("[API] Failed to update dispatcher settings:", error);

@@ -83,6 +83,12 @@ function mapSettingsRow(row) {
       dispatcherSlotsPerConnection:
         row.dispatcher_slots_per_connection ??
         DEFAULT_SETTINGS.dispatcherSlotsPerConnection,
+      textDispatcherCollectionId:
+        row.text_dispatcher_collection_id ||
+        DEFAULT_SETTINGS.textDispatcherCollectionId,
+      imageDispatcherCollectionId:
+        row.image_dispatcher_collection_id ||
+        DEFAULT_SETTINGS.imageDispatcherCollectionId,
       mitmRouterBaseUrl:
         row.mitm_router_base_url || DEFAULT_SETTINGS.mitmRouterBaseUrl,
       password: row.password || undefined,
@@ -142,6 +148,8 @@ export function writeSettings(updates) {
       dispatcher_codex_only = @dispatcherCodexOnly,
       codex_default_admission_policy = @codexDefaultAdmissionPolicy,
       dispatcher_slots_per_connection = @dispatcherSlotsPerConnection,
+      text_dispatcher_collection_id = @textDispatcherCollectionId,
+      image_dispatcher_collection_id = @imageDispatcherCollectionId,
       mitm_router_base_url = @mitmRouterBaseUrl,
       password = @password,
       mitm_enabled = @mitmEnabled
@@ -181,6 +189,8 @@ export function writeSettings(updates) {
       dispatcherSlotsPerConnection:
         next.dispatcherSlotsPerConnection ??
         DEFAULT_SETTINGS.dispatcherSlotsPerConnection,
+      textDispatcherCollectionId: next.textDispatcherCollectionId || null,
+      imageDispatcherCollectionId: next.imageDispatcherCollectionId || null,
       mitmRouterBaseUrl:
         next.mitmRouterBaseUrl || DEFAULT_SETTINGS.mitmRouterBaseUrl,
       password: next.password || null,
@@ -410,7 +420,265 @@ const RESERVED_CONNECTION_FIELDS = new Set([
   "errorCode",
   "consecutiveUseCount",
   "providerSpecificData",
+  "collections",
+  "collectionIds",
 ]);
+
+const DEFAULT_CONNECTION_COLLECTION_ID = "__all_connections__";
+const DEFAULT_CONNECTION_COLLECTION_NAME = "All Connections";
+
+function mapCollectionRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function listCollectionsByConnectionId(connectionId) {
+  return db()
+    .prepare(
+      `
+      SELECT c.id, c.name, c.created_at, c.updated_at
+      FROM connection_collection_memberships m
+      INNER JOIN connection_collections c ON c.id = m.collection_id
+      WHERE m.connection_id = ?
+      ORDER BY c.name COLLATE NOCASE ASC
+    `,
+    )
+    .all(connectionId)
+    .map(mapCollectionRow);
+}
+
+function listCollectionIdsByConnectionId(connectionId) {
+  return db()
+    .prepare(
+      `
+      SELECT collection_id AS collectionId
+      FROM connection_collection_memberships
+      WHERE connection_id = ?
+      ORDER BY collection_id ASC
+    `,
+    )
+    .all(connectionId)
+    .map((row) => row.collectionId);
+}
+
+function ensureDefaultCollectionMembership(connectionId) {
+  db()
+    .prepare(
+      `
+      INSERT OR IGNORE INTO connection_collection_memberships (connection_id, collection_id, created_at)
+      VALUES (?, ?, ?)
+    `,
+    )
+    .run(connectionId, DEFAULT_CONNECTION_COLLECTION_ID, nowIso());
+}
+
+export function listConnectionCollections() {
+  return db()
+    .prepare(
+      "SELECT * FROM connection_collections ORDER BY name COLLATE NOCASE ASC",
+    )
+    .all()
+    .map(mapCollectionRow);
+}
+
+export function createConnectionCollectionRecord(data) {
+  const now = nowIso();
+  const record = {
+    id: data.id || uuidv4(),
+    name: String(data.name || "").trim(),
+    createdAt: now,
+    updatedAt: now,
+  };
+  if (!record.name) {
+    throw new Error("Collection name is required");
+  }
+  db()
+    .prepare(
+      `
+      INSERT INTO connection_collections (id, name, created_at, updated_at)
+      VALUES (@id, @name, @createdAt, @updatedAt)
+    `,
+    )
+    .run(record);
+  return getConnectionCollection(record.id);
+}
+
+export function getConnectionCollection(id) {
+  return mapCollectionRow(
+    db().prepare("SELECT * FROM connection_collections WHERE id = ?").get(id),
+  );
+}
+
+export function updateConnectionCollectionRecord(id, data) {
+  const existing = getConnectionCollection(id);
+  if (!existing) return null;
+  if (id === DEFAULT_CONNECTION_COLLECTION_ID) {
+    throw new Error("All Connections cannot be renamed");
+  }
+  const name = String(data?.name || "").trim();
+  if (!name) {
+    throw new Error("Collection name is required");
+  }
+  db()
+    .prepare(
+      `
+      UPDATE connection_collections
+      SET name = ?, updated_at = ?
+      WHERE id = ?
+    `,
+    )
+    .run(name, nowIso(), id);
+  return getConnectionCollection(id);
+}
+
+export function deleteConnectionCollectionRecord(id) {
+  const existing = getConnectionCollection(id);
+  if (!existing) return null;
+  if (id === DEFAULT_CONNECTION_COLLECTION_ID) {
+    throw new Error("All Connections cannot be deleted");
+  }
+
+  const tx = db().transaction(() => {
+    db()
+      .prepare(
+        `
+        DELETE FROM connection_collection_memberships
+        WHERE collection_id = ?
+      `,
+      )
+      .run(id);
+
+    db()
+      .prepare(
+        `
+        DELETE FROM connection_collections
+        WHERE id = ?
+      `,
+      )
+      .run(id);
+
+    db()
+      .prepare(
+        `
+        UPDATE app_settings
+        SET
+          text_dispatcher_collection_id = CASE
+            WHEN text_dispatcher_collection_id = ? THEN ?
+            ELSE text_dispatcher_collection_id
+          END,
+          image_dispatcher_collection_id = CASE
+            WHEN image_dispatcher_collection_id = ? THEN ?
+            ELSE image_dispatcher_collection_id
+          END
+        WHERE id = 1
+      `,
+      )
+      .run(
+        id,
+        DEFAULT_CONNECTION_COLLECTION_ID,
+        id,
+        DEFAULT_CONNECTION_COLLECTION_ID,
+      );
+  });
+
+  tx();
+  return existing;
+}
+
+export function setConnectionCollectionsForConnection(
+  connectionId,
+  collectionIds = [],
+) {
+  const existing = getProviderConnection(connectionId);
+  if (!existing) {
+    throw new Error("Connection not found");
+  }
+  const normalizedIds = [
+    ...new Set([
+      DEFAULT_CONNECTION_COLLECTION_ID,
+      ...(collectionIds || []).filter(Boolean),
+    ]),
+  ];
+  const knownCollections = new Set(
+    listConnectionCollections().map((collection) => collection.id),
+  );
+  for (const collectionId of normalizedIds) {
+    if (!knownCollections.has(collectionId)) {
+      throw new Error(`Collection not found: ${collectionId}`);
+    }
+  }
+
+  const tx = db().transaction(() => {
+    db()
+      .prepare(
+        "DELETE FROM connection_collection_memberships WHERE connection_id = ?",
+      )
+      .run(connectionId);
+    const insertMembership = db().prepare(
+      `
+      INSERT INTO connection_collection_memberships (connection_id, collection_id, created_at)
+      VALUES (?, ?, ?)
+    `,
+    );
+    const createdAt = nowIso();
+    normalizedIds.forEach((collectionId) => {
+      insertMembership.run(connectionId, collectionId, createdAt);
+    });
+  });
+  tx();
+  return getProviderConnection(connectionId);
+}
+
+export function replaceCollectionMemberships(collectionId, connectionIds = []) {
+  const collection = getConnectionCollection(collectionId);
+  if (!collection) {
+    throw new Error("Collection not found");
+  }
+  if (collectionId === DEFAULT_CONNECTION_COLLECTION_ID) {
+    throw new Error("All Connections memberships cannot be edited");
+  }
+  const normalizedConnectionIds = [
+    ...new Set((connectionIds || []).filter(Boolean)),
+  ];
+  const knownConnections = new Set(
+    listProviderConnections().map((connection) => connection.id),
+  );
+  for (const connectionId of normalizedConnectionIds) {
+    if (!knownConnections.has(connectionId)) {
+      throw new Error(`Connection not found: ${connectionId}`);
+    }
+  }
+
+  const tx = db().transaction(() => {
+    db()
+      .prepare(
+        `
+        DELETE FROM connection_collection_memberships
+        WHERE collection_id = ?
+      `,
+      )
+      .run(collectionId);
+
+    const stmt = db().prepare(
+      `
+      INSERT INTO connection_collection_memberships (connection_id, collection_id, created_at)
+      VALUES (?, ?, ?)
+    `,
+    );
+    const createdAt = nowIso();
+    normalizedConnectionIds.forEach((connectionId) => {
+      stmt.run(connectionId, collectionId, createdAt);
+    });
+  });
+
+  tx();
+  return getConnectionCollection(collectionId);
+}
 
 function readConnectionCooldowns(connectionId) {
   const rows = db()
@@ -467,6 +735,8 @@ function mapConnectionRow(row) {
       ? { consecutiveUseCount: row.consecutive_use_count }
       : {}),
     providerSpecificData: parseJson(row.provider_specific_data_json, {}),
+    collections: listCollectionsByConnectionId(row.id),
+    collectionIds: listCollectionIdsByConnectionId(row.id),
     ...extra,
     ...readConnectionCooldowns(row.id),
   };
@@ -525,6 +795,11 @@ export function listProviderConnections(filter = {}) {
     connections = connections.filter((row) => row.provider === filter.provider);
   if (filter.isActive !== undefined)
     connections = connections.filter((row) => row.isActive === filter.isActive);
+  if (filter.collectionId) {
+    connections = connections.filter((row) =>
+      row.collectionIds.includes(filter.collectionId),
+    );
+  }
   return connections;
 }
 
@@ -667,6 +942,10 @@ export function createProviderConnectionRecord(data) {
       extraFieldsJson: stringifyJson(record.extra, {}),
     });
   writeConnectionCooldowns(record.id, data);
+  ensureDefaultCollectionMembership(record.id);
+  if (Array.isArray(data.collectionIds) && data.collectionIds.length > 0) {
+    setConnectionCollectionsForConnection(record.id, data.collectionIds);
+  }
   reorderProviderConnectionPriorities(record.provider);
   return getProviderConnection(record.id);
 }
@@ -755,6 +1034,9 @@ export function updateProviderConnectionRecord(id, data) {
       updatedAt: merged.updatedAt,
     });
   writeConnectionCooldowns(id, data);
+  if (Array.isArray(data.collectionIds)) {
+    setConnectionCollectionsForConnection(id, data.collectionIds);
+  }
   if (data.priority !== undefined)
     reorderProviderConnectionPriorities(existing.provider);
   return getProviderConnection(id);

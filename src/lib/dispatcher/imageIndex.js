@@ -1,13 +1,15 @@
 import { createImageDispatcherCore } from "@/lib/dispatcher/imageCore.js";
 import { buildDispatchConnectionView } from "@/lib/dispatcher/connectionState.js";
-import { getProviderConnections } from "@/lib/localDb.js";
+import { getProviderConnections, getSettings } from "@/lib/localDb.js";
 
 const IMAGE_DISPATCHER_KEY = Symbol.for("nine-router.image-dispatcher");
 
 async function getCodexImageConnections() {
+  const settings = await getSettings();
   const connections = await getProviderConnections({
     provider: "codex",
     isActive: true,
+    collectionId: settings.imageDispatcherCollectionId || undefined,
   });
   return Promise.all(connections.map(buildDispatchConnectionView));
 }

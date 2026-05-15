@@ -5,6 +5,7 @@ import {
   createApiKeyRecord,
   createComboRecord,
   createProviderConnectionRecord,
+  createConnectionCollectionRecord,
   createProviderNodeRecord,
   createProxyPoolRecord,
   deleteApiKeyRecord,
@@ -13,6 +14,7 @@ import {
   deletePricingOverride,
   deleteProviderConnectionRecord,
   deleteProviderConnectionsForProvider,
+  getConnectionCollection,
   deleteProviderNodeRecord,
   deleteProxyPoolRecord,
   getApiKeyByValue,
@@ -25,6 +27,7 @@ import {
   getProxyPool,
   listApiKeys,
   listCombos,
+  listConnectionCollections,
   listModelAliases,
   listPricingOverrides,
   listProviderConnections,
@@ -42,6 +45,10 @@ import {
   updateProxyPoolRecord,
   upsertPricingOverrides,
   writeSettings,
+  setConnectionCollectionsForConnection,
+  updateConnectionCollectionRecord,
+  deleteConnectionCollectionRecord,
+  replaceCollectionMemberships,
 } from "@/lib/sqlite/store.js";
 
 function normalizeAliasArgs(first, second) {
@@ -57,6 +64,7 @@ function normalizeAliasArgs(first, second) {
 function cloneDefaultData() {
   return {
     providerConnections: [],
+    connectionCollections: [],
     providerNodes: [],
     proxyPools: [],
     modelAliases: {},
@@ -73,6 +81,7 @@ export async function getDb() {
   return {
     data: {
       providerConnections: listProviderConnections(),
+      connectionCollections: listConnectionCollections(),
       providerNodes: listProviderNodes(),
       proxyPools: listProxyPools(),
       modelAliases: listModelAliases(),
@@ -88,6 +97,47 @@ export async function getDb() {
 export async function getProviderConnections(filter = {}) {
   await ensureSqliteReady();
   return listProviderConnections(filter);
+}
+
+export async function getConnectionCollections() {
+  await ensureSqliteReady();
+  return listConnectionCollections();
+}
+
+export async function getConnectionCollectionById(id) {
+  await ensureSqliteReady();
+  return getConnectionCollection(id);
+}
+
+export async function createConnectionCollection(data) {
+  await ensureSqliteReady();
+  return createConnectionCollectionRecord(data);
+}
+
+export async function updateConnectionCollection(id, data) {
+  await ensureSqliteReady();
+  return updateConnectionCollectionRecord(id, data);
+}
+
+export async function deleteConnectionCollection(id) {
+  await ensureSqliteReady();
+  return deleteConnectionCollectionRecord(id);
+}
+
+export async function updateConnectionCollectionsForConnection(
+  connectionId,
+  collectionIds,
+) {
+  await ensureSqliteReady();
+  return setConnectionCollectionsForConnection(connectionId, collectionIds);
+}
+
+export async function replaceCollectionConnections(
+  collectionId,
+  connectionIds,
+) {
+  await ensureSqliteReady();
+  return replaceCollectionMemberships(collectionId, connectionIds);
 }
 
 export async function getProviderNodes(filter = {}) {

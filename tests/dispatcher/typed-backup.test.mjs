@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import {
   buildTypedExportEnvelope,
@@ -7,17 +10,28 @@ import {
   validateTypedImportPayload,
 } from "@/lib/sqlite/typedBackup.js";
 
+function makeTempDataDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "router-typed-backup-"));
+}
+
 test("normalizes supported typed export names", () => {
   assert.equal(normalizeExportType("full"), "full");
   assert.equal(normalizeExportType("accounts"), "accounts");
   assert.equal(normalizeExportType("account-list"), "accounts");
   assert.equal(normalizeExportType("usage"), "usage");
-  assert.throws(() => normalizeExportType("unknown"), /Unsupported export type/);
+  assert.throws(
+    () => normalizeExportType("unknown"),
+    /Unsupported export type/,
+  );
 });
 
 test("builds typed account export envelope with sensitive marker", () => {
   const envelope = buildTypedExportEnvelope("accounts", {
     providerConnections: [{ id: "conn-1", provider: "codex" }],
+    connectionCollections: [{ id: "all", name: "All Connections" }],
+    connectionCollectionMemberships: [
+      { connectionId: "conn-1", collectionId: "all" },
+    ],
   });
 
   assert.equal(envelope.format, "9router-partial-export");
@@ -25,6 +39,12 @@ test("builds typed account export envelope with sensitive marker", () => {
   assert.equal(envelope.sensitive, true);
   assert.deepEqual(envelope.data.providerConnections, [
     { id: "conn-1", provider: "codex" },
+  ]);
+  assert.deepEqual(envelope.data.connectionCollections, [
+    { id: "all", name: "All Connections" },
+  ]);
+  assert.deepEqual(envelope.data.connectionCollectionMemberships, [
+    { connectionId: "conn-1", collectionId: "all" },
   ]);
 });
 

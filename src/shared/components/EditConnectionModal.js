@@ -6,9 +6,18 @@ import Modal from "@/shared/components/Modal";
 import Input from "@/shared/components/Input";
 import Button from "@/shared/components/Button";
 import Badge from "@/shared/components/Badge";
-import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
+import {
+  isOpenAICompatibleProvider,
+  isAnthropicCompatibleProvider,
+} from "@/shared/constants/providers";
 
-export default function EditConnectionModal({ isOpen, connection, proxyPools, onSave, onClose }) {
+export default function EditConnectionModal({
+  isOpen,
+  connection,
+  proxyPools,
+  onSave,
+  onClose,
+}) {
   const [formData, setFormData] = useState({
     name: "",
     priority: 1,
@@ -34,7 +43,8 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
 
   const isOAuth = connection?.authType === "oauth";
   const isCompatible = connection
-    ? (isOpenAICompatibleProvider(connection.provider) || isAnthropicCompatibleProvider(connection.provider))
+    ? isOpenAICompatibleProvider(connection.provider) ||
+      isAnthropicCompatibleProvider(connection.provider)
     : false;
 
   const handleTest = async () => {
@@ -42,7 +52,9 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await fetch(`/api/providers/${connection.id}/test`, { method: "POST" });
+      const res = await fetch(`/api/providers/${connection.id}/test`, {
+        method: "POST",
+      });
       const data = await res.json();
       setTestResult(data.valid ? "success" : "failed");
     } catch {
@@ -60,7 +72,10 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
       const res = await fetch("/api/providers/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: connection.provider, apiKey: formData.apiKey }),
+        body: JSON.stringify({
+          provider: connection.provider,
+          apiKey: formData.apiKey,
+        }),
       });
       const data = await res.json();
       setValidationResult(data.valid ? "success" : "failed");
@@ -89,7 +104,10 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
             const res = await fetch("/api/providers/validate", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ provider: connection.provider, apiKey: formData.apiKey }),
+              body: JSON.stringify({
+                provider: connection.provider,
+                apiKey: formData.apiKey,
+              }),
             });
             const data = await res.json();
             isValid = !!data.valid;
@@ -133,7 +151,12 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
           label="Priority"
           type="number"
           value={formData.priority}
-          onChange={(e) => setFormData({ ...formData, priority: Number.parseInt(e.target.value, 10) || 1 })}
+          onChange={(e) =>
+            setFormData({
+              ...formData,
+              priority: Number.parseInt(e.target.value, 10) || 1,
+            })
+          }
         />
 
         {!isOAuth && (
@@ -143,19 +166,27 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
                 label="API Key"
                 type="password"
                 value={formData.apiKey}
-                onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
+                onChange={(e) =>
+                  setFormData({ ...formData, apiKey: e.target.value })
+                }
                 placeholder="Enter new API key"
                 hint="Leave blank to keep the current API key."
                 className="flex-1"
               />
               <div className="pt-6">
-                <Button onClick={handleValidate} disabled={!formData.apiKey || validating || saving} variant="secondary">
+                <Button
+                  onClick={handleValidate}
+                  disabled={!formData.apiKey || validating || saving}
+                  variant="secondary"
+                >
                   {validating ? "Checking..." : "Check"}
                 </Button>
               </div>
             </div>
             {validationResult && (
-              <Badge variant={validationResult === "success" ? "success" : "error"}>
+              <Badge
+                variant={validationResult === "success" ? "success" : "error"}
+              >
                 {validationResult === "success" ? "Valid" : "Invalid"}
               </Badge>
             )}
@@ -176,8 +207,12 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
         )}
 
         <div className="flex gap-2">
-          <Button onClick={handleSubmit} fullWidth disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
-          <Button onClick={onClose} variant="ghost" fullWidth>Cancel</Button>
+          <Button onClick={handleSubmit} fullWidth disabled={saving}>
+            {saving ? "Saving..." : "Save"}
+          </Button>
+          <Button onClick={onClose} variant="ghost" fullWidth>
+            Cancel
+          </Button>
         </div>
       </div>
     </Modal>
@@ -195,10 +230,12 @@ EditConnectionModal.propTypes = {
     provider: PropTypes.string,
     providerSpecificData: PropTypes.object,
   }),
-  proxyPools: PropTypes.arrayOf(PropTypes.shape({
-    id: PropTypes.string,
-    name: PropTypes.string,
-  })),
+  proxyPools: PropTypes.arrayOf(
+    PropTypes.shape({
+      id: PropTypes.string,
+      name: PropTypes.string,
+    }),
+  ),
   onSave: PropTypes.func.isRequired,
   onClose: PropTypes.func.isRequired,
 };

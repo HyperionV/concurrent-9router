@@ -208,6 +208,22 @@ function runMigrations(db) {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS connection_collections (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS connection_collection_memberships (
+      connection_id TEXT NOT NULL,
+      collection_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (connection_id, collection_id),
+      FOREIGN KEY (connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE,
+      FOREIGN KEY (collection_id) REFERENCES connection_collections(id) ON DELETE CASCADE
+    );
+
     CREATE UNIQUE INDEX IF NOT EXISTS provider_connections_provider_name_unique
       ON provider_connections(provider, auth_type, name);
     CREATE INDEX IF NOT EXISTS provider_connections_provider_priority_idx
@@ -504,6 +520,8 @@ function runMigrations(db) {
     "dispatcher_slots_per_connection",
     "INTEGER NOT NULL DEFAULT 1",
   );
+  ensureColumn(db, "app_settings", "text_dispatcher_collection_id", "TEXT");
+  ensureColumn(db, "app_settings", "image_dispatcher_collection_id", "TEXT");
   ensureColumn(db, "api_keys", "codex_admission_policy_override", "TEXT");
   ensureColumn(
     db,
@@ -562,6 +580,8 @@ function seedDefaults(db) {
       dispatcher_codex_only,
       codex_default_admission_policy,
       dispatcher_slots_per_connection,
+      text_dispatcher_collection_id,
+      image_dispatcher_collection_id,
       mitm_router_base_url,
       password,
       mitm_enabled
@@ -574,6 +594,7 @@ function seedDefaults(db) {
       @observabilityFlushIntervalMs, @observabilityMaxJsonSize,
       @outboundProxyEnabled, @outboundProxyUrl, @outboundNoProxy,
       @dispatcherEnabled, @dispatcherShadowMode, @dispatcherCodexOnly, @codexDefaultAdmissionPolicy, @dispatcherSlotsPerConnection,
+      @textDispatcherCollectionId, @imageDispatcherCollectionId,
       @mitmRouterBaseUrl, @password, @mitmEnabled
     )
   `,
@@ -607,10 +628,48 @@ function seedDefaults(db) {
     codexDefaultAdmissionPolicy:
       settings.codexDefaultAdmissionPolicy || "legacy",
     dispatcherSlotsPerConnection: settings.dispatcherSlotsPerConnection ?? 1,
+    textDispatcherCollectionId: settings.textDispatcherCollectionId || null,
+    imageDispatcherCollectionId: settings.imageDispatcherCollectionId || null,
     mitmRouterBaseUrl: settings.mitmRouterBaseUrl,
     password: settings.password || null,
     mitmEnabled: settings.mitmEnabled ? 1 : 0,
   });
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `
+    INSERT OR IGNORE INTO connection_collections (id, name, created_at, updated_at)
+    VALUES (@id, @name, @createdAt, @updatedAt)
+  `,
+  ).run({
+    id: "__all_connections__",
+    name: "All Connections",
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  db.prepare(
+    `
+    INSERT OR IGNORE INTO connection_collection_memberships (connection_id, collection_id, created_at)
+    SELECT id, '__all_connections__', @createdAt
+    FROM provider_connections
+  `,
+  ).run({
+    createdAt: now,
+  });
+
+  db.prepare(
+    `
+    UPDATE app_settings
+    SET
+      dispatcher_enabled = 1,
+      dispatcher_shadow_mode = 0,
+      codex_default_admission_policy = 'managed',
+      text_dispatcher_collection_id = COALESCE(text_dispatcher_collection_id, '__all_connections__'),
+      image_dispatcher_collection_id = COALESCE(image_dispatcher_collection_id, '__all_connections__')
+    WHERE id = 1
+  `,
+  ).run();
 }
 
 export function getSqlitePath() {

@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   CardSkeleton,
+  Select,
   Spinner,
 } from "@/shared/components";
 
@@ -123,6 +124,9 @@ export default function ImageDispatcherPage() {
   const [snapshot, setSnapshot] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [collections, setCollections] = useState([]);
+  const [selectedCollectionId, setSelectedCollectionId] = useState("");
+  const [savingCollection, setSavingCollection] = useState(false);
 
   const fetchStatus = useCallback(async ({ silent = false } = {}) => {
     if (silent) setRefreshing(true);
@@ -148,6 +152,23 @@ export default function ImageDispatcherPage() {
   useEffect(() => {
     fetchStatus();
   }, [fetchStatus]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/connection-collections", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((data) => {
+        if (!cancelled) setCollections(data.collections || []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    setSelectedCollectionId(snapshot?.selectedCollection?.id || "");
+  }, [snapshot?.selectedCollection?.id]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -222,6 +243,60 @@ export default function ImageDispatcherPage() {
           icon="monitoring"
         />
       </div>
+
+      <Card
+        title="Connection collection"
+        subtitle="Only active Codex accounts in this collection are eligible for image dispatch."
+        icon="inventory_2"
+      >
+        <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
+          <Card.Section className="flex flex-col gap-3">
+            <Select
+              label="Image collection"
+              value={selectedCollectionId}
+              onChange={async (event) => {
+                const nextValue = event.target.value;
+                setSelectedCollectionId(nextValue);
+                setSavingCollection(true);
+                try {
+                  await fetch("/api/dispatcher/image/settings", {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      imageDispatcherCollectionId: nextValue,
+                    }),
+                  });
+                  await fetchStatus({ silent: true });
+                } finally {
+                  setSavingCollection(false);
+                }
+              }}
+              options={collections.map((collection) => ({
+                value: collection.id,
+                label: collection.name,
+              }))}
+              placeholder="Select collection"
+            />
+          </Card.Section>
+          <Card.Section className="flex flex-col gap-2">
+            <p className="text-sm text-text-muted">
+              Selected:{" "}
+              <span className="font-medium text-text-main">
+                {snapshot.selectedCollection?.name || "Unknown collection"}
+              </span>
+            </p>
+            <p className="text-sm text-text-muted">
+              Eligible accounts:{" "}
+              <span className="font-medium text-text-main">
+                {snapshot.capacity.activeConnections}
+              </span>
+            </p>
+            {savingCollection ? (
+              <p className="text-sm text-text-muted">Saving selection...</p>
+            ) : null}
+          </Card.Section>
+        </div>
+      </Card>
 
       <div className="grid gap-6 xl:grid-cols-2">
         <SummaryTable

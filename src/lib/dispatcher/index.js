@@ -17,6 +17,7 @@ async function loadCodexConnections() {
   const rawConnections = await getProviderConnections({
     provider: "codex",
     isActive: true,
+    collectionId: settings.textDispatcherCollectionId || undefined,
   });
   const connections = await Promise.all(
     rawConnections.map((connection) => buildDispatchConnectionView(connection)),

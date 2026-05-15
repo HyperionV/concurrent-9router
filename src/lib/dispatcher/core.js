@@ -53,6 +53,7 @@ export function createDispatcherCore({
 
   const policy = createTimeoutPolicy(timeoutPolicy);
   const occupancyByConnection = {};
+  const leaseCountByConnection = {};
 
   function resolveSlotsPerConnection() {
     if (typeof getSlotsPerConnection === "function") {
@@ -71,6 +72,10 @@ export function createDispatcherCore({
       if (!attempt.connectionId) continue;
       occupancyByConnection[attempt.connectionId] =
         (occupancyByConnection[attempt.connectionId] || 0) + 1;
+      leaseCountByConnection[attempt.connectionId] = Math.max(
+        leaseCountByConnection[attempt.connectionId] || 0,
+        occupancyByConnection[attempt.connectionId],
+      );
     }
   }
 
@@ -219,6 +224,10 @@ export function createDispatcherCore({
           (occupancyByConnection[a.id] || 0) -
           (occupancyByConnection[b.id] || 0);
         if (occupancyDiff !== 0) return occupancyDiff;
+        const leaseCountDiff =
+          (leaseCountByConnection[a.id] || 0) -
+          (leaseCountByConnection[b.id] || 0);
+        if (leaseCountDiff !== 0) return leaseCountDiff;
         const pathScoreDiff =
           pathHealth.rankConnection(b, occupancyByConnection[b.id] || 0) -
           pathHealth.rankConnection(a, occupancyByConnection[a.id] || 0);
@@ -302,6 +311,8 @@ export function createDispatcherCore({
       updateDispatchRequestStatus(request.id, DISPATCH_REQUEST_STATUS.RUNNING);
       occupancyByConnection[connection.id] =
         (occupancyByConnection[connection.id] || 0) + 1;
+      leaseCountByConnection[connection.id] =
+        (leaseCountByConnection[connection.id] || 0) + 1;
 
       insertDispatchAttemptEvent({
         id: randomUUID(),
@@ -368,6 +379,8 @@ export function createDispatcherCore({
     updateDispatchRequestStatus(requestId, DISPATCH_REQUEST_STATUS.RUNNING);
     occupancyByConnection[connection.id] =
       (occupancyByConnection[connection.id] || 0) + 1;
+    leaseCountByConnection[connection.id] =
+      (leaseCountByConnection[connection.id] || 0) + 1;
 
     insertDispatchAttemptEvent({
       id: randomUUID(),
@@ -567,6 +580,7 @@ export function createDispatcherCore({
   function getInMemorySnapshot() {
     return {
       occupancyByConnection: { ...occupancyByConnection },
+      leaseCountByConnection: { ...leaseCountByConnection },
       timeoutPolicy: { ...policy },
       pathHealth: pathHealth.snapshot(),
     };

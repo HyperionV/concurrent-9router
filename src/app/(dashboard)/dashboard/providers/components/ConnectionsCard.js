@@ -231,6 +231,18 @@ function ConnectionRow({
               #{connection.priority}
             </span>
           </div>
+          {(connection.collections || []).length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {connection.collections.map((collection) => (
+                <span
+                  key={collection.id}
+                  className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary"
+                >
+                  {collection.name}
+                </span>
+              ))}
+            </div>
+          )}
           {hasAnyProxy && (
             <div className="mt-1 flex items-center gap-2 flex-wrap">
               <span

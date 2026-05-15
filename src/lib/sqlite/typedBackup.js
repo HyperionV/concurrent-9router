@@ -1,4 +1,7 @@
 import {
+  createConnectionCollectionRecord,
+  getConnectionCollection,
+  listConnectionCollections,
   importProviderConnections,
   importRequestDetails,
   importUsageEvents,
@@ -25,7 +28,11 @@ export function normalizeExportType(type = "full") {
   return normalized;
 }
 
-export function buildTypedExportEnvelope(type, data, createdAt = new Date().toISOString()) {
+export function buildTypedExportEnvelope(
+  type,
+  data,
+  createdAt = new Date().toISOString(),
+) {
   const normalizedType = normalizeExportType(type);
   return {
     format: FORMAT,
@@ -57,6 +64,14 @@ export function createTypedExportPayload(type) {
   if (normalizedType === "accounts") {
     return buildTypedExportEnvelope(normalizedType, {
       providerConnections: listProviderConnections(),
+      connectionCollections: listConnectionCollections(),
+      connectionCollectionMemberships: listProviderConnections().flatMap(
+        (connection) =>
+          (connection.collectionIds || []).map((collectionId) => ({
+            connectionId: connection.id,
+            collectionId,
+          })),
+      ),
     });
   }
   if (normalizedType === "usage") {
@@ -72,6 +87,12 @@ export function importTypedPayload(payload, selectedType) {
   const envelope = validateTypedImportPayload(payload, selectedType);
   const type = normalizeExportType(selectedType);
   if (type === "accounts") {
+    for (const collection of envelope.data.connectionCollections || []) {
+      if (!collection?.id) continue;
+      if (!getConnectionCollection(collection.id)) {
+        createConnectionCollectionRecord(collection);
+      }
+    }
     return {
       imported: "accounts",
       providerConnections: importProviderConnections(

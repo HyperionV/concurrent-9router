@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { listImageDispatchAttemptsByState } from "@/lib/sqlite/imageDispatcherStore.js";
 import { getCodexImageDispatcher } from "@/lib/dispatcher/imageIndex.js";
+import { getConnectionCollections, getSettings } from "@/lib/localDb.js";
 
 export const dynamic = "force-dynamic";
 
@@ -31,6 +32,10 @@ export async function GET() {
   try {
     const { dispatcher, getConnections } = getCodexImageDispatcher();
     const connectionViews = await getConnections();
+    const [settings, collections] = await Promise.all([
+      getSettings(),
+      getConnectionCollections(),
+    ]);
     const snapshot = await dispatcher.getStatusSnapshot({ connectionViews });
     const terminalAttempts = listImageDispatchAttemptsByState([
       "completed",
@@ -40,10 +45,16 @@ export async function GET() {
       "reconciled",
     ]).filter((attempt) => attempt.provider === "codex");
 
+    const selectedCollection =
+      collections.find(
+        (collection) => collection.id === settings.imageDispatcherCollectionId,
+      ) || null;
+
     return NextResponse.json({
       provider: "codex",
       mode: "managed",
       alwaysOn: true,
+      selectedCollection,
       generatedAt: new Date().toISOString(),
       capacity: snapshot.capacity,
       queued: summarizeQueued(snapshot.queuedRequests),

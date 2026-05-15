@@ -3,6 +3,9 @@ export {
   getProviderConnections,
   getProviderConnectionById,
   createProviderConnection,
+  createConnectionCollection,
+  updateConnectionCollection,
+  deleteConnectionCollection,
   updateProviderConnection,
   deleteProviderConnection,
   getProviderNodes,
@@ -32,4 +35,8 @@ export {
   deleteApiKey,
   validateApiKey,
   isCloudEnabled,
+  getConnectionCollections,
+  getConnectionCollectionById,
+  updateConnectionCollectionsForConnection,
+  replaceCollectionConnections,
 } from "@/lib/localDb";

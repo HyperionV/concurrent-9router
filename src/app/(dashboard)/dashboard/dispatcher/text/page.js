@@ -7,7 +7,7 @@ import {
   Card,
   CardSkeleton,
   Input,
-  SegmentedControl,
+  Select,
   Spinner,
 } from "@/shared/components";
 
@@ -328,9 +328,9 @@ function ConnectionsTable({ connections }) {
 }
 
 function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
-  const [mode, setMode] = useState(snapshot.mode);
-  const [defaultPolicy, setDefaultPolicy] = useState(
-    snapshot.settings.codexDefaultAdmissionPolicy || "legacy",
+  const [collections, setCollections] = useState([]);
+  const [collectionId, setCollectionId] = useState(
+    snapshot.settings.textDispatcherCollectionId || "",
   );
   const [slots, setSlots] = useState(
     String(snapshot.settings.dispatcherSlotsPerConnection || 1),
@@ -340,19 +340,30 @@ function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
   const [message, setMessage] = useState("");
 
   useEffect(() => {
-    setMode(snapshot.mode);
-    setDefaultPolicy(snapshot.settings.codexDefaultAdmissionPolicy || "legacy");
+    setCollectionId(snapshot.settings.textDispatcherCollectionId || "");
     setSlots(String(snapshot.settings.dispatcherSlotsPerConnection || 1));
   }, [
-    snapshot.mode,
-    snapshot.settings.codexDefaultAdmissionPolicy,
+    snapshot.settings.textDispatcherCollectionId,
     snapshot.settings.dispatcherSlotsPerConnection,
   ]);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/connection-collections", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((data) => {
+        if (!cancelled) {
+          setCollections(data.collections || []);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const hasChanges =
-    mode !== snapshot.mode ||
-    defaultPolicy !==
-      (snapshot.settings.codexDefaultAdmissionPolicy || "legacy") ||
+    collectionId !== (snapshot.settings.textDispatcherCollectionId || "") ||
     Number(slots) !==
       Number(snapshot.settings.dispatcherSlotsPerConnection || 1);
 
@@ -367,8 +378,7 @@ function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          mode,
-          codexDefaultAdmissionPolicy: defaultPolicy,
+          textDispatcherCollectionId: collectionId,
           dispatcherSlotsPerConnection: Number(slots),
         }),
       });
@@ -389,47 +399,35 @@ function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
   return (
     <Card
       title="Dispatcher controls"
-      subtitle="Runtime mode controls dispatcher enforcement; default policy controls untyped Codex keys."
+      subtitle="Managed-only dispatcher routing. Select which collection owns Codex text traffic."
       icon="tune"
     >
       <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
         <Card.Section className="flex flex-col gap-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-text-muted/70">
-              Runtime mode
-            </p>
-            <p className="mt-2 text-sm text-text-muted">
-              `Off` disables dispatcher participation, `Shadow` records
-              dispatcher telemetry without controlling traffic, and `Managed`
-              enables real queueing and slot control.
-            </p>
-          </div>
-          <SegmentedControl
-            options={[
-              { value: "off", label: "Off" },
-              { value: "shadow", label: "Shadow" },
-              { value: "managed", label: "Managed" },
-            ]}
-            value={mode}
-            onChange={setMode}
+          <Select
+            label="Connection collection"
+            value={collectionId}
+            onChange={(event) => setCollectionId(event.target.value)}
+            options={collections.map((collection) => ({
+              value: collection.id,
+              label: collection.name,
+            }))}
+            placeholder="Select collection"
+            hint="Only active Codex connections in this collection are eligible for text dispatch."
           />
-          <div className="pt-2">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-text-muted/70">
-              Default Codex policy
+          <div className="rounded-lg border border-black/5 bg-black/[0.02] p-3 text-sm text-text-muted dark:border-white/5 dark:bg-white/[0.02]">
+            <p>
+              Selected:{" "}
+              <span className="font-medium text-text-main">
+                {snapshot.selectedCollection?.name || "Unknown collection"}
+              </span>
             </p>
-            <p className="mt-2 text-sm text-text-muted">
-              Applies to Codex requests without a per-key override.
+            <p className="mt-1">
+              Eligible connections:{" "}
+              <span className="font-medium text-text-main">
+                {snapshot.capacity.activeConnections}
+              </span>
             </p>
-            <div className="mt-3">
-              <SegmentedControl
-                options={[
-                  { value: "legacy", label: "Legacy" },
-                  { value: "managed", label: "Managed" },
-                ]}
-                value={defaultPolicy}
-                onChange={setDefaultPolicy}
-              />
-            </div>
           </div>
         </Card.Section>
 
@@ -455,9 +453,8 @@ function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
             <Button
               variant="outline"
               onClick={() => {
-                setMode(snapshot.mode);
-                setDefaultPolicy(
-                  snapshot.settings.codexDefaultAdmissionPolicy || "legacy",
+                setCollectionId(
+                  snapshot.settings.textDispatcherCollectionId || "",
                 );
                 setSlots(
                   String(snapshot.settings.dispatcherSlotsPerConnection || 1),
@@ -580,7 +577,6 @@ export default function DispatcherPage() {
             current
               ? {
                   ...current,
-                  mode: settingsUpdate.mode,
                   settings: {
                     ...current.settings,
                     ...settingsUpdate,

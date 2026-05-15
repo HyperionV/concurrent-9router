@@ -8,6 +8,7 @@ import { parseQuotaData, calculatePercentage } from "./utils";
 import { getConnectionDisplayLabel } from "@/shared/utils/connectionDisplay";
 import Card from "@/shared/components/Card";
 import Button from "@/shared/components/Button";
+import Select from "@/shared/components/Select";
 import { EditConnectionModal } from "@/shared/components";
 import { USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
 
@@ -28,6 +29,8 @@ export default function ProviderLimits() {
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
+  const [collections, setCollections] = useState([]);
+  const [selectedCollectionFilter, setSelectedCollectionFilter] = useState("");
 
   const intervalRef = useRef(null);
   const countdownRef = useRef(null);
@@ -41,6 +44,13 @@ export default function ProviderLimits() {
       const data = await response.json();
       const connectionList = data.connections || [];
       setConnections(connectionList);
+      const nextCollections = new Map();
+      connectionList.forEach((connection) => {
+        (connection.collections || []).forEach((collection) => {
+          nextCollections.set(collection.id, collection);
+        });
+      });
+      setCollections([...nextCollections.values()]);
       return connectionList;
     } catch (error) {
       console.error("Error fetching connections:", error);
@@ -360,7 +370,9 @@ export default function ProviderLimits() {
   const filteredConnections = connections.filter(
     (conn) =>
       USAGE_SUPPORTED_PROVIDERS.includes(conn.provider) &&
-      conn.authType === "oauth",
+      conn.authType === "oauth" &&
+      (!selectedCollectionFilter ||
+        (conn.collectionIds || []).includes(selectedCollectionFilter)),
   );
 
   // Sort providers by USAGE_SUPPORTED_PROVIDERS order, then alphabetically
@@ -423,6 +435,19 @@ export default function ProviderLimits() {
         </div>
 
         <div className="flex items-center gap-2">
+          <div className="min-w-[220px]">
+            <Select
+              value={selectedCollectionFilter}
+              onChange={(event) =>
+                setSelectedCollectionFilter(event.target.value)
+              }
+              options={collections.map((collection) => ({
+                value: collection.id,
+                label: collection.name,
+              }))}
+              placeholder="Filter by collection"
+            />
+          </div>
           {/* Auto-refresh toggle */}
           <button
             onClick={() => setAutoRefresh((prev) => !prev)}
@@ -496,6 +521,18 @@ export default function ProviderLimits() {
                         <p className="text-xs text-text-muted truncate">
                           {connectionLabel}
                         </p>
+                      )}
+                      {(conn.collections || []).length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {conn.collections.map((collection) => (
+                            <span
+                              key={collection.id}
+                              className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary"
+                            >
+                              {collection.name}
+                            </span>
+                          ))}
+                        </div>
                       )}
                     </div>
                   </div>

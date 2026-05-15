@@ -14,9 +14,8 @@ process.env.DATA_DIR = tempDir;
 async function resetImageDispatcherTables() {
   const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
   closeSqlite();
-  const { clearImageDispatchTables } = await import(
-    "@/lib/sqlite/imageDispatcherStore.js"
-  );
+  const { clearImageDispatchTables } =
+    await import("@/lib/sqlite/imageDispatcherStore.js");
   clearImageDispatchTables();
 }
 
@@ -38,9 +37,8 @@ function makeConnections(count) {
 
 test("image dispatcher keeps a second image queued while one account is occupied", async () => {
   await resetImageDispatcherTables();
-  const { createImageDispatcherCore } = await import(
-    "@/lib/dispatcher/imageCore.js"
-  );
+  const { createImageDispatcherCore } =
+    await import("@/lib/dispatcher/imageCore.js");
 
   const dispatcher = createImageDispatcherCore({
     getConnections: async () => makeConnections(1),
@@ -72,9 +70,8 @@ test("image dispatcher keeps a second image queued while one account is occupied
 
 test("image dispatcher leases two image requests across two accounts", async () => {
   await resetImageDispatcherTables();
-  const { createImageDispatcherCore } = await import(
-    "@/lib/dispatcher/imageCore.js"
-  );
+  const { createImageDispatcherCore } =
+    await import("@/lib/dispatcher/imageCore.js");
 
   const dispatcher = createImageDispatcherCore({
     getConnections: async () => makeConnections(2),
@@ -99,9 +96,8 @@ test("image dispatcher leases two image requests across two accounts", async () 
 
 test("image dispatcher honors preferred connection only when its slot is free", async () => {
   await resetImageDispatcherTables();
-  const { createImageDispatcherCore } = await import(
-    "@/lib/dispatcher/imageCore.js"
-  );
+  const { createImageDispatcherCore } =
+    await import("@/lib/dispatcher/imageCore.js");
 
   const dispatcher = createImageDispatcherCore({
     getConnections: async () => makeConnections(2),
@@ -123,14 +119,48 @@ test("image dispatcher honors preferred connection only when its slot is free", 
   assert.equal(secondLease.connectionId, "conn-1");
 });
 
+test("image dispatcher rotates separately completed requests across accounts", async () => {
+  await resetImageDispatcherTables();
+  const { createImageDispatcherCore } =
+    await import("@/lib/dispatcher/imageCore.js");
+
+  const dispatcher = createImageDispatcherCore({
+    getConnections: async () => makeConnections(4),
+  });
+
+  const leasedConnectionIds = [];
+  for (let index = 0; index < 12; index += 1) {
+    const queued = await dispatcher.enqueueRequest({
+      modelId: "gpt-5.5-image",
+    });
+    const lease = await dispatcher.tryLeaseRequest(queued.request.id);
+    assert.ok(lease, `expected request ${queued.request.id} to lease`);
+    leasedConnectionIds.push(lease.connectionId);
+    await dispatcher.completeAttempt(lease.attemptId);
+  }
+
+  assert.deepEqual(leasedConnectionIds, [
+    "conn-1",
+    "conn-2",
+    "conn-3",
+    "conn-4",
+    "conn-1",
+    "conn-2",
+    "conn-3",
+    "conn-4",
+    "conn-1",
+    "conn-2",
+    "conn-3",
+    "conn-4",
+  ]);
+});
+
 test("image dispatcher failure releases account occupancy", async () => {
   await resetImageDispatcherTables();
-  const { createImageDispatcherCore } = await import(
-    "@/lib/dispatcher/imageCore.js"
-  );
-  const { getImageDispatchAttempt } = await import(
-    "@/lib/sqlite/imageDispatcherStore.js"
-  );
+  const { createImageDispatcherCore } =
+    await import("@/lib/dispatcher/imageCore.js");
+  const { getImageDispatchAttempt } =
+    await import("@/lib/sqlite/imageDispatcherStore.js");
 
   const dispatcher = createImageDispatcherCore({
     getConnections: async () => makeConnections(1),

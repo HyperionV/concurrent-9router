@@ -1,16 +1,17 @@
 import { NextResponse } from "next/server";
 import { getDispatcherStatusSnapshot } from "@/lib/dispatcher/metrics.js";
 import { getCodexDispatcher } from "@/lib/dispatcher/index.js";
-import { getSettings } from "@/lib/localDb.js";
+import { getConnectionCollections, getSettings } from "@/lib/localDb.js";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
     const { dispatcher, watchdog, getConnections } = getCodexDispatcher();
-    const [settings, connectionViews] = await Promise.all([
+    const [settings, connectionViews, collections] = await Promise.all([
       getSettings(),
       getConnections?.() || [],
+      getConnectionCollections(),
     ]);
     const inMemory = dispatcher?.getInMemorySnapshot?.() || null;
     const snapshot = getDispatcherStatusSnapshot({
@@ -19,8 +20,13 @@ export async function GET() {
       inMemory,
       connectionViews,
     });
+    const selectedCollection =
+      collections.find(
+        (collection) => collection.id === settings.textDispatcherCollectionId,
+      ) || null;
     return NextResponse.json({
       ...snapshot,
+      selectedCollection,
       watchdog: {
         timeoutPolicy: watchdog?.timeoutPolicy || null,
       },

@@ -52,6 +52,7 @@ export function createImageDispatcherCore({
   }
 
   const occupancyByConnection = {};
+  const leaseCountByConnection = {};
 
   function rebuildOccupancy(activeAttempts) {
     for (const key of Object.keys(occupancyByConnection)) {
@@ -61,6 +62,10 @@ export function createImageDispatcherCore({
       if (!attempt.connectionId) continue;
       occupancyByConnection[attempt.connectionId] =
         (occupancyByConnection[attempt.connectionId] || 0) + 1;
+      leaseCountByConnection[attempt.connectionId] = Math.max(
+        leaseCountByConnection[attempt.connectionId] || 0,
+        occupancyByConnection[attempt.connectionId],
+      );
     }
   }
 
@@ -132,6 +137,10 @@ export function createImageDispatcherCore({
           (occupancyByConnection[a.id] || 0) -
           (occupancyByConnection[b.id] || 0);
         if (occupancyDiff !== 0) return occupancyDiff;
+        const leaseCountDiff =
+          (leaseCountByConnection[a.id] || 0) -
+          (leaseCountByConnection[b.id] || 0);
+        if (leaseCountDiff !== 0) return leaseCountDiff;
         return compareConnections(a, b);
       });
   }
@@ -179,6 +188,8 @@ export function createImageDispatcherCore({
     );
     occupancyByConnection[connection.id] =
       (occupancyByConnection[connection.id] || 0) + 1;
+    leaseCountByConnection[connection.id] =
+      (leaseCountByConnection[connection.id] || 0) + 1;
 
     insertImageDispatchAttemptEvent({
       id: randomUUID(),
@@ -396,6 +407,7 @@ export function createImageDispatcherCore({
   function getInMemorySnapshot() {
     return {
       occupancyByConnection: { ...occupancyByConnection },
+      leaseCountByConnection: { ...leaseCountByConnection },
     };
   }
 
