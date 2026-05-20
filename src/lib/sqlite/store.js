@@ -83,6 +83,9 @@ function mapSettingsRow(row) {
       dispatcherSlotsPerConnection:
         row.dispatcher_slots_per_connection ??
         DEFAULT_SETTINGS.dispatcherSlotsPerConnection,
+      imageDispatcherSlotsPerConnection:
+        row.image_dispatcher_slots_per_connection ??
+        DEFAULT_SETTINGS.imageDispatcherSlotsPerConnection,
       textDispatcherCollectionId:
         row.text_dispatcher_collection_id ||
         DEFAULT_SETTINGS.textDispatcherCollectionId,
@@ -148,6 +151,7 @@ export function writeSettings(updates) {
       dispatcher_codex_only = @dispatcherCodexOnly,
       codex_default_admission_policy = @codexDefaultAdmissionPolicy,
       dispatcher_slots_per_connection = @dispatcherSlotsPerConnection,
+      image_dispatcher_slots_per_connection = @imageDispatcherSlotsPerConnection,
       text_dispatcher_collection_id = @textDispatcherCollectionId,
       image_dispatcher_collection_id = @imageDispatcherCollectionId,
       mitm_router_base_url = @mitmRouterBaseUrl,
@@ -189,6 +193,9 @@ export function writeSettings(updates) {
       dispatcherSlotsPerConnection:
         next.dispatcherSlotsPerConnection ??
         DEFAULT_SETTINGS.dispatcherSlotsPerConnection,
+      imageDispatcherSlotsPerConnection:
+        next.imageDispatcherSlotsPerConnection ??
+        DEFAULT_SETTINGS.imageDispatcherSlotsPerConnection,
       textDispatcherCollectionId: next.textDispatcherCollectionId || null,
       imageDispatcherCollectionId: next.imageDispatcherCollectionId || null,
       mitmRouterBaseUrl:

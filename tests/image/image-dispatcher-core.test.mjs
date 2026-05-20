@@ -94,6 +94,85 @@ test("image dispatcher leases two image requests across two accounts", async () 
   });
 });
 
+test("image dispatcher allows multiple concurrent image slots per connection", async () => {
+  await resetImageDispatcherTables();
+  const { createImageDispatcherCore } =
+    await import("@/lib/dispatcher/imageCore.js");
+
+  const dispatcher = createImageDispatcherCore({
+    getConnections: async () => makeConnections(1),
+    getSlotsPerConnection: () => 2,
+  });
+
+  const first = await dispatcher.enqueueRequest({ modelId: "gpt-5.5-image" });
+  const second = await dispatcher.enqueueRequest({ modelId: "gpt-5.5-image" });
+  const third = await dispatcher.enqueueRequest({ modelId: "gpt-5.5-image" });
+
+  const firstLease = await dispatcher.tryLeaseRequest(first.request.id);
+  const secondLease = await dispatcher.tryLeaseRequest(second.request.id);
+  const thirdLease = await dispatcher.tryLeaseRequest(third.request.id);
+  const snapshot = await dispatcher.getStatusSnapshot();
+
+  assert.equal(firstLease.connectionId, "conn-1");
+  assert.equal(secondLease.connectionId, "conn-1");
+  assert.equal(thirdLease, null);
+  assert.deepEqual(dispatcher.getInMemorySnapshot().occupancyByConnection, {
+    "conn-1": 2,
+  });
+  assert.equal(snapshot.capacity.capacityPerConnection, 2);
+  assert.equal(snapshot.capacity.totalCapacity, 2);
+  assert.equal(snapshot.capacity.activeLeases, 2);
+  assert.equal(snapshot.capacity.availableLeases, 0);
+});
+
+test("image dispatcher status awaits async image slot settings", async () => {
+  await resetImageDispatcherTables();
+  const { createImageDispatcherCore } =
+    await import("@/lib/dispatcher/imageCore.js");
+
+  let slotsPerConnection = 3;
+  const dispatcher = createImageDispatcherCore({
+    getConnections: async () => makeConnections(2),
+    getSlotsPerConnection: async () => slotsPerConnection,
+  });
+
+  const initialSnapshot = await dispatcher.getStatusSnapshot();
+  assert.equal(initialSnapshot.capacity.capacityPerConnection, 3);
+  assert.equal(initialSnapshot.capacity.totalCapacity, 6);
+
+  slotsPerConnection = 2;
+  const updatedSnapshot = await dispatcher.getStatusSnapshot();
+  assert.equal(updatedSnapshot.capacity.capacityPerConnection, 2);
+  assert.equal(updatedSnapshot.capacity.totalCapacity, 4);
+});
+
+test("image dispatcher serializes parallel lease attempts against connection capacity", async () => {
+  await resetImageDispatcherTables();
+  const { createImageDispatcherCore } =
+    await import("@/lib/dispatcher/imageCore.js");
+
+  const dispatcher = createImageDispatcherCore({
+    getConnections: async () => makeConnections(1),
+    getSlotsPerConnection: () => 2,
+  });
+
+  const queued = await Promise.all(
+    Array.from({ length: 4 }, () =>
+      dispatcher.enqueueRequest({ modelId: "gpt-5.5-image" }),
+    ),
+  );
+
+  const leases = await Promise.all(
+    queued.map(({ request }) => dispatcher.tryLeaseRequest(request.id)),
+  );
+  const leased = leases.filter(Boolean);
+
+  assert.equal(leased.length, 2);
+  assert.deepEqual(dispatcher.getInMemorySnapshot().occupancyByConnection, {
+    "conn-1": 2,
+  });
+});
+
 test("image dispatcher honors preferred connection only when its slot is free", async () => {
   await resetImageDispatcherTables();
   const { createImageDispatcherCore } =

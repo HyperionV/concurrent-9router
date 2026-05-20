@@ -46,6 +46,7 @@ function resolvePathMode(connection) {
 export function createImageDispatcherCore({
   provider = "codex",
   getConnections,
+  getSlotsPerConnection = () => 1,
 } = {}) {
   if (typeof getConnections !== "function") {
     throw new Error("createImageDispatcherCore requires getConnections");
@@ -53,6 +54,7 @@ export function createImageDispatcherCore({
 
   const occupancyByConnection = {};
   const leaseCountByConnection = {};
+  let leaseQueue = Promise.resolve();
 
   function rebuildOccupancy(activeAttempts) {
     for (const key of Object.keys(occupancyByConnection)) {
@@ -145,13 +147,20 @@ export function createImageDispatcherCore({
       });
   }
 
-  function planLeaseForRequest(request, connections) {
+  async function getCapacityPerConnection() {
+    const slots = Number(await getSlotsPerConnection());
+    return Number.isInteger(slots) && slots > 0 ? slots : 1;
+  }
+
+  async function planLeaseForRequest(request, connections) {
+    const capacityPerConnection = await getCapacityPerConnection();
     return sortConnectionsForRequest(connections, request).find(
-      (connection) => (occupancyByConnection[connection.id] || 0) < 1,
+      (connection) =>
+        (occupancyByConnection[connection.id] || 0) < capacityPerConnection,
     );
   }
 
-  async function tryLeaseRequest(requestId) {
+  async function leaseRequestWithoutQueue(requestId) {
     const [connections] = await Promise.all([
       getConnections(),
       syncOccupancy(),
@@ -164,7 +173,7 @@ export function createImageDispatcherCore({
     );
     if (!targetRequest) return null;
 
-    const connection = planLeaseForRequest(targetRequest, connections);
+    const connection = await planLeaseForRequest(targetRequest, connections);
     if (!connection) return null;
 
     const attempt = getLatestImageDispatchAttemptForRequest(requestId);
@@ -206,6 +215,14 @@ export function createImageDispatcherCore({
       request: targetRequest,
       attempt: leased,
     };
+  }
+
+  async function tryLeaseRequest(requestId) {
+    const nextLease = leaseQueue.then(() =>
+      leaseRequestWithoutQueue(requestId),
+    );
+    leaseQueue = nextLease.catch(() => null);
+    return nextLease;
   }
 
   async function tryLeaseAvailableWork() {
@@ -383,12 +400,14 @@ export function createImageDispatcherCore({
     const activeAttempts = await syncOccupancy();
     const connections = connectionViews || (await getConnections());
     const queuedRequests = listQueuedImageDispatchRequests(provider, 500);
+    const capacityPerConnection = await getCapacityPerConnection();
+    const totalCapacity = connections.length * capacityPerConnection;
     const capacity = {
       activeConnections: connections.length,
-      capacityPerConnection: 1,
-      totalCapacity: connections.length,
+      capacityPerConnection,
+      totalCapacity,
       activeLeases: activeAttempts.length,
-      availableLeases: Math.max(0, connections.length - activeAttempts.length),
+      availableLeases: Math.max(0, totalCapacity - activeAttempts.length),
     };
     capacity.utilization =
       capacity.totalCapacity > 0

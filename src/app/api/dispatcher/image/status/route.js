@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { listImageDispatchAttemptsByState } from "@/lib/sqlite/imageDispatcherStore.js";
 import { getCodexImageDispatcher } from "@/lib/dispatcher/imageIndex.js";
-import { getConnectionCollections, getSettings } from "@/lib/localDb.js";
+import { getConnectionCollections } from "@/lib/localDb.js";
 
 export const dynamic = "force-dynamic";
 
@@ -30,13 +30,18 @@ function summarizeTerminal(terminalAttempts) {
 
 export async function GET() {
   try {
-    const { dispatcher, getConnections } = getCodexImageDispatcher();
-    const connectionViews = await getConnections();
-    const [settings, collections] = await Promise.all([
-      getSettings(),
+    const {
+      dispatcher,
+      getConnections,
+      getSettings: getImageSettings,
+    } = getCodexImageDispatcher();
+    const [settings, connectionViews, collections] = await Promise.all([
+      getImageSettings(),
+      getConnections(),
       getConnectionCollections(),
     ]);
     const snapshot = await dispatcher.getStatusSnapshot({ connectionViews });
+    const capacityPerConnection = snapshot.capacity.capacityPerConnection;
     const terminalAttempts = listImageDispatchAttemptsByState([
       "completed",
       "failed",
@@ -56,6 +61,11 @@ export async function GET() {
       alwaysOn: true,
       selectedCollection,
       generatedAt: new Date().toISOString(),
+      settings: {
+        imageDispatcherCollectionId:
+          settings.imageDispatcherCollectionId || null,
+        imageDispatcherSlotsPerConnection: capacityPerConnection,
+      },
       capacity: snapshot.capacity,
       queued: summarizeQueued(snapshot.queuedRequests),
       activeAttempts: snapshot.activeAttempts,
@@ -69,9 +79,12 @@ export async function GET() {
           connection.email ||
           connection.id,
         occupiedSlots: snapshot.occupancyByConnection[connection.id] || 0,
-        capacity: 1,
-        availableSlots:
-          (snapshot.occupancyByConnection[connection.id] || 0) > 0 ? 0 : 1,
+        capacity: capacityPerConnection,
+        availableSlots: Math.max(
+          0,
+          capacityPerConnection -
+            (snapshot.occupancyByConnection[connection.id] || 0),
+        ),
         proxyPoolId:
           connection.providerSpecificData?.connectionProxyPoolId || null,
       })),

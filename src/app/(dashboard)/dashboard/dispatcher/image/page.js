@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   CardSkeleton,
+  Input,
   Select,
   Spinner,
 } from "@/shared/components";
@@ -126,7 +127,10 @@ export default function ImageDispatcherPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [collections, setCollections] = useState([]);
   const [selectedCollectionId, setSelectedCollectionId] = useState("");
-  const [savingCollection, setSavingCollection] = useState(false);
+  const [slotsPerConnection, setSlotsPerConnection] = useState("1");
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
+  const [settingsMessage, setSettingsMessage] = useState("");
 
   const fetchStatus = useCallback(async ({ silent = false } = {}) => {
     if (silent) setRefreshing(true);
@@ -167,8 +171,28 @@ export default function ImageDispatcherPage() {
   }, []);
 
   useEffect(() => {
-    setSelectedCollectionId(snapshot?.selectedCollection?.id || "");
-  }, [snapshot?.selectedCollection?.id]);
+    const nextCollectionId =
+      snapshot?.settings?.imageDispatcherCollectionId || "";
+    const nextSlotsPerConnection = String(
+      snapshot?.settings?.imageDispatcherSlotsPerConnection || 1,
+    );
+    const isDirty =
+      selectedCollectionId !== "" &&
+      (selectedCollectionId !== nextCollectionId ||
+        String(Number(slotsPerConnection)) !== nextSlotsPerConnection);
+
+    if (isDirty) return;
+
+    setSelectedCollectionId(nextCollectionId);
+    setSlotsPerConnection(nextSlotsPerConnection);
+    setSettingsError("");
+    setSettingsMessage("");
+  }, [
+    selectedCollectionId,
+    slotsPerConnection,
+    snapshot?.settings?.imageDispatcherCollectionId,
+    snapshot?.settings?.imageDispatcherSlotsPerConnection,
+  ]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -201,13 +225,49 @@ export default function ImageDispatcherPage() {
     reason: attempt.terminalReason || "unknown",
     finishedAt: formatTimestamp(attempt.finishedAt),
   }));
+  const savedCollectionId =
+    snapshot.settings?.imageDispatcherCollectionId || "";
+  const savedSlotsPerConnection = String(
+    snapshot.settings?.imageDispatcherSlotsPerConnection || 1,
+  );
+  const settingsChanged =
+    selectedCollectionId !== savedCollectionId ||
+    String(Number(slotsPerConnection)) !== savedSlotsPerConnection;
+
+  const handleSaveSettings = async () => {
+    setSavingSettings(true);
+    setSettingsError("");
+    setSettingsMessage("");
+    try {
+      const response = await fetch("/api/dispatcher/image/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageDispatcherCollectionId: selectedCollectionId,
+          imageDispatcherSlotsPerConnection: Number(slotsPerConnection),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          data?.error || "Failed to update image dispatcher settings",
+        );
+      }
+      setSettingsMessage("Image dispatcher settings updated.");
+      await fetchStatus({ silent: true });
+    } catch (error) {
+      setSettingsError(error.message);
+    } finally {
+      setSavingSettings(false);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <Card
           title="Image dispatcher"
-          subtitle="Always-on Codex image queue. Capacity is fixed at one active image request per account and independent from text dispatcher slots."
+          subtitle="Always-on Codex image queue. Capacity uses an image-only slot limit per account and stays independent from text dispatcher slots."
           icon="image"
           className="flex-1"
         />
@@ -226,7 +286,7 @@ export default function ImageDispatcherPage() {
         <StatCard
           title="Capacity"
           value={`${snapshot.capacity.activeLeases}/${snapshot.capacity.totalCapacity}`}
-          detail={`${snapshot.capacity.activeConnections} active Codex account(s), fixed 1 image slot each.`}
+          detail={`${snapshot.capacity.activeConnections} active Codex account(s), ${snapshot.capacity.capacityPerConnection} image slot(s) each.`}
           icon="hub"
           badge={{ label: "Always on", variant: "success" }}
         />
@@ -245,55 +305,65 @@ export default function ImageDispatcherPage() {
       </div>
 
       <Card
-        title="Connection collection"
+        title="Dispatcher Configuration"
         subtitle="Only active Codex accounts in this collection are eligible for image dispatch."
         icon="inventory_2"
+        action={
+          <div className="flex items-center gap-2">
+            <Button
+              variant="primary"
+              onClick={handleSaveSettings}
+              disabled={!settingsChanged}
+              loading={savingSettings}
+            >
+              Apply
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setSelectedCollectionId(savedCollectionId);
+                setSlotsPerConnection(savedSlotsPerConnection);
+                setSettingsError("");
+                setSettingsMessage("");
+              }}
+              disabled={!settingsChanged || savingSettings}
+            >
+              Reset
+            </Button>
+          </div>
+        }
       >
         <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
           <Card.Section className="flex flex-col gap-3">
             <Select
               label="Image collection"
               value={selectedCollectionId}
-              onChange={async (event) => {
-                const nextValue = event.target.value;
-                setSelectedCollectionId(nextValue);
-                setSavingCollection(true);
-                try {
-                  await fetch("/api/dispatcher/image/settings", {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      imageDispatcherCollectionId: nextValue,
-                    }),
-                  });
-                  await fetchStatus({ silent: true });
-                } finally {
-                  setSavingCollection(false);
-                }
-              }}
+              onChange={(event) => setSelectedCollectionId(event.target.value)}
               options={collections.map((collection) => ({
                 value: collection.id,
                 label: collection.name,
               }))}
               placeholder="Select collection"
+              hint="Only active Codex accounts in this collection are eligible for image dispatch."
             />
-          </Card.Section>
-          <Card.Section className="flex flex-col gap-2">
-            <p className="text-sm text-text-muted">
-              Selected:{" "}
-              <span className="font-medium text-text-main">
-                {snapshot.selectedCollection?.name || "Unknown collection"}
-              </span>
-            </p>
-            <p className="text-sm text-text-muted">
-              Eligible accounts:{" "}
-              <span className="font-medium text-text-main">
-                {snapshot.capacity.activeConnections}
-              </span>
-            </p>
-            {savingCollection ? (
-              <p className="text-sm text-text-muted">Saving selection...</p>
+            {settingsError ? (
+              <p className="text-sm text-red-500">{settingsError}</p>
+            ) : settingsMessage ? (
+              <p className="text-sm text-green-600 dark:text-green-400">
+                {settingsMessage}
+              </p>
             ) : null}
+          </Card.Section>
+          <Card.Section className="flex flex-col gap-3">
+            <Input
+              label="Slots per connection"
+              type="number"
+              min="1"
+              max="20"
+              value={slotsPerConnection}
+              onChange={(event) => setSlotsPerConnection(event.target.value)}
+              hint="Image-only capacity. Increase cautiously after validating account stability."
+            />
           </Card.Section>
         </div>
       </Card>

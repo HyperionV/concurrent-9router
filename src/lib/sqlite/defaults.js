@@ -30,6 +30,7 @@ export const DEFAULT_SETTINGS = {
   dispatcherCodexOnly: true,
   codexDefaultAdmissionPolicy: "managed",
   dispatcherSlotsPerConnection: 1,
+  imageDispatcherSlotsPerConnection: 1,
   textDispatcherCollectionId: null,
   imageDispatcherCollectionId: null,
   mitmRouterBaseUrl: DEFAULT_MITM_ROUTER_BASE,

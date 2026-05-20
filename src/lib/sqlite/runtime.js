@@ -144,6 +144,7 @@ function runMigrations(db) {
       dispatcher_codex_only INTEGER NOT NULL DEFAULT 1,
       codex_default_admission_policy TEXT NOT NULL DEFAULT 'legacy',
       dispatcher_slots_per_connection INTEGER NOT NULL DEFAULT 1,
+      image_dispatcher_slots_per_connection INTEGER NOT NULL DEFAULT 1,
       mitm_router_base_url TEXT NOT NULL DEFAULT 'http://localhost:20128',
       password TEXT,
       mitm_enabled INTEGER NOT NULL DEFAULT 0
@@ -520,6 +521,12 @@ function runMigrations(db) {
     "dispatcher_slots_per_connection",
     "INTEGER NOT NULL DEFAULT 1",
   );
+  ensureColumn(
+    db,
+    "app_settings",
+    "image_dispatcher_slots_per_connection",
+    "INTEGER NOT NULL DEFAULT 1",
+  );
   ensureColumn(db, "app_settings", "text_dispatcher_collection_id", "TEXT");
   ensureColumn(db, "app_settings", "image_dispatcher_collection_id", "TEXT");
   ensureColumn(db, "api_keys", "codex_admission_policy_override", "TEXT");
@@ -580,6 +587,7 @@ function seedDefaults(db) {
       dispatcher_codex_only,
       codex_default_admission_policy,
       dispatcher_slots_per_connection,
+      image_dispatcher_slots_per_connection,
       text_dispatcher_collection_id,
       image_dispatcher_collection_id,
       mitm_router_base_url,
@@ -593,7 +601,8 @@ function seedDefaults(db) {
       @observabilityMaxRecords, @observabilityBatchSize,
       @observabilityFlushIntervalMs, @observabilityMaxJsonSize,
       @outboundProxyEnabled, @outboundProxyUrl, @outboundNoProxy,
-      @dispatcherEnabled, @dispatcherShadowMode, @dispatcherCodexOnly, @codexDefaultAdmissionPolicy, @dispatcherSlotsPerConnection,
+      @dispatcherEnabled, @dispatcherShadowMode, @dispatcherCodexOnly, @codexDefaultAdmissionPolicy,
+      @dispatcherSlotsPerConnection, @imageDispatcherSlotsPerConnection,
       @textDispatcherCollectionId, @imageDispatcherCollectionId,
       @mitmRouterBaseUrl, @password, @mitmEnabled
     )
@@ -628,6 +637,8 @@ function seedDefaults(db) {
     codexDefaultAdmissionPolicy:
       settings.codexDefaultAdmissionPolicy || "legacy",
     dispatcherSlotsPerConnection: settings.dispatcherSlotsPerConnection ?? 1,
+    imageDispatcherSlotsPerConnection:
+      settings.imageDispatcherSlotsPerConnection ?? 1,
     textDispatcherCollectionId: settings.textDispatcherCollectionId || null,
     imageDispatcherCollectionId: settings.imageDispatcherCollectionId || null,
     mitmRouterBaseUrl: settings.mitmRouterBaseUrl,

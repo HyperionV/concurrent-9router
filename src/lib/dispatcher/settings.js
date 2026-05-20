@@ -41,12 +41,26 @@ export function buildDispatcherModePatch(mode) {
   };
 }
 
-export function normalizeDispatcherSlotsPerConnection(value, max = 20) {
+function normalizeSlotsPerConnection(value, settingName, max = 20) {
   const numeric = Number(value);
   if (!Number.isInteger(numeric) || numeric < 1 || numeric > max) {
-    throw new Error(
-      `dispatcherSlotsPerConnection must be an integer between 1 and ${max}`,
-    );
+    throw new Error(`${settingName} must be an integer between 1 and ${max}`);
   }
   return numeric;
+}
+
+export function normalizeDispatcherSlotsPerConnection(value, max = 20) {
+  return normalizeSlotsPerConnection(
+    value,
+    "dispatcherSlotsPerConnection",
+    max,
+  );
+}
+
+export function normalizeImageDispatcherSlotsPerConnection(value, max = 20) {
+  return normalizeSlotsPerConnection(
+    value,
+    "imageDispatcherSlotsPerConnection",
+    max,
+  );
 }

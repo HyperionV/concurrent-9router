@@ -4,8 +4,17 @@ import { getProviderConnections, getSettings } from "@/lib/localDb.js";
 
 const IMAGE_DISPATCHER_KEY = Symbol.for("nine-router.image-dispatcher");
 
-async function getCodexImageConnections() {
+let lastKnownImageSlotsPerConnection = 1;
+
+async function getCodexImageSettings() {
   const settings = await getSettings();
+  lastKnownImageSlotsPerConnection =
+    settings.imageDispatcherSlotsPerConnection ?? 1;
+  return settings;
+}
+
+async function getCodexImageConnections() {
+  const settings = await getCodexImageSettings();
   const connections = await getProviderConnections({
     provider: "codex",
     isActive: true,
@@ -20,10 +29,17 @@ function getGlobalState() {
       dispatcher: createImageDispatcherCore({
         provider: "codex",
         getConnections: getCodexImageConnections,
+        getSlotsPerConnection: async () => {
+          const settings = await getCodexImageSettings();
+          return settings.imageDispatcherSlotsPerConnection;
+        },
       }),
-      getConnections: getCodexImageConnections,
     };
   }
+
+  globalThis[IMAGE_DISPATCHER_KEY].getConnections = getCodexImageConnections;
+  globalThis[IMAGE_DISPATCHER_KEY].getSettings = getCodexImageSettings;
+
   return globalThis[IMAGE_DISPATCHER_KEY];
 }
 
