@@ -1,10 +1,14 @@
 import { EventEmitter } from "events";
 import { ensureSqliteReady } from "@/lib/sqlite/bootstrap.js";
 import {
+  getUsageChartRows,
+  getUsageDashboardRows,
   getUsageEventsCount,
+  getUsageMinuteBuckets,
   insertRequestLog,
   insertUsageEvent,
   listRecentRequestLogs,
+  listRecentUsageEvents,
   queryUsageEvents,
 } from "@/lib/sqlite/store.js";
 
@@ -235,25 +239,16 @@ export async function getActiveRequests() {
     }
   }
 
-  const history = queryUsageEvents(
-    "WHERE (prompt_tokens > 0 OR completion_tokens > 0)",
-  );
   const seen = new Set();
-  const recentRequests = [...history]
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-    .map((e) => {
-      const t = e.tokens || {};
-      const promptTokens = t.prompt_tokens || t.input_tokens || 0;
-      const completionTokens = t.completion_tokens || t.output_tokens || 0;
-      return {
-        timestamp: e.timestamp,
-        model: e.model,
-        provider: e.provider || "",
-        promptTokens,
-        completionTokens,
-        status: e.status || "ok",
-      };
-    })
+  const recentRequests = listRecentUsageEvents(80)
+    .map((e) => ({
+      timestamp: e.timestamp,
+      model: e.model,
+      provider: e.provider || "",
+      promptTokens: e.promptTokens || 0,
+      completionTokens: e.completionTokens || 0,
+      status: e.status || "ok",
+    }))
     .filter((e) => {
       if (e.promptTokens === 0 && e.completionTokens === 0) return false;
       const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
@@ -486,7 +481,310 @@ const PERIOD_MS = {
  * Get aggregated usage stats
  * @param {"24h"|"7d"|"30d"|"60d"|"all"} period - Time period to filter
  */
-export async function getUsageStats(period = "all") {
+function buildConnectionMap(connections) {
+  const map = {};
+  for (const conn of connections) {
+    map[conn.id] = conn.name || conn.email || conn.id;
+  }
+  return map;
+}
+
+function buildProviderNodeNameMap(nodes) {
+  const map = {};
+  for (const node of nodes) {
+    if (node.id && node.name) map[node.id] = node.name;
+  }
+  return map;
+}
+
+function buildApiKeyMap(apiKeys) {
+  const map = {};
+  for (const key of apiKeys) {
+    map[key.key] = {
+      name: key.name,
+      id: key.id,
+      createdAt: key.createdAt,
+    };
+  }
+  return map;
+}
+
+function createBaseUsageStats(totalRequests, recentRequests) {
+  return {
+    totalRequests,
+    totalPromptTokens: 0,
+    totalCompletionTokens: 0,
+    totalCost: 0,
+    byProvider: {},
+    byModel: {},
+    byAccount: {},
+    byApiKey: {},
+    byEndpoint: {},
+    last10Minutes: [],
+    pending: pendingRequests,
+    activeRequests: [],
+    recentRequests,
+    errorProvider:
+      Date.now() - lastErrorProvider.ts < 10000
+        ? lastErrorProvider.provider
+        : "",
+  };
+}
+
+function getRecentUsageRequests() {
+  const seen = new Set();
+  return listRecentUsageEvents(80)
+    .map((e) => ({
+      timestamp: e.timestamp,
+      model: e.model,
+      provider: e.provider || "",
+      promptTokens: e.promptTokens || 0,
+      completionTokens: e.completionTokens || 0,
+      status: e.status || "ok",
+    }))
+    .filter((e) => {
+      if (e.promptTokens === 0 && e.completionTokens === 0) return false;
+      const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
+      const key = `${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 20);
+}
+
+function attachActiveRequests(stats, connectionMap) {
+  for (const [connectionId, models] of Object.entries(
+    pendingRequests.byAccount,
+  )) {
+    for (const [modelKey, count] of Object.entries(models)) {
+      if (count <= 0) continue;
+      const accountName =
+        connectionMap[connectionId] || `Account ${connectionId.slice(0, 8)}...`;
+      const match = modelKey.match(/^(.*) \((.*)\)$/);
+      stats.activeRequests.push({
+        model: match ? match[1] : modelKey,
+        provider: match ? match[2] : "unknown",
+        account: accountName,
+        count,
+      });
+    }
+  }
+}
+
+function attachLast10Minutes(stats) {
+  const now = new Date();
+  const currentMinuteStart = new Date(
+    Math.floor(now.getTime() / 60000) * 60000,
+  );
+  const bucketMap = {};
+  for (let i = 0; i < 10; i++) {
+    const bucketTime = currentMinuteStart.getTime() - (9 - i) * 60 * 1000;
+    bucketMap[new Date(bucketTime).toISOString()] = {
+      requests: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      cost: 0,
+    };
+    stats.last10Minutes.push(bucketMap[new Date(bucketTime).toISOString()]);
+  }
+
+  for (const row of getUsageMinuteBuckets(10)) {
+    if (!bucketMap[row.minuteKey]) continue;
+    bucketMap[row.minuteKey].requests = row.requests || 0;
+    bucketMap[row.minuteKey].promptTokens = row.promptTokens || 0;
+    bucketMap[row.minuteKey].completionTokens = row.completionTokens || 0;
+    bucketMap[row.minuteKey].cost = row.cost || 0;
+  }
+}
+
+function addAggregatedStats(target, key, row, meta = {}) {
+  if (!target[key]) {
+    target[key] = {
+      requests: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      cost: 0,
+      lastUsed: row.lastUsed,
+      ...meta,
+    };
+  }
+  target[key].requests += row.requests || 0;
+  target[key].promptTokens += row.promptTokens || 0;
+  target[key].completionTokens += row.completionTokens || 0;
+  target[key].cost += row.cost || 0;
+  if (
+    row.lastUsed &&
+    (!target[key].lastUsed || row.lastUsed > target[key].lastUsed)
+  ) {
+    target[key].lastUsed = row.lastUsed;
+  }
+}
+
+function mergeDashboardRows(
+  stats,
+  rows,
+  connectionMap,
+  apiKeyMap,
+  providerNodeNameMap,
+) {
+  for (const row of rows) {
+    const provider = row.provider || "";
+    const providerDisplayName = providerNodeNameMap[provider] || provider;
+    const rawModel = row.model_id || "";
+
+    stats.totalPromptTokens += row.promptTokens || 0;
+    stats.totalCompletionTokens += row.completionTokens || 0;
+    stats.totalCost += row.cost || 0;
+
+    addAggregatedStats(stats.byProvider, provider || "unknown", row);
+
+    const modelKey = provider ? `${rawModel} (${provider})` : rawModel;
+    addAggregatedStats(stats.byModel, modelKey, row, {
+      rawModel,
+      provider: providerDisplayName,
+    });
+
+    if (row.connection_id) {
+      const accountName =
+        connectionMap[row.connection_id] ||
+        `Account ${String(row.connection_id).slice(0, 8)}...`;
+      addAggregatedStats(
+        stats.byAccount,
+        `${rawModel} (${provider} - ${accountName})`,
+        row,
+        {
+          rawModel,
+          provider: providerDisplayName,
+          connectionId: row.connection_id,
+          accountName,
+        },
+      );
+    }
+
+    const apiKeyVal = row.api_key_value;
+    const keyInfo = apiKeyVal ? apiKeyMap[apiKeyVal] : null;
+    const keyName =
+      keyInfo?.name ||
+      (apiKeyVal ? `${apiKeyVal.slice(0, 8)}...` : "Local (No API Key)");
+    const apiKeyKey = apiKeyVal || "local-no-key";
+    addAggregatedStats(
+      stats.byApiKey,
+      `${apiKeyKey}|${rawModel}|${provider || "unknown"}`,
+      row,
+      {
+        rawModel,
+        provider: providerDisplayName,
+        apiKey: apiKeyVal,
+        keyName,
+        apiKeyKey,
+      },
+    );
+
+    const endpoint = row.endpoint || "Unknown";
+    addAggregatedStats(
+      stats.byEndpoint,
+      `${endpoint}|${rawModel}|${provider || "unknown"}`,
+      row,
+      {
+        endpoint,
+        rawModel,
+        provider: providerDisplayName,
+      },
+    );
+  }
+}
+
+function normalizeChartStep(options = {}) {
+  if (options.step !== "custom") {
+    return {
+      kind: options.step === "hour" ? "hour" : "day",
+      unit: options.step === "hour" ? "hour" : "day",
+      size: 1,
+    };
+  }
+
+  const size = Number.parseInt(options.stepSize, 10);
+  const unit = options.stepUnit === "hour" ? "hour" : "day";
+  if (!Number.isInteger(size) || size < 1 || size > 365) {
+    return { error: "Custom chart step must be between 1 and 365" };
+  }
+  return { kind: "custom", unit, size };
+}
+
+export function validateCustomUsageRange(options = {}, step = "day") {
+  const start = options.start ? new Date(options.start) : null;
+  const end = options.end ? new Date(options.end) : null;
+  if (!start || Number.isNaN(start.getTime())) {
+    return { error: "Custom range requires a valid start date" };
+  }
+  if (!end || Number.isNaN(end.getTime())) {
+    return { error: "Custom range requires a valid end date" };
+  }
+  if (start > end) {
+    return { error: "Custom range start must be before end" };
+  }
+  const stepConfig = normalizeChartStep({ ...options, step });
+  if (stepConfig.error) return stepConfig;
+  const unitMs = stepConfig.unit === "hour" ? 3600000 : 86400000;
+  const stepMs = stepConfig.size * unitMs;
+  const bucketCount =
+    Math.floor((end.getTime() - start.getTime()) / stepMs) + 1;
+  if (bucketCount > 1000) {
+    return { error: "Custom range is limited to 1000 chart buckets" };
+  }
+  return {
+    range: {
+      kind: "custom",
+      start: start.toISOString(),
+      end: end.toISOString(),
+    },
+  };
+}
+
+function normalizeUsageRange(period = "7d", options = {}) {
+  if (period === "custom") {
+    const result = validateCustomUsageRange(options);
+    if (result.error) throw new Error(result.error);
+    return result.range;
+  }
+  return period;
+}
+
+export async function getUsageStats(period = "all", options = {}) {
+  await ensureSqliteReady();
+  const { getProviderConnections, getApiKeys, getProviderNodes } =
+    await import("@/lib/localDb.js");
+
+  const [allConnections, providerNodes, allApiKeys] = await Promise.all([
+    getProviderConnections().catch(() => []),
+    getProviderNodes().catch(() => []),
+    getApiKeys().catch(() => []),
+  ]);
+  const connectionMap = buildConnectionMap(allConnections);
+  const providerNodeNameMap = buildProviderNodeNameMap(providerNodes);
+  const apiKeyMap = buildApiKeyMap(allApiKeys);
+  const range = normalizeUsageRange(period, options);
+  const rows = getUsageDashboardRows(range);
+  const stats = createBaseUsageStats(
+    getUsageEventsCount(),
+    getRecentUsageRequests(),
+  );
+
+  attachActiveRequests(stats, connectionMap);
+  attachLast10Minutes(stats);
+  mergeDashboardRows(
+    stats,
+    rows,
+    connectionMap,
+    apiKeyMap,
+    providerNodeNameMap,
+  );
+
+  return stats;
+}
+
+async function getUsageStatsLegacy(period = "all") {
   const db = await getUsageDb();
   const history = db.data.history || [];
   const dailySummary = db.data.dailySummary || {};
@@ -945,69 +1243,85 @@ export async function getUsageStats(period = "all") {
   return stats;
 }
 
-/**
- * Get time-series chart data for a given period
- * @param {"24h"|"7d"|"30d"|"60d"} period
- * @returns {Promise<Array<{label: string, tokens: number, cost: number}>>}
- */
-export async function getChartData(period = "7d") {
-  const db = await getUsageDb();
-  const history = db.data.history || [];
-  const dailySummary = db.data.dailySummary || {};
+const CHART_STEP_MS = {
+  hour: 3600000,
+  day: 86400000,
+};
+
+function getDefaultChartWindow(period) {
   const now = Date.now();
+  if (period === "24h")
+    return { startMs: now - 23 * CHART_STEP_MS.hour, endMs: now };
+  const daysByPeriod = { "7d": 7, "30d": 30, "60d": 60 };
+  const days = daysByPeriod[period] || daysByPeriod["7d"];
+  return { startMs: now - (days - 1) * CHART_STEP_MS.day, endMs: now };
+}
 
-  // 24h: bucket by hour from live history
-  if (period === "24h") {
-    const bucketCount = 24;
-    const bucketMs = 3600000;
-    const labelFn = (ts) =>
-      new Date(ts).toLocaleTimeString("en-US", {
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false,
-      });
-    const startTime = now - bucketCount * bucketMs;
-    const buckets = Array.from({ length: bucketCount }, (_, i) => {
-      const ts = startTime + i * bucketMs;
-      return { label: labelFn(ts), tokens: 0, cost: 0 };
+function getChartWindow(period, options) {
+  if (period === "custom") {
+    const range = normalizeUsageRange(period, options);
+    return {
+      startMs: new Date(range.start).getTime(),
+      endMs: new Date(range.end).getTime(),
+    };
+  }
+  return getDefaultChartWindow(period);
+}
+
+function getChartBucketLabel(timestampMs, stepConfig) {
+  const d = new Date(timestampMs);
+  if (stepConfig.unit === "hour") {
+    return d.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
     });
+  }
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
 
-    for (const entry of history) {
-      const entryTime = new Date(entry.timestamp).getTime();
-      if (entryTime < startTime || entryTime > now) continue;
-      const idx = Math.min(
-        Math.floor((entryTime - startTime) / bucketMs),
-        bucketCount - 1,
-      );
-      buckets[idx].tokens +=
-        (entry.tokens?.prompt_tokens || 0) +
-        (entry.tokens?.completion_tokens || 0);
-      buckets[idx].cost += entry.cost || 0;
-    }
-    return buckets;
+function alignChartBucket(timestampMs, stepMs) {
+  return Math.floor(timestampMs / stepMs) * stepMs;
+}
+
+export async function getChartData(period = "7d", options = {}) {
+  await ensureSqliteReady();
+  const stepConfig = normalizeChartStep(options);
+  if (stepConfig.error) throw new Error(stepConfig.error);
+  const stepMs = stepConfig.size * CHART_STEP_MS[stepConfig.unit];
+  const { startMs, endMs } = getChartWindow(period, options);
+  const bucketStartMs = alignChartBucket(startMs, stepMs);
+  const bucketEndMs = alignChartBucket(endMs, stepMs);
+  const range =
+    period === "custom"
+      ? normalizeUsageRange(period, options)
+      : {
+          start: new Date(startMs).toISOString(),
+          end: new Date(endMs).toISOString(),
+        };
+  const buckets = new Map();
+
+  for (let ts = bucketStartMs; ts <= bucketEndMs; ts += stepMs) {
+    buckets.set(ts, {
+      label: getChartBucketLabel(ts, stepConfig),
+      tokens: 0,
+      cost: 0,
+    });
   }
 
-  // 7d/30d/60d: bucket by day from dailySummary (local dates)
-  const bucketCount = period === "7d" ? 7 : period === "30d" ? 30 : 60;
-  const today = new Date();
-  const labelFn = (d) =>
-    d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  for (const row of getUsageChartRows(range, stepConfig)) {
+    const rowMs = new Date(row.bucketKey).getTime();
+    if (Number.isNaN(rowMs)) continue;
+    const bucketMs = alignChartBucket(rowMs, stepMs);
+    const bucket = buckets.get(bucketMs);
+    if (!bucket) continue;
+    bucket.tokens += row.tokens || 0;
+    bucket.cost += row.cost || 0;
+  }
 
-  const buckets = Array.from({ length: bucketCount }, (_, i) => {
-    const d = new Date(today);
-    d.setDate(d.getDate() - (bucketCount - 1 - i));
-    const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    const dayData = dailySummary[dateKey];
-    return {
-      label: labelFn(d),
-      tokens: dayData
-        ? (dayData.promptTokens || 0) + (dayData.completionTokens || 0)
-        : 0,
-      cost: dayData ? dayData.cost || 0 : 0,
-    };
-  });
-
-  return buckets;
+  return [...buckets.values()];
 }
 
 // Re-export request details functions from new SQLite-based module

@@ -8,6 +8,9 @@ const nextConfig = {
   output: "standalone",
   outputFileTracingRoot: __dirname,
   serverExternalPackages: ["better-sqlite3"],
+  experimental: {
+    proxyClientMaxBodySize: "256mb",
+  },
   images: {
     unoptimized: true,
   },

@@ -1489,10 +1489,156 @@ export function queryUsageEvents(whereSql = "", params = []) {
     }));
 }
 
+function usagePeriodWhere(period, tableAlias = "") {
+  const prefix = tableAlias ? `${tableAlias}.` : "";
+  const range = typeof period === "object" && period ? period : null;
+  if (range) {
+    const clauses = [];
+    const params = [];
+    if (range.start) {
+      clauses.push(`${prefix}timestamp >= ?`);
+      params.push(range.start);
+    }
+    if (range.end) {
+      clauses.push(`${prefix}timestamp <= ?`);
+      params.push(range.end);
+    }
+    return {
+      whereSql: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "",
+      params,
+    };
+  }
+  if (period === "all") return { whereSql: "", params: [] };
+
+  const daysByPeriod = {
+    "24h": 1,
+    "7d": 7,
+    "30d": 30,
+    "60d": 60,
+  };
+  const days = daysByPeriod[period] || daysByPeriod["7d"];
+  const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+  return { whereSql: `WHERE ${prefix}timestamp >= ?`, params: [cutoff] };
+}
+
+function usageSummarySelect(groupFields = []) {
+  const groupSelect = groupFields.length
+    ? `${groupFields.join(",\n      ")},`
+    : "";
+  return `
+    SELECT
+      ${groupSelect}
+      COUNT(*) AS requests,
+      COALESCE(SUM(prompt_tokens), 0) AS promptTokens,
+      COALESCE(SUM(completion_tokens), 0) AS completionTokens,
+      COALESCE(SUM(cost), 0) AS cost,
+      MAX(timestamp) AS lastUsed
+    FROM usage_events
+  `;
+}
+
+function queryUsageSummaryRows(groupFields, period) {
+  const { whereSql, params } = usagePeriodWhere(period);
+  const groupBy = groupFields.length
+    ? `GROUP BY ${groupFields.join(", ")}`
+    : "";
+  return db()
+    .prepare(`${usageSummarySelect(groupFields)} ${whereSql} ${groupBy}`)
+    .all(...params);
+}
+
 export function getUsageEventsCount() {
   return (
     db().prepare("SELECT COUNT(*) AS count FROM usage_events").get()?.count || 0
   );
+}
+
+export function getUsageDashboardRows(period = "7d") {
+  const { whereSql, params } = usagePeriodWhere(period);
+  return db()
+    .prepare(
+      `
+    SELECT
+      provider,
+      model_id,
+      connection_id,
+      api_key_value,
+      endpoint,
+      COUNT(*) AS requests,
+      COALESCE(SUM(prompt_tokens), 0) AS promptTokens,
+      COALESCE(SUM(completion_tokens), 0) AS completionTokens,
+      COALESCE(SUM(cost), 0) AS cost,
+      MAX(timestamp) AS lastUsed
+    FROM usage_events
+    ${whereSql}
+    GROUP BY provider, model_id, connection_id, api_key_value, endpoint
+  `,
+    )
+    .all(...params);
+}
+
+export function listRecentUsageEvents(limit = 20) {
+  return db()
+    .prepare(
+      `
+    SELECT
+      timestamp,
+      provider,
+      model_id AS model,
+      status,
+      prompt_tokens AS promptTokens,
+      completion_tokens AS completionTokens
+    FROM usage_events
+    WHERE prompt_tokens > 0 OR completion_tokens > 0
+    ORDER BY timestamp DESC
+    LIMIT ?
+  `,
+    )
+    .all(limit);
+}
+
+export function getUsageMinuteBuckets(minutes = 10) {
+  const cutoff = new Date(Date.now() - (minutes - 1) * 60000).toISOString();
+  return db()
+    .prepare(
+      `
+    SELECT
+      strftime('%Y-%m-%dT%H:%M:00.000Z', timestamp) AS minuteKey,
+      COUNT(*) AS requests,
+      COALESCE(SUM(prompt_tokens), 0) AS promptTokens,
+      COALESCE(SUM(completion_tokens), 0) AS completionTokens,
+      COALESCE(SUM(cost), 0) AS cost
+    FROM usage_events
+    WHERE timestamp >= ?
+    GROUP BY minuteKey
+  `,
+    )
+    .all(cutoff);
+}
+
+export function getUsageChartRows(range = "7d", step = "day") {
+  const { whereSql, params } = usagePeriodWhere(range);
+  const stepConfig =
+    typeof step === "object" && step
+      ? step
+      : { unit: step === "hour" ? "hour" : "day", size: 1 };
+  const stepUnitSeconds = stepConfig.unit === "hour" ? 3600 : 86400;
+  const bucketSeconds = stepConfig.size * stepUnitSeconds;
+  const bucketExpr = `datetime((CAST(strftime('%s', timestamp) AS INTEGER) / ${bucketSeconds}) * ${bucketSeconds}, 'unixepoch')`;
+  return db()
+    .prepare(
+      `
+    SELECT
+      strftime('%Y-%m-%dT%H:%M:00.000Z', ${bucketExpr}) AS bucketKey,
+      COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens,
+      COALESCE(SUM(cost), 0) AS cost
+    FROM usage_events
+    ${whereSql}
+    GROUP BY bucketKey
+    ORDER BY bucketKey ASC
+  `,
+    )
+    .all(...params);
 }
 
 export function getUsageEventSummarySince(timestamp) {
