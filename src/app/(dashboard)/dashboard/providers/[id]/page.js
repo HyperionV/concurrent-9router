@@ -45,6 +45,10 @@ export default function ProviderDetailPage() {
   const [providerNode, setProviderNode] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
   const [showOAuthModal, setShowOAuthModal] = useState(false);
+  const [showCodexImportModal, setShowCodexImportModal] = useState(false);
+  const [codexAuthJson, setCodexAuthJson] = useState("");
+  const [codexImportError, setCodexImportError] = useState("");
+  const [codexImporting, setCodexImporting] = useState(false);
   const [showAddApiKeyModal, setShowAddApiKeyModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showEditNodeModal, setShowEditNodeModal] = useState(false);
@@ -83,6 +87,7 @@ export default function ProviderDetailPage() {
       }
     : OAUTH_PROVIDERS[providerId] || APIKEY_PROVIDERS[providerId];
   const isOAuth = !!OAUTH_PROVIDERS[providerId];
+  const isCodexProvider = providerId === "codex";
   const isFreeNoAuth = false;
   const models = getModelsByProviderId(providerId);
   const providerAlias = getProviderAlias(providerId);
@@ -274,6 +279,67 @@ export default function ProviderDetailPage() {
   const handleThinkingModeChange = (mode) => {
     setThinkingMode(mode);
     saveThinkingConfig(mode);
+  };
+
+  const resetCodexImport = () => {
+    setCodexAuthJson("");
+    setCodexImportError("");
+  };
+
+  const closeCodexImportModal = () => {
+    if (codexImporting) return;
+    setShowCodexImportModal(false);
+    resetCodexImport();
+  };
+
+  const handleCodexAuthJsonFile = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      setCodexImportError("");
+      setCodexAuthJson(await file.text());
+    } catch {
+      setCodexImportError("Could not read auth.json file");
+    } finally {
+      event.target.value = "";
+    }
+  };
+
+  const handleCodexAuthJsonImport = async () => {
+    const trimmedAuthJson = codexAuthJson.trim();
+    if (!trimmedAuthJson || codexImporting) return;
+
+    try {
+      JSON.parse(trimmedAuthJson);
+    } catch {
+      setCodexImportError("auth.json must be valid JSON");
+      return;
+    }
+
+    setCodexImporting(true);
+    setCodexImportError("");
+    try {
+      const res = await fetch("/api/oauth/codex/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ authJson: trimmedAuthJson }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setCodexImportError(data.error || "Failed to import auth.json");
+        return;
+      }
+
+      await fetchConnections();
+      setShowCodexImportModal(false);
+      resetCodexImport();
+    } catch {
+      setCodexImportError("Network error while importing auth.json");
+    } finally {
+      setCodexImporting(false);
+    }
   };
 
   useEffect(() => {
@@ -1087,8 +1153,17 @@ export default function ProviderDetailPage() {
                         : setShowAddApiKeyModal(true)
                     }
                   >
-                    Add Connection
+                    {isOAuth ? "Add OAuth" : "Add Connection"}
                   </Button>
+                  {isCodexProvider && (
+                    <Button
+                      variant="secondary"
+                      icon="upload_file"
+                      onClick={() => setShowCodexImportModal(true)}
+                    >
+                      Import auth.json
+                    </Button>
+                  )}
                 </div>
               )}
             </div>
@@ -1106,8 +1181,18 @@ export default function ProviderDetailPage() {
                         : setShowAddApiKeyModal(true)
                     }
                   >
-                    Add
+                    {isOAuth ? "Add OAuth" : "Add"}
                   </Button>
+                  {isCodexProvider && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon="upload_file"
+                      onClick={() => setShowCodexImportModal(true)}
+                    >
+                      Import auth.json
+                    </Button>
+                  )}
                 </div>
               )}
             </>
@@ -1148,6 +1233,69 @@ export default function ProviderDetailPage() {
         onSave={handleSaveApiKey}
         onClose={() => setShowAddApiKeyModal(false)}
       />
+      <Modal
+        isOpen={showCodexImportModal}
+        onClose={closeCodexImportModal}
+        title="Import Codex auth.json"
+      >
+        <div className="flex flex-col gap-4">
+          <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            Paste the full contents of your local Codex auth.json, or upload the
+            file directly. Tokens are stored as a local Codex OAuth connection.
+          </div>
+
+          <label className="flex flex-col gap-2 text-sm font-medium text-text-main">
+            auth.json content
+            <textarea
+              value={codexAuthJson}
+              onChange={(event) => {
+                setCodexAuthJson(event.target.value);
+                setCodexImportError("");
+              }}
+              spellCheck={false}
+              placeholder={'{\n  "auth_mode": "chatgpt",\n  "tokens": { ... }\n}'}
+              className="min-h-48 resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs text-text-main outline-none transition-colors focus:border-primary"
+            />
+          </label>
+
+          <label className="inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-black/15 px-3 text-sm font-medium text-text-muted transition-colors hover:border-primary/40 hover:text-primary dark:border-white/15">
+            <span className="material-symbols-outlined text-[18px]">
+              upload_file
+            </span>
+            Upload auth.json
+            <input
+              type="file"
+              accept="application/json,.json"
+              onChange={handleCodexAuthJsonFile}
+              className="hidden"
+              disabled={codexImporting}
+            />
+          </label>
+
+          {codexImportError && (
+            <p className="text-xs text-red-500">{codexImportError}</p>
+          )}
+
+          <div className="flex gap-2">
+            <Button
+              fullWidth
+              onClick={handleCodexAuthJsonImport}
+              disabled={!codexAuthJson.trim() || codexImporting}
+              loading={codexImporting}
+            >
+              {codexImporting ? "Importing..." : "Import"}
+            </Button>
+            <Button
+              fullWidth
+              variant="ghost"
+              onClick={closeCodexImportModal}
+              disabled={codexImporting}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      </Modal>
       <EditConnectionModal
         isOpen={showEditModal}
         connection={selectedConnection}
