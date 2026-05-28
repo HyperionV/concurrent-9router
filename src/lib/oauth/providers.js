@@ -6,7 +6,11 @@
 // Ensure outbound fetch respects HTTP(S)_PROXY/ALL_PROXY in Node runtime
 import "open-sse/index.js";
 
-import { generatePKCE, generateState } from "./utils/pkce";
+import { generatePKCE, generateState } from "./utils/pkce.js";
+import {
+  getProviderConnections,
+  updateProviderConnection,
+} from "../localDb.js";
 import {
   CLAUDE_CONFIG,
   CODEX_CONFIG,
@@ -23,9 +27,25 @@ import {
   CLINE_CONFIG,
   GITLAB_CONFIG,
   CODEBUDDY_CONFIG,
-} from "./constants/oauth";
+} from "./constants/oauth.js";
 
 const BASE64_BLOCK_SIZE = 4;
+
+function decodeJwtPayload(jwt) {
+  try {
+    if (!jwt || typeof jwt !== "string") return null;
+    const parts = jwt.split(".");
+    if (parts.length !== 3) return null;
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const missingPadding =
+      (BASE64_BLOCK_SIZE - (base64.length % BASE64_BLOCK_SIZE)) %
+      BASE64_BLOCK_SIZE;
+    const padded = base64 + "=".repeat(missingPadding);
+    return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Decode JWT access token and extract a stable account identifier for display/upsert.
@@ -33,41 +53,27 @@ const BASE64_BLOCK_SIZE = 4;
  * @returns {string|undefined}
  */
 function extractEmailFromAccessToken(accessToken) {
-  try {
-    if (!accessToken || typeof accessToken !== "string") return undefined;
-    const parts = accessToken.split(".");
-    if (parts.length !== 3) return undefined;
-    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const missingPadding =
-      (BASE64_BLOCK_SIZE - (base64.length % BASE64_BLOCK_SIZE)) %
-      BASE64_BLOCK_SIZE;
-    const padded = base64 + "=".repeat(missingPadding);
-    const payload = JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
-    return (
-      payload.email || payload.preferred_username || payload.sub || undefined
-    );
-  } catch {
-    return undefined;
-  }
+  const payload = decodeJwtPayload(accessToken);
+  return (
+    payload?.email || payload?.preferred_username || payload?.sub || undefined
+  );
+}
+
+function extractCodexAccountInfo(idToken) {
+  const payload = decodeJwtPayload(idToken);
+  if (!payload) return {};
+  const auth = payload["https://api.openai.com/auth"] || {};
+  return {
+    email:
+      payload.email || payload.preferred_username || payload.sub || undefined,
+    chatgptAccountId:
+      auth.chatgpt_account_id || payload.account_id || undefined,
+    chatgptPlanType: auth.chatgpt_plan_type || payload.plan_type || undefined,
+  };
 }
 
 function extractEmailFromIdToken(idToken) {
-  try {
-    if (!idToken || typeof idToken !== "string") return undefined;
-    const parts = idToken.split(".");
-    if (parts.length !== 3) return undefined;
-    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const missingPadding =
-      (BASE64_BLOCK_SIZE - (base64.length % BASE64_BLOCK_SIZE)) %
-      BASE64_BLOCK_SIZE;
-    const padded = base64 + "=".repeat(missingPadding);
-    const payload = JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
-    return (
-      payload.email || payload.preferred_username || payload.sub || undefined
-    );
-  } catch {
-    return undefined;
-  }
+  return extractCodexAccountInfo(idToken).email;
 }
 
 // Provider configurations
@@ -173,13 +179,27 @@ const PROVIDERS = {
 
       return await response.json();
     },
-    mapTokens: (tokens) => ({
-      accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token,
-      idToken: tokens.id_token,
-      expiresIn: tokens.expires_in,
-      email: extractEmailFromIdToken(tokens.id_token),
-    }),
+    mapTokens: (tokens) => {
+      const accountInfo = extractCodexAccountInfo(tokens.id_token);
+      return {
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+        idToken: tokens.id_token,
+        expiresIn: tokens.expires_in,
+        email: accountInfo.email,
+        providerSpecificData: {
+          ...(accountInfo.chatgptAccountId
+            ? {
+                chatgptAccountId: accountInfo.chatgptAccountId,
+                workspaceId: accountInfo.chatgptAccountId,
+              }
+            : {}),
+          ...(accountInfo.chatgptPlanType
+            ? { chatgptPlanType: accountInfo.chatgptPlanType }
+            : {}),
+        },
+      };
+    },
   },
 
   "gemini-cli": {
@@ -1259,6 +1279,52 @@ const PROVIDERS = {
 /**
  * Get provider handler
  */
+export async function backfillCodexEmails() {
+  const connections = await getProviderConnections({ provider: "codex" });
+  for (const connection of connections) {
+    if (!connection.idToken) continue;
+    const accountInfo = extractCodexAccountInfo(connection.idToken);
+    if (
+      !accountInfo.email &&
+      !accountInfo.chatgptAccountId &&
+      !accountInfo.chatgptPlanType
+    )
+      continue;
+
+    const providerSpecificData = {};
+    if (
+      accountInfo.chatgptAccountId &&
+      !connection.providerSpecificData?.chatgptAccountId
+    ) {
+      providerSpecificData.chatgptAccountId = accountInfo.chatgptAccountId;
+    }
+    if (
+      accountInfo.chatgptAccountId &&
+      !connection.providerSpecificData?.workspaceId
+    ) {
+      providerSpecificData.workspaceId = accountInfo.chatgptAccountId;
+    }
+    if (
+      accountInfo.chatgptPlanType &&
+      !connection.providerSpecificData?.chatgptPlanType
+    ) {
+      providerSpecificData.chatgptPlanType = accountInfo.chatgptPlanType;
+    }
+
+    const updates = {
+      ...(accountInfo.email && !connection.email
+        ? { email: accountInfo.email }
+        : {}),
+      ...(Object.keys(providerSpecificData).length
+        ? { providerSpecificData }
+        : {}),
+    };
+    if (Object.keys(updates).length > 0) {
+      await updateProviderConnection(connection.id, updates);
+    }
+  }
+}
+
 export function getProvider(name) {
   const provider = PROVIDERS[name];
   if (!provider) {

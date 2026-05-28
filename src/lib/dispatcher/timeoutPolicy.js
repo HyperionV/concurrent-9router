@@ -4,7 +4,7 @@ export const DEFAULT_TIMEOUT_POLICY = Object.freeze({
   queueTtlMs: 10 * 60 * 1000,
   connectTimeoutMs: 30 * 1000,
   ttftTimeoutMs: 3 * 60 * 1000,
-  idleTimeoutMs: 60 * 1000,
+  idleTimeoutMs: 35 * 1000,
   attemptDeadlineMs: 6 * 60 * 1000,
 });
 

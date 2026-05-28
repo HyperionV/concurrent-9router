@@ -26,6 +26,10 @@ export async function buildManagedCredentials(connection) {
     apiKey: dispatchView.apiKey,
     accessToken: dispatchView.accessToken,
     refreshToken: dispatchView.refreshToken,
+    idToken: dispatchView.idToken,
+    email: dispatchView.email,
+    expiresAt: dispatchView.expiresAt,
+    expiresIn: dispatchView.expiresIn,
     projectId: dispatchView.projectId,
     connectionName:
       dispatchView.displayName ||

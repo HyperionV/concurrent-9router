@@ -2,6 +2,8 @@ import {
   HTTP_STATUS,
   RETRY_CONFIG,
   DEFAULT_RETRY_CONFIG,
+  FETCH_CONNECT_TIMEOUT_MS,
+  resolveRetryEntry,
 } from "../config/runtimeConfig.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 
@@ -143,27 +145,40 @@ export class BaseExecutor {
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 
       try {
+        const connectCtrl = new AbortController();
+        let connectTimedOut = false;
+        const timeoutId = setTimeout(() => {
+          connectTimedOut = true;
+          connectCtrl.abort(new Error("fetch connect timeout"));
+        }, FETCH_CONNECT_TIMEOUT_MS);
+        const fetchSignal = signal
+          ? AbortSignal.any([signal, connectCtrl.signal])
+          : connectCtrl.signal;
+
         const response = await proxyAwareFetch(
           url,
           {
             method: "POST",
             headers,
             body: JSON.stringify(transformedBody),
-            signal,
+            signal: fetchSignal,
           },
           proxyOptions,
-        );
+        ).finally(() => clearTimeout(timeoutId));
 
         // Retry based on status code config
-        const maxRetries = retryConfig[response.status] || 0;
-        if (maxRetries > 0 && retryAttemptsByUrl[urlIndex] < maxRetries) {
+        const retryEntry = resolveRetryEntry(retryConfig[response.status]);
+        if (
+          retryEntry.attempts > 0 &&
+          retryAttemptsByUrl[urlIndex] < retryEntry.attempts
+        ) {
           retryAttemptsByUrl[urlIndex]++;
           log?.debug?.(
             "RETRY",
-            `${response.status} retry ${retryAttemptsByUrl[urlIndex]}/${maxRetries} after ${RETRY_CONFIG.delayMs / 1000}s`,
+            `${response.status} retry ${retryAttemptsByUrl[urlIndex]}/${retryEntry.attempts} after ${retryEntry.delayMs / 1000}s`,
           );
           await new Promise((resolve) =>
-            setTimeout(resolve, RETRY_CONFIG.delayMs),
+            setTimeout(resolve, retryEntry.delayMs),
           );
           urlIndex--;
           continue;

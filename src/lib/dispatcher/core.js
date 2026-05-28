@@ -14,6 +14,7 @@ import {
 } from "@/lib/sqlite/dispatcherStore.js";
 import { nowIso } from "@/lib/sqlite/helpers.js";
 import { createPathHealthTracker } from "@/lib/dispatcher/pathHealth.js";
+import { dispatcherQuotaHealth } from "@/lib/dispatcher/quotaHealth.js";
 import { createTimeoutPolicy } from "@/lib/dispatcher/timeoutPolicy.js";
 import {
   DEFAULT_TERMINAL_REASON,
@@ -46,6 +47,7 @@ export function createDispatcherCore({
   getSlotsPerConnection = null,
   timeoutPolicy = {},
   pathHealth = createPathHealthTracker(),
+  quotaHealth = dispatcherQuotaHealth,
 } = {}) {
   if (typeof getConnections !== "function") {
     throw new Error("createDispatcherCore requires getConnections");
@@ -213,10 +215,17 @@ export function createDispatcherCore({
 
   function connectionCanServeRequest(connection, request) {
     const rawConnection = connection?._connection || connection;
-    return !isModelLockActive(rawConnection, request?.modelId || null);
+    return (
+      !isModelLockActive(rawConnection, request?.modelId || null) &&
+      quotaHealth.canServeRequest(rawConnection, request)
+    );
   }
 
   function getSortedConnections(connections) {
+    return getSortedConnectionsForRequest(connections, null);
+  }
+
+  function getSortedConnectionsForRequest(connections, request) {
     return [...connections]
       .filter((connection) => connection?.id)
       .sort((a, b) => {
@@ -228,6 +237,10 @@ export function createDispatcherCore({
           (leaseCountByConnection[a.id] || 0) -
           (leaseCountByConnection[b.id] || 0);
         if (leaseCountDiff !== 0) return leaseCountDiff;
+        const quotaPenaltyDiff =
+          quotaHealth.getSelectionPenalty(a, request) -
+          quotaHealth.getSelectionPenalty(b, request);
+        if (quotaPenaltyDiff !== 0) return quotaPenaltyDiff;
         const pathScoreDiff =
           pathHealth.rankConnection(b, occupancyByConnection[b.id] || 0) -
           pathHealth.rankConnection(a, occupancyByConnection[a.id] || 0);
@@ -240,29 +253,33 @@ export function createDispatcherCore({
     const leasePlan = [];
     const leasedRequestIds = new Set();
 
-    for (const connection of getSortedConnections(connections)) {
-      const currentOccupancy = occupancyByConnection[connection.id] || 0;
-      const remainingSlots = Math.max(
-        0,
-        resolveSlotsPerConnection() - currentOccupancy,
-      );
-      if (remainingSlots === 0) continue;
+    for (const queuedRequest of queuedRequests) {
+      if (leasedRequestIds.has(queuedRequest.id)) continue;
 
-      for (let slot = 0; slot < remainingSlots; slot++) {
-        const request = queuedRequests.find(
-          (candidate) =>
-            !leasedRequestIds.has(candidate.id) &&
-            connectionCanServeRequest(connection, candidate) &&
-            requestIsEligibleForConnection(
-              candidate,
-              connection.id,
-              activeAttempts,
-            ),
+      const connection = getSortedConnectionsForRequest(
+        connections,
+        queuedRequest,
+      ).find((candidateConnection) => {
+        const currentOccupancy =
+          (occupancyByConnection[candidateConnection.id] || 0) +
+          leasePlan.filter(
+            (plannedLease) =>
+              plannedLease.connection.id === candidateConnection.id,
+          ).length;
+        if (currentOccupancy >= resolveSlotsPerConnection()) return false;
+        return (
+          connectionCanServeRequest(candidateConnection, queuedRequest) &&
+          requestIsEligibleForConnection(
+            queuedRequest,
+            candidateConnection.id,
+            activeAttempts,
+          )
         );
-        if (!request) break;
-        leasedRequestIds.add(request.id);
-        leasePlan.push({ requestId: request.id, connection });
-      }
+      });
+      if (!connection) continue;
+
+      leasedRequestIds.add(queuedRequest.id);
+      leasePlan.push({ requestId: queuedRequest.id, connection });
     }
 
     return leasePlan;
@@ -350,18 +367,28 @@ export function createDispatcherCore({
     );
     if (!targetRequest) return null;
 
-    const plannedLease = planLeases(
-      queuedRequests,
+    const connection = getSortedConnectionsForRequest(
       connections,
-      activeAttempts,
-    ).find((lease) => lease.requestId === requestId);
-    if (!plannedLease) return null;
+      targetRequest,
+    ).find((candidateConnection) => {
+      const currentOccupancy =
+        occupancyByConnection[candidateConnection.id] || 0;
+      if (currentOccupancy >= resolveSlotsPerConnection()) return false;
+      return (
+        connectionCanServeRequest(candidateConnection, targetRequest) &&
+        requestIsEligibleForConnection(
+          targetRequest,
+          candidateConnection.id,
+          activeAttempts,
+        )
+      );
+    });
+    if (!connection) return null;
 
     const attempt = getLatestDispatchAttemptForRequest(requestId);
     if (!attempt || attempt.state !== DISPATCH_ATTEMPT_STATE.QUEUED)
       return null;
 
-    const connection = plannedLease.connection;
     const leasedAt = nowIso();
     const leaseKey = buildLeaseKey(connection.id);
     const leased = leaseDispatchAttempt(attempt.id, {

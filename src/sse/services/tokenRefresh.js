@@ -21,7 +21,8 @@ import {
   formatProviderCredentials as _formatProviderCredentials,
   getAllAccessTokens as _getAllAccessTokens,
   refreshKiroToken as _refreshKiroToken,
-  getRefreshLeadMs as _getRefreshLeadMs
+  getRefreshLeadMs as _getRefreshLeadMs,
+  isUnrecoverableRefreshError as _isUnrecoverableRefreshError,
 } from "open-sse/services/tokenRefresh.js";
 
 export const TOKEN_EXPIRY_BUFFER_MS = BUFFER_MS;
@@ -66,6 +67,9 @@ export const formatProviderCredentials = (provider, credentials) =>
 
 export const getAllAccessTokens = (userInfo) =>
   _getAllAccessTokens(userInfo, log);
+
+export const isUnrecoverableRefreshError = (result) =>
+  _isUnrecoverableRefreshError(result);
 
 // ─── Lifecycle hook ───────────────────────────────────────────────────────────
 
@@ -128,10 +132,14 @@ function _refreshProjectId(provider, connectionId, accessToken) {
       });
     })
     .catch((err) => {
-      log.debug("TOKEN_REFRESH", "Failed to fetch projectId after token refresh", {
-        connectionId,
-        error: err?.message ?? err,
-      });
+      log.debug(
+        "TOKEN_REFRESH",
+        "Failed to fetch projectId after token refresh",
+        {
+          connectionId,
+          error: err?.message ?? err,
+        },
+      );
     });
 }
 
@@ -149,9 +157,18 @@ export async function updateProviderCredentials(connectionId, newCredentials) {
   try {
     const updates = {};
 
-    if (newCredentials.accessToken)         updates.accessToken  = newCredentials.accessToken;
-    if (newCredentials.refreshToken)        updates.refreshToken = newCredentials.refreshToken;
-    if (newCredentials.expiresIn) {
+    if (newCredentials.accessToken)
+      updates.accessToken = newCredentials.accessToken;
+    if (newCredentials.refreshToken)
+      updates.refreshToken = newCredentials.refreshToken;
+    if (newCredentials.idToken) updates.idToken = newCredentials.idToken;
+    if (newCredentials.email) updates.email = newCredentials.email;
+    if (newCredentials.expiresAt) {
+      updates.expiresAt =
+        typeof newCredentials.expiresAt === "number"
+          ? new Date(newCredentials.expiresAt).toISOString()
+          : newCredentials.expiresAt;
+    } else if (newCredentials.expiresIn) {
       updates.expiresAt = toExpiresAt(newCredentials.expiresIn);
       updates.expiresIn = newCredentials.expiresIn;
     }
@@ -161,12 +178,12 @@ export async function updateProviderCredentials(connectionId, newCredentials) {
         ...newCredentials.providerSpecificData,
       };
     }
-    if (newCredentials.projectId)            updates.projectId = newCredentials.projectId;
+    if (newCredentials.projectId) updates.projectId = newCredentials.projectId;
 
     const result = await updateProviderConnection(connectionId, updates);
     log.info("TOKEN_REFRESH", "Credentials updated in localDb", {
       connectionId,
-      success: !!result
+      success: !!result,
     });
     return !!result;
   } catch (error) {
@@ -194,7 +211,7 @@ export async function checkAndRefreshToken(provider, credentials) {
   // ── 1. Regular access-token expiry ────────────────────────────────────────
   if (creds.expiresAt) {
     const expiresAt = new Date(creds.expiresAt).getTime();
-    const now       = Date.now();
+    const now = Date.now();
     const remaining = expiresAt - now;
 
     const refreshLead = _getRefreshLeadMs(provider);
@@ -206,6 +223,26 @@ export async function checkAndRefreshToken(provider, credentials) {
       });
 
       const newCreds = await getAccessToken(provider, creds);
+      if (_isUnrecoverableRefreshError(newCreds)) {
+        await updateProviderConnection(creds.connectionId, {
+          isActive: false,
+          testStatus: "unavailable",
+          lastError:
+            "Refresh token is invalid or reused; re-authentication required",
+          errorCode: newCreds.code || newCreds.error,
+          lastErrorAt: new Date().toISOString(),
+        });
+        log.warn(
+          "TOKEN_REFRESH",
+          "Unrecoverable refresh error; connection requires re-authentication",
+          {
+            provider,
+            connectionId: creds.connectionId,
+            code: newCreds.code || newCreds.error,
+          },
+        );
+        return creds;
+      }
       if (newCreds?.accessToken) {
         const mergedCreds = {
           ...newCreds,
@@ -217,14 +254,23 @@ export async function checkAndRefreshToken(provider, credentials) {
 
         creds = {
           ...creds,
-          accessToken:  newCreds.accessToken,
+          accessToken: newCreds.accessToken,
           refreshToken: newCreds.refreshToken ?? creds.refreshToken,
+          idToken: newCreds.idToken ?? creds.idToken,
+          email: newCreds.email ?? creds.email,
           providerSpecificData: newCreds.providerSpecificData
-            ? { ...creds.providerSpecificData, ...newCreds.providerSpecificData }
+            ? {
+                ...creds.providerSpecificData,
+                ...newCreds.providerSpecificData,
+              }
             : creds.providerSpecificData,
-          expiresAt:    newCreds.expiresIn
-            ? toExpiresAt(newCreds.expiresIn)
-            : creds.expiresAt,
+          expiresAt: newCreds.expiresAt
+            ? typeof newCreds.expiresAt === "number"
+              ? new Date(newCreds.expiresAt).toISOString()
+              : newCreds.expiresAt
+            : newCreds.expiresIn
+              ? toExpiresAt(newCreds.expiresIn)
+              : creds.expiresAt,
         };
 
         // Non-blocking: refresh projectId with the new access token
@@ -234,22 +280,30 @@ export async function checkAndRefreshToken(provider, credentials) {
   }
 
   // ── 2. GitHub Copilot token expiry ────────────────────────────────────────
-  if (provider === "github" && creds.providerSpecificData?.copilotTokenExpiresAt) {
-    const copilotExpiresAt = creds.providerSpecificData.copilotTokenExpiresAt * 1000;
-    const now              = Date.now();
-    const remaining        = copilotExpiresAt - now;
+  if (
+    provider === "github" &&
+    creds.providerSpecificData?.copilotTokenExpiresAt
+  ) {
+    const copilotExpiresAt =
+      creds.providerSpecificData.copilotTokenExpiresAt * 1000;
+    const now = Date.now();
+    const remaining = copilotExpiresAt - now;
 
     if (remaining < TOKEN_EXPIRY_BUFFER_MS) {
-      log.info("TOKEN_REFRESH", "Copilot token expiring soon, refreshing proactively", {
-        provider,
-        expiresIn: Math.round(remaining / 1000),
-      });
+      log.info(
+        "TOKEN_REFRESH",
+        "Copilot token expiring soon, refreshing proactively",
+        {
+          provider,
+          expiresIn: Math.round(remaining / 1000),
+        },
+      );
 
       const copilotToken = await refreshCopilotToken(creds.accessToken);
       if (copilotToken) {
         const updatedSpecific = {
           ...creds.providerSpecificData,
-          copilotToken:          copilotToken.token,
+          copilotToken: copilotToken.token,
           copilotTokenExpiresAt: copilotToken.expiresAt,
         };
 
@@ -285,7 +339,7 @@ export async function refreshGitHubAndCopilotTokens(credentials) {
   return {
     ...newGitHubCreds,
     providerSpecificData: {
-      copilotToken:          copilotToken.token,
+      copilotToken: copilotToken.token,
       copilotTokenExpiresAt: copilotToken.expiresAt,
     },
   };

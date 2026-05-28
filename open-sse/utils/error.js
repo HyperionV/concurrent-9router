@@ -7,17 +7,19 @@ import { ERROR_TYPES, DEFAULT_ERROR_MESSAGES } from "../config/errorConfig.js";
  * @returns {object} Error response object
  */
 export function buildErrorBody(statusCode, message) {
-  const errorInfo = ERROR_TYPES[statusCode] || 
-    (statusCode >= 500 
+  const errorInfo =
+    ERROR_TYPES[statusCode] ||
+    (statusCode >= 500
       ? { type: "server_error", code: "internal_server_error" }
       : { type: "invalid_request_error", code: "" });
 
   return {
     error: {
-      message: message || DEFAULT_ERROR_MESSAGES[statusCode] || "An error occurred",
+      message:
+        message || DEFAULT_ERROR_MESSAGES[statusCode] || "An error occurred",
       type: errorInfo.type,
-      code: errorInfo.code
-    }
+      code: errorInfo.code,
+    },
   };
 }
 
@@ -32,8 +34,8 @@ export function errorResponse(statusCode, message) {
     status: statusCode,
     headers: {
       "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*"
-    }
+      "Access-Control-Allow-Origin": "*",
+    },
   });
 }
 
@@ -54,15 +56,33 @@ export async function writeStreamError(writer, statusCode, message) {
  * @param {Response} response - Fetch response from provider
  * @returns {Promise<{statusCode: number, message: string}>}
  */
-export async function parseUpstreamError(response) {
+export async function parseUpstreamError(response, executor = null) {
   let message = "";
+  let resetsAtMs = null;
 
   try {
     const text = await response.text();
 
+    if (executor && typeof executor.parseError === "function") {
+      const parsed = executor.parseError(response, text);
+      if (parsed?.resetsAtMs) {
+        const parsedMessage = parsed.message || text;
+        return {
+          statusCode: parsed.status || response.status,
+          message:
+            typeof parsedMessage === "string"
+              ? parsedMessage
+              : JSON.stringify(parsedMessage),
+          resetsAtMs: parsed.resetsAtMs,
+        };
+      }
+    }
+
     try {
       const json = JSON.parse(text);
       message = json.error?.message || json.message || json.error || text;
+      if (typeof json.error?.resetsAtMs === "number")
+        resetsAtMs = json.error.resetsAtMs;
     } catch {
       message = text;
     }
@@ -70,12 +90,17 @@ export async function parseUpstreamError(response) {
     message = `Upstream error: ${response.status}`;
   }
 
-  const messageStr = typeof message === "string" ? message : JSON.stringify(message);
-  const finalMessage = messageStr || DEFAULT_ERROR_MESSAGES[response.status] || `Upstream error: ${response.status}`;
+  const messageStr =
+    typeof message === "string" ? message : JSON.stringify(message);
+  const finalMessage =
+    messageStr ||
+    DEFAULT_ERROR_MESSAGES[response.status] ||
+    `Upstream error: ${response.status}`;
 
   return {
     statusCode: response.status,
-    message: finalMessage
+    message: finalMessage,
+    ...(resetsAtMs ? { resetsAtMs } : {}),
   };
 }
 
@@ -85,12 +110,13 @@ export async function parseUpstreamError(response) {
  * @param {string} message - Error message
  * @returns {{ success: false, status: number, error: string, response: Response }}
  */
-export function createErrorResult(statusCode, message) {
+export function createErrorResult(statusCode, message, resetsAtMs = null) {
   return {
     success: false,
     status: statusCode,
     error: message,
-    response: errorResponse(statusCode, message)
+    ...(resetsAtMs ? { resetsAtMs } : {}),
+    response: errorResponse(statusCode, message),
   };
 }
 
@@ -102,19 +128,24 @@ export function createErrorResult(statusCode, message) {
  * @param {string} retryAfterHuman - Human-readable retry info e.g. "reset after 30s"
  * @returns {Response}
  */
-export function unavailableResponse(statusCode, message, retryAfter, retryAfterHuman) {
-  const retryAfterSec = Math.max(Math.ceil((new Date(retryAfter).getTime() - Date.now()) / 1000), 1);
-  const msg = `${message} (${retryAfterHuman})`;
-  return new Response(
-    JSON.stringify({ error: { message: msg } }),
-    {
-      status: statusCode,
-      headers: {
-        "Content-Type": "application/json",
-        "Retry-After": String(retryAfterSec)
-      }
-    }
+export function unavailableResponse(
+  statusCode,
+  message,
+  retryAfter,
+  retryAfterHuman,
+) {
+  const retryAfterSec = Math.max(
+    Math.ceil((new Date(retryAfter).getTime() - Date.now()) / 1000),
+    1,
   );
+  const msg = `${message} (${retryAfterHuman})`;
+  return new Response(JSON.stringify({ error: { message: msg } }), {
+    status: statusCode,
+    headers: {
+      "Content-Type": "application/json",
+      "Retry-After": String(retryAfterSec),
+    },
+  });
 }
 
 /**
@@ -131,6 +162,9 @@ export function formatProviderError(error, provider, model, statusCode) {
   // Expose low-level cause (e.g. UND_ERR_SOCKET, ECONNRESET, ETIMEDOUT) for diagnosing fetch failures
   const causeCode = error.cause?.code;
   const causeMsg = error.cause?.message;
-  const causeStr = causeCode || causeMsg ? ` (cause: ${[causeCode, causeMsg].filter(Boolean).join(": ")})` : "";
+  const causeStr =
+    causeCode || causeMsg
+      ? ` (cause: ${[causeCode, causeMsg].filter(Boolean).join(": ")})`
+      : "";
   return `[${code}]: ${message}${causeStr}`;
 }

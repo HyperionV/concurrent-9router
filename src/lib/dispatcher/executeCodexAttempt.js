@@ -1,6 +1,7 @@
 import { getProviderConnectionById } from "@/lib/localDb.js";
 import { buildManagedCredentials } from "@/lib/dispatcher/connectionState.js";
 import { getCodexDispatcher } from "@/lib/dispatcher/index.js";
+import { dispatcherQuotaHealth } from "@/lib/dispatcher/quotaHealth.js";
 import {
   getConversationAffinity,
   persistConversationAffinity,
@@ -111,6 +112,10 @@ async function executeManagedCodexRequest({
     body,
     clientRawRequest,
   });
+  const affinity = getConversationAffinity(
+    conversationKey,
+    apiKeyRecord?.id || null,
+  );
   const { dispatcher } = getCodexDispatcher();
   const queued = requestId
     ? await dispatcher.requeueRequest(requestId, {
@@ -175,6 +180,15 @@ async function executeManagedCodexRequest({
   }
 
   let credentials = await buildManagedCredentials(rawConnection);
+  if (affinity?.state === "active" && affinity?.sessionId) {
+    credentials = {
+      ...credentials,
+      providerSpecificData: {
+        ...(credentials.providerSpecificData || {}),
+        dispatchSessionId: affinity.sessionId,
+      },
+    };
+  }
   credentials = await checkAndRefreshToken(provider, credentials);
 
   let persistedContinuationKey = null;
@@ -201,9 +215,7 @@ async function executeManagedCodexRequest({
         provider: "codex",
         modelId: model,
         connectionId: lease.connectionId,
-        sessionId:
-          credentials?.providerSpecificData?.dispatchSessionId ||
-          lease.connectionId,
+        sessionId: credentials?.providerSpecificData?.dispatchSessionId || null,
         apiKeyId: apiKeyRecord?.id || null,
       });
       persistedContinuationKey = continuationKey;
@@ -249,6 +261,8 @@ async function executeManagedCodexRequest({
       await updateProviderCredentials(credentials.connectionId, {
         accessToken: newCreds.accessToken,
         refreshToken: newCreds.refreshToken,
+        idToken: newCreds.idToken,
+        email: newCreds.email,
         providerSpecificData: newCreds.providerSpecificData,
         testStatus: "active",
       });
@@ -272,18 +286,31 @@ async function executeManagedCodexRequest({
     return result.response;
   }
 
+  if (result.status === 429 || Number.isFinite(Number(result.resetsAtMs))) {
+    await dispatcherQuotaHealth.recordOutOfQuota({
+      connectionId: credentials.connectionId,
+      modelId: model,
+      resetsAtMs: result.resetsAtMs,
+      status: result.status,
+      error: result.error,
+      providerSpecificData: credentials.providerSpecificData || {},
+    });
+  }
+
   const { shouldFallback } = await markAccountUnavailable(
     credentials.connectionId,
     result.status,
     result.error,
     provider,
     model,
+    result.resetsAtMs,
   );
 
   if (shouldFallback) {
     await finalizeFailure("fallback_requested", {
       status: result.status,
       message: result.error,
+      resetsAtMs: result.resetsAtMs || null,
     });
 
     if (retryBudget > 0) {
@@ -295,6 +322,8 @@ async function executeManagedCodexRequest({
         request,
         clientRawRequest,
         apiKey,
+        apiKeyRecord,
+        decision,
         providerThinking,
         ccFilterNaming,
         requestId: queued.request.id,

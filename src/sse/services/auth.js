@@ -13,6 +13,7 @@ import {
   buildModelLockUpdate,
   getEarliestModelLockUntil,
 } from "open-sse/services/accountFallback.js";
+import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import {
   resolveProviderId,
   FREE_PROVIDERS,
@@ -198,6 +199,8 @@ export async function getProviderCredentials(
       apiKey: connection.apiKey,
       accessToken: connection.accessToken,
       refreshToken: connection.refreshToken,
+      idToken: connection.idToken,
+      email: connection.email,
       projectId: connection.projectId,
       connectionName:
         connection.displayName ||
@@ -241,18 +244,24 @@ export async function markAccountUnavailable(
   errorText,
   provider = null,
   model = null,
+  resetsAtMs = null,
 ) {
   if (!connectionId || connectionId === "noauth")
     return { shouldFallback: false, cooldownMs: 0 };
   const connections = await getProviderConnections({ provider });
   const conn = connections.find((c) => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
+  const now = Date.now();
+  const hasPreciseReset = Number.isFinite(resetsAtMs) && resetsAtMs > now;
 
-  const { shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(
-    status,
-    errorText,
-    backoffLevel,
-  );
+  const fallback = hasPreciseReset
+    ? {
+        shouldFallback: true,
+        cooldownMs: Math.min(resetsAtMs - now, MAX_RATE_LIMIT_COOLDOWN_MS),
+        newBackoffLevel: 0,
+      }
+    : checkFallbackError(status, errorText, backoffLevel);
+  const { shouldFallback, cooldownMs, newBackoffLevel } = fallback;
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
   const reason =

@@ -11,16 +11,22 @@ export const HTTP_STATUS = {
   SERVER_ERROR: 500,
   BAD_GATEWAY: 502,
   SERVICE_UNAVAILABLE: 503,
-  GATEWAY_TIMEOUT: 504
+  GATEWAY_TIMEOUT: 504,
 };
 
 // Re-export error config (backward compat)
-export { ERROR_TYPES, DEFAULT_ERROR_MESSAGES, BACKOFF_CONFIG, COOLDOWN_MS } from "./errorConfig.js";
+export {
+  ERROR_TYPES,
+  DEFAULT_ERROR_MESSAGES,
+  BACKOFF_CONFIG,
+  COOLDOWN_MS,
+  MAX_RATE_LIMIT_COOLDOWN_MS,
+} from "./errorConfig.js";
 
 // Cache TTLs (seconds)
 export const CACHE_TTL = {
-  userInfo: 300,    // 5 minutes
-  modelAlias: 3600  // 1 hour
+  userInfo: 300, // 5 minutes
+  modelAlias: 3600, // 1 hour
 };
 
 // Memory management config
@@ -31,6 +37,9 @@ export const MEMORY_CONFIG = {
   proxyDispatchersMaxSize: 20,
 };
 
+// Fetch connect timeout: fail over if upstream does not return headers quickly.
+export const FETCH_CONNECT_TIMEOUT_MS = 20 * 1000;
+
 // Default token limits
 export const DEFAULT_MAX_TOKENS = 64000;
 export const DEFAULT_MIN_TOKENS = 32000;
@@ -38,17 +47,32 @@ export const DEFAULT_MIN_TOKENS = 32000;
 // Retry config for 429 responses (legacy - kept for backward compatibility)
 export const RETRY_CONFIG = {
   maxAttempts: 2,
-  delayMs: 2000
+  delayMs: 2000,
 };
 
-// Default retry config by status code (number of retry attempts)
+// Default retry config by status code. Values may be numbers or { attempts, delayMs }.
 export const DEFAULT_RETRY_CONFIG = {
-  429: 0,   // Rate limit - no retry, use account fallback instead
-  503: 1,   // Service unavailable - retry 1 time (transient)
-  502: 1    // Bad gateway - retry 1 time (transient)
+  429: { attempts: 0, delayMs: 0 },
+  502: { attempts: 1, delayMs: 2000 },
+  503: { attempts: 1, delayMs: 2000 },
+  504: { attempts: 1, delayMs: 2000 },
 };
+
+export function resolveRetryEntry(entry) {
+  if (entry == null) return { attempts: 0, delayMs: RETRY_CONFIG.delayMs };
+  if (typeof entry === "number") {
+    return { attempts: Math.max(0, entry), delayMs: RETRY_CONFIG.delayMs };
+  }
+  return {
+    attempts: Math.max(0, Number(entry.attempts) || 0),
+    delayMs:
+      entry.delayMs != null
+        ? Math.max(0, Number(entry.delayMs) || 0)
+        : RETRY_CONFIG.delayMs,
+  };
+}
 
 // Requests containing these texts will bypass provider
 export const SKIP_PATTERNS = [
-  "Please write a 5-10 word title for the following conversation:"
+  "Please write a 5-10 word title for the following conversation:",
 ];

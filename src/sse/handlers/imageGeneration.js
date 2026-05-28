@@ -32,6 +32,8 @@ function buildCredentialsFromConnection(connection) {
     apiKey: connection.apiKey,
     accessToken: connection.accessToken,
     refreshToken: connection.refreshToken,
+    idToken: connection.idToken,
+    email: connection.email,
     projectId: connection.projectId,
     connectionName:
       connection.displayName ||
@@ -215,6 +217,7 @@ async function runCodexImageRequest({
         error,
         provider,
         model,
+        null,
       );
     }
   };
@@ -241,6 +244,8 @@ async function runCodexImageRequest({
       await updateProviderCredentials(credentials.connectionId, {
         accessToken: newCreds.accessToken,
         refreshToken: newCreds.refreshToken,
+        idToken: newCreds.idToken,
+        email: newCreds.email,
         providerSpecificData: newCreds.providerSpecificData,
         testStatus: "active",
       });

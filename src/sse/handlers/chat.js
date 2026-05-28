@@ -368,6 +368,8 @@ async function handleSingleModelChat(
         await updateProviderCredentials(credentials.connectionId, {
           accessToken: newCreds.accessToken,
           refreshToken: newCreds.refreshToken,
+          idToken: newCreds.idToken,
+          email: newCreds.email,
           providerSpecificData: newCreds.providerSpecificData,
           testStatus: "active",
         });
@@ -396,6 +398,7 @@ async function handleSingleModelChat(
       result.error,
       provider,
       model,
+      result.resetsAtMs,
     );
 
     if (shouldFallback) {
@@ -403,6 +406,7 @@ async function handleSingleModelChat(
         await shadowTracker.finalizeFailure("fallback_requested", {
           status: result.status,
           message: result.error,
+          resetsAtMs: result.resetsAtMs || null,
         });
       }
       log.warn(

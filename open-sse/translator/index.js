@@ -1,10 +1,16 @@
+import { createRequire } from "node:module";
 import { FORMATS } from "./formats.js";
-import { ensureToolCallIds, fixMissingToolResponses } from "./helpers/toolCallHelper.js";
+import {
+  ensureToolCallIds,
+  fixMissingToolResponses,
+} from "./helpers/toolCallHelper.js";
 import { prepareClaudeRequest } from "./helpers/claudeHelper.js";
 import { cloakClaudeTools } from "../utils/claudeCloaking.js";
 import { filterToOpenAIFormat } from "./helpers/openaiHelper.js";
 import { normalizeThinkingConfig } from "../services/provider.js";
 import { AntigravityExecutor } from "../executors/antigravity.js";
+
+const require = createRequire(import.meta.url);
 
 // Registry for translators
 const requestRegistry = new Map();
@@ -54,7 +60,8 @@ function ensureInitialized() {
 
 // Strip specific content types from messages (explicit opt-in via strip[] in PROVIDER_MODELS)
 function stripContentTypes(body, stripList = []) {
-  if (!stripList.length || !body.messages || !Array.isArray(body.messages)) return;
+  if (!stripList.length || !body.messages || !Array.isArray(body.messages))
+    return;
   const imageTypes = new Set(["image_url", "image"]);
   const audioTypes = new Set(["audio_url", "input_audio"]);
   const shouldStrip = (type) => {
@@ -64,13 +71,24 @@ function stripContentTypes(body, stripList = []) {
   };
   for (const msg of body.messages) {
     if (!Array.isArray(msg.content)) continue;
-    msg.content = msg.content.filter(part => !shouldStrip(part.type));
+    msg.content = msg.content.filter((part) => !shouldStrip(part.type));
     if (msg.content.length === 0) msg.content = "";
   }
 }
 
 // Translate request: source -> openai -> target
-export function translateRequest(sourceFormat, targetFormat, model, body, stream = true, credentials = null, provider = null, reqLogger = null, stripList = [], connectionId = null) {
+export function translateRequest(
+  sourceFormat,
+  targetFormat,
+  model,
+  body,
+  stream = true,
+  credentials = null,
+  provider = null,
+  reqLogger = null,
+  stripList = [],
+  connectionId = null,
+) {
   ensureInitialized();
   let result = body;
 
@@ -82,7 +100,7 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
 
   // Always ensure tool_calls have id (some providers require it)
   ensureToolCallIds(result);
-  
+
   // Fix missing tool responses (insert empty tool_result if needed)
   fixMissingToolResponses(result);
 
@@ -100,7 +118,9 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
 
     // Step 2: openai -> target (if target is not openai)
     if (targetFormat !== FORMATS.OPENAI) {
-      const fromOpenAI = requestRegistry.get(`${FORMATS.OPENAI}:${targetFormat}`);
+      const fromOpenAI = requestRegistry.get(
+        `${FORMATS.OPENAI}:${targetFormat}`,
+      );
       if (fromOpenAI) {
         result = fromOpenAI(model, result, stream, credentials);
       }
@@ -134,7 +154,10 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
 
   // Antigravity cloaking: rename client tools + inject decoys (anti-ban)
   // Skip if client is native AG (userAgent = antigravity)
-  if (provider === FORMATS.ANTIGRAVITY && body.userAgent !== FORMATS.ANTIGRAVITY) {
+  if (
+    provider === FORMATS.ANTIGRAVITY &&
+    body.userAgent !== FORMATS.ANTIGRAVITY
+  ) {
     const { cloakedBody, toolNameMap } = AntigravityExecutor.cloakTools(result);
     result = cloakedBody;
     if (toolNameMap?.size > 0) {
@@ -171,13 +194,17 @@ export function translateResponse(targetFormat, sourceFormat, chunk, state) {
 
   // Step 2: openai -> source (if source is not openai)
   if (sourceFormat !== FORMATS.OPENAI) {
-    const fromOpenAI = responseRegistry.get(`${FORMATS.OPENAI}:${sourceFormat}`);
+    const fromOpenAI = responseRegistry.get(
+      `${FORMATS.OPENAI}:${sourceFormat}`,
+    );
     if (fromOpenAI) {
       const finalResults = [];
       for (const r of results) {
         const converted = fromOpenAI(r, state);
         if (converted) {
-          finalResults.push(...(Array.isArray(converted) ? converted : [converted]));
+          finalResults.push(
+            ...(Array.isArray(converted) ? converted : [converted]),
+          );
         }
       }
       results = finalResults;
@@ -185,7 +212,11 @@ export function translateResponse(targetFormat, sourceFormat, chunk, state) {
   }
 
   // Attach OpenAI intermediate results for logging
-  if (openaiResults && sourceFormat !== FORMATS.OPENAI && targetFormat !== FORMATS.OPENAI) {
+  if (
+    openaiResults &&
+    sourceFormat !== FORMATS.OPENAI &&
+    targetFormat !== FORMATS.OPENAI
+  ) {
     results._openaiIntermediate = openaiResults;
   }
 
@@ -211,7 +242,7 @@ export function initState(sourceFormat) {
     finishReason: null,
     finishReasonSent: false,
     usage: null,
-    contentBlockIndex: -1
+    contentBlockIndex: -1,
   };
 
   // Add openai-responses specific fields
@@ -237,7 +268,7 @@ export function initState(sourceFormat) {
       funcCallIds: {},
       funcArgsDone: {},
       funcItemDone: {},
-      completedSent: false
+      completedSent: false,
     };
   }
 

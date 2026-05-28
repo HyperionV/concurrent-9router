@@ -65,6 +65,7 @@ export function getCodexDispatcher() {
     watchdogInterval = setInterval(() => {
       runWatchdogSweep().catch(() => {});
     }, WATCHDOG_SWEEP_INTERVAL_MS);
+    watchdogInterval.unref?.();
   }
 
   codexDispatcherSingleton = {
