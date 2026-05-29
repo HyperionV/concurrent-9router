@@ -28,20 +28,6 @@ const CODEX_HOSTED_TOOL_TYPES = new Set([
   "mcp",
   "local_shell",
 ]);
-const RESPONSES_API_ALLOWLIST = new Set([
-  "model",
-  "input",
-  "instructions",
-  "tools",
-  "tool_choice",
-  "stream",
-  "store",
-  "reasoning",
-  "service_tier",
-  "include",
-  "prompt_cache_key",
-  "client_metadata",
-]);
 const assistantSessionMap = new Map();
 let cachedMachineId = null;
 getConsistentMachineId()
@@ -222,12 +208,6 @@ function normalizeCodexTools(body) {
   }
 }
 
-function applyResponsesApiAllowlist(body) {
-  for (const key of Object.keys(body)) {
-    if (!RESPONSES_API_ALLOWLIST.has(key)) delete body[key];
-  }
-}
-
 setInterval(
   () => {
     const now = Date.now();
@@ -400,7 +380,6 @@ export class CodexExecutor extends BaseExecutor {
     if (!workingBody.prompt_cache_key && resolvedSessionId) {
       workingBody.prompt_cache_key = resolvedSessionId;
     }
-    applyResponsesApiAllowlist(workingBody);
 
     const url = isCompact
       ? `${super.buildUrl(model, stream, 0, credentials)}/compact`

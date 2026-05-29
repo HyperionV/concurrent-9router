@@ -84,7 +84,6 @@ test("Codex executor hardens request shape and preserves managed dispatcher sess
       previous_response_id: "resp_deadbeef",
       temperature: 0.7,
       metadata: { unsafe: true },
-      extra_unknown_field: true,
     },
   });
 
@@ -120,7 +119,6 @@ test("Codex executor hardens request shape and preserves managed dispatcher sess
   assert.equal("previous_response_id" in request.transformedBody, false);
   assert.equal("temperature" in request.transformedBody, false);
   assert.equal("metadata" in request.transformedBody, false);
-  assert.equal("extra_unknown_field" in request.transformedBody, false);
 
   const attempts = [];
   const originalBaseExecute = BaseExecutor.prototype.execute;
@@ -175,6 +173,136 @@ test("Codex executor hardens request shape and preserves managed dispatcher sess
     BaseExecutor.prototype.execute = originalBaseExecute;
     executor.prefetchImages = originalPrefetchImages;
   }
+});
+
+test("Codex preserves structured output schema as Responses text format", () => {
+  const executor = new CodexExecutor();
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      answer: { type: "string" },
+    },
+    required: ["answer"],
+  };
+  const request = executor.buildRequest({
+    model: "gpt-5-codex",
+    stream: true,
+    credentials: {
+      connectionId: "conn_schema",
+      providerSpecificData: { chatgptAccountId: "acct_schema" },
+    },
+    body: {
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "answer as json" }],
+        },
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "answer_schema",
+          schema,
+          strict: true,
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(request.transformedBody.text, {
+    format: {
+      type: "json_schema",
+      name: "answer_schema",
+      schema,
+      strict: true,
+    },
+  });
+});
+
+test("Codex forwards unknown user request fields to upstream", () => {
+  const executor = new CodexExecutor();
+  const request = executor.buildRequest({
+    model: "gpt-5-codex",
+    stream: true,
+    credentials: {
+      connectionId: "conn_passthrough",
+      providerSpecificData: { chatgptAccountId: "acct_passthrough" },
+    },
+    body: {
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "answer as json" }],
+        },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "answer_schema",
+          schema: {
+            type: "object",
+            properties: { answer: { type: "string" } },
+          },
+          strict: true,
+        },
+      },
+      future_codex_option: { mode: "let-upstream-decide" },
+    },
+  });
+
+  assert.deepEqual(request.transformedBody.response_format, {
+    type: "json_schema",
+    json_schema: {
+      name: "answer_schema",
+      schema: { type: "object", properties: { answer: { type: "string" } } },
+      strict: true,
+    },
+  });
+  assert.deepEqual(request.transformedBody.future_codex_option, {
+    mode: "let-upstream-decide",
+  });
+});
+
+test("OpenAI chat response_format maps to Responses text format", async () => {
+  const { openaiToOpenAIResponsesRequest } =
+    await import("open-sse/translator/request/openai-responses.js");
+  const schema = {
+    type: "object",
+    properties: {
+      answer: { type: "string" },
+    },
+    required: ["answer"],
+  };
+
+  const request = openaiToOpenAIResponsesRequest(
+    "gpt-5-codex",
+    {
+      messages: [{ role: "user", content: "answer as json" }],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "answer_schema",
+          schema,
+          strict: true,
+        },
+      },
+    },
+    true,
+    null,
+  );
+
+  assert.deepEqual(request.text, {
+    format: {
+      type: "json_schema",
+      name: "answer_schema",
+      schema,
+      strict: true,
+    },
+  });
+  assert.equal("response_format" in request, false);
 });
 
 test("native Codex requests convert system role to developer", () => {
