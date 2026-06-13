@@ -9,6 +9,10 @@ import {
   resolveRetryEntry,
 } from "../config/runtimeConfig.js";
 import { getConsistentMachineId } from "../../src/shared/utils/machineId.js";
+import {
+  refreshProviderCredentials,
+  shouldRefreshCredentials,
+} from "../services/oauthCredentialManager.js";
 
 const CODEX_SSE_OVERLOADED_PATTERNS = [
   "server_is_overloaded",
@@ -251,6 +255,15 @@ export class CodexExecutor extends BaseExecutor {
     return credentials?.providerSpecificData?.dispatchCompact === true
       ? `${baseUrl}/compact`
       : baseUrl;
+  }
+
+  async refreshCredentials(credentials, log) {
+    if (!credentials?.refreshToken) return null;
+    return refreshProviderCredentials("codex", credentials, log);
+  }
+
+  needsRefresh(credentials) {
+    return shouldRefreshCredentials("codex", credentials);
   }
 
   /**

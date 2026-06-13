@@ -6,6 +6,7 @@ import {
   resolveRetryEntry,
 } from "../config/runtimeConfig.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { shouldRefreshCredentials } from "../services/oauthCredentialManager.js";
 
 /**
  * BaseExecutor - Base class for provider executors
@@ -103,9 +104,7 @@ export class BaseExecutor {
   }
 
   needsRefresh(credentials) {
-    if (!credentials.expiresAt) return false;
-    const expiresAtMs = new Date(credentials.expiresAt).getTime();
-    return expiresAtMs - Date.now() < 5 * 60 * 1000;
+    return shouldRefreshCredentials(this.provider, credentials);
   }
 
   parseError(response, bodyText) {
@@ -132,6 +131,19 @@ export class BaseExecutor {
     // Merge default retry config with provider-specific config
     const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...this.config.retry };
 
+    // Schedule retry via retryConfig[statusKey]. Returns true when caller should `urlIndex--; continue`
+    const tryRetry = async (urlIndex, statusKey, reason) => {
+      const { attempts, delayMs } = resolveRetryEntry(retryConfig[statusKey]);
+      if (attempts <= 0 || retryAttemptsByUrl[urlIndex] >= attempts) return false;
+      retryAttemptsByUrl[urlIndex]++;
+      log?.debug?.(
+        "RETRY",
+        `${reason} retry ${retryAttemptsByUrl[urlIndex]}/${attempts} after ${delayMs / 1000}s`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      return true;
+    };
+
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
       const url = this.buildUrl(model, stream, urlIndex, credentials);
       const transformedBody = this.transformRequest(
@@ -144,13 +156,12 @@ export class BaseExecutor {
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 
+      const connectCtrl = new AbortController();
+      const timeoutId = setTimeout(() => {
+        connectCtrl.abort(new Error("fetch connect timeout"));
+      }, FETCH_CONNECT_TIMEOUT_MS);
+
       try {
-        const connectCtrl = new AbortController();
-        let connectTimedOut = false;
-        const timeoutId = setTimeout(() => {
-          connectTimedOut = true;
-          connectCtrl.abort(new Error("fetch connect timeout"));
-        }, FETCH_CONNECT_TIMEOUT_MS);
         const fetchSignal = signal
           ? AbortSignal.any([signal, connectCtrl.signal])
           : connectCtrl.signal;
@@ -167,19 +178,13 @@ export class BaseExecutor {
         ).finally(() => clearTimeout(timeoutId));
 
         // Retry based on status code config
-        const retryEntry = resolveRetryEntry(retryConfig[response.status]);
         if (
-          retryEntry.attempts > 0 &&
-          retryAttemptsByUrl[urlIndex] < retryEntry.attempts
+          await tryRetry(
+            urlIndex,
+            response.status,
+            `status ${response.status}`,
+          )
         ) {
-          retryAttemptsByUrl[urlIndex]++;
-          log?.debug?.(
-            "RETRY",
-            `${response.status} retry ${retryAttemptsByUrl[urlIndex]}/${retryEntry.attempts} after ${retryEntry.delayMs / 1000}s`,
-          );
-          await new Promise((resolve) =>
-            setTimeout(resolve, retryEntry.delayMs),
-          );
           urlIndex--;
           continue;
         }
@@ -201,7 +206,25 @@ export class BaseExecutor {
           pathMode: response.pathMode || null,
         };
       } catch (error) {
+        clearTimeout(timeoutId);
         lastError = error;
+        const isConnectTimeout =
+          connectCtrl.signal.aborted && error.name === "AbortError";
+        // Connect timeout is internal — convert to retryable network error, don't propagate AbortError
+        if (error.name === "AbortError" && !isConnectTimeout) throw error;
+
+        // Map network/fetch exceptions to 502 retry config
+        if (
+          await tryRetry(
+            urlIndex,
+            HTTP_STATUS.BAD_GATEWAY,
+            `network "${error.message}"`,
+          )
+        ) {
+          urlIndex--;
+          continue;
+        }
+
         if (urlIndex + 1 < fallbackCount) {
           log?.debug?.(
             "RETRY",
