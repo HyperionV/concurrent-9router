@@ -1,17 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Button, Modal } from "@/shared/components";
+import { Button } from "@/shared/components";
 
-export default function MaskEditor({ imageFile, onSave, onCancel }) {
+export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCancel }) {
   const [imageUrl, setImageUrl] = useState("");
-  const [shapes, setShapes] = useState([]);
+  const [shapes, setShapes] = useState(initialShapes || []);
   const [mode, setMode] = useState("rect"); // 'rect' | 'freeform'
   const [isDrawing, setIsDrawing] = useState(false);
   const [points, setPoints] = useState([]);
   const [commentInput, setCommentInput] = useState("");
   const [showCommentModal, setShowCommentModal] = useState(false);
   const [tempShape, setTempShape] = useState(null);
+  const [zoom, setZoom] = useState(1); // Zoom level scale factor (0.5 to 4)
 
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -33,8 +34,9 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
     const img = imgRef.current;
     if (!img) return;
 
-    const containerWidth = containerRef.current ? containerRef.current.clientWidth : 600;
-    const maxDisplayHeight = 450;
+    // Use parent container width or standard budget size
+    const containerWidth = containerRef.current ? containerRef.current.clientWidth : 800;
+    const maxDisplayHeight = 550;
     const scale = Math.min(containerWidth / img.naturalWidth, maxDisplayHeight / img.naturalHeight, 1);
     const displayWidth = img.naturalWidth * scale;
     const displayHeight = img.naturalHeight * scale;
@@ -53,12 +55,16 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
     return () => window.removeEventListener("resize", handleResize);
   }, [imageLoaded]);
 
-  // Redraw canvas content when shapes, points, drawing state, or dimensions change
+  // Redraw canvas content when shapes, points, drawing state, zoom, or dimensions change
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !imageLoaded) return;
     const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, dimensions.width, dimensions.height);
+    
+    const scaleWidth = dimensions.width * zoom;
+    const scaleHeight = dimensions.height * zoom;
+
+    ctx.clearRect(0, 0, scaleWidth, scaleHeight);
 
     // Create a striped pattern (white background with grey slate stripes)
     const patternCanvas = document.createElement("canvas");
@@ -75,10 +81,10 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
     pctx.stroke();
     const pattern = ctx.createPattern(patternCanvas, "repeat");
 
-    // Sketched border helpers
+    // Sketched border helpers (scaled by zoom)
     const drawSketchedRectBorder = (x1, y1, x2, y2) => {
       ctx.setLineDash([]);
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = 1.2 * Math.max(0.8, zoom * 0.7);
       
       const drawOffsetLine = (ox1, oy1, ox2, oy2) => {
         ctx.beginPath();
@@ -87,7 +93,7 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
         for (let i = 1; i <= steps; i++) {
           const t = i / steps;
           // Seeded deterministic sin offset prevents flickering on typing/render
-          const offset = Math.sin(t * Math.PI) * (i % 2 === 0 ? 0.8 : -0.8);
+          const offset = Math.sin(t * Math.PI) * (i % 2 === 0 ? 0.8 : -0.8) * Math.max(0.6, zoom * 0.8);
           const x = ox1 + (ox2 - ox1) * t + offset;
           const y = oy1 + (oy2 - oy1) * t + offset;
           ctx.lineTo(x, y);
@@ -112,13 +118,13 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
 
     const drawSketchedPolygonBorder = (pts) => {
       ctx.setLineDash([]);
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = 1.2 * Math.max(0.8, zoom * 0.7);
 
       const drawSketchedPath = (color, offset) => {
         ctx.strokeStyle = color;
         ctx.beginPath();
         pts.forEach((p, idx) => {
-          const val = (idx % 2 === 0 ? 1 : -1) * 0.8;
+          const val = (idx % 2 === 0 ? 1 : -1) * 0.8 * Math.max(0.6, zoom * 0.8);
           const px = p.x + val + offset;
           const py = p.y - val + offset;
           if (idx === 0) ctx.moveTo(px, py);
@@ -136,18 +142,18 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
     shapes.forEach((shape) => {
       ctx.beginPath();
       let x1 = 0, y1 = 0, x2 = 0, y2 = 0;
-      let minX = dimensions.width, maxX = 0, minY = dimensions.height, maxY = 0;
+      let minX = scaleWidth, maxX = 0, minY = scaleHeight, maxY = 0;
       
       if (shape.type === "rect") {
-        x1 = shape.start.x * dimensions.width;
-        y1 = shape.start.y * dimensions.height;
-        x2 = shape.end.x * dimensions.width;
-        y2 = shape.end.y * dimensions.height;
+        x1 = shape.start.x * scaleWidth;
+        y1 = shape.start.y * scaleHeight;
+        x2 = shape.end.x * scaleWidth;
+        y2 = shape.end.y * scaleHeight;
         ctx.rect(x1, y1, x2 - x1, y2 - y1);
       } else if (shape.type === "freeform") {
         shape.points.forEach((p, idx) => {
-          const px = p.x * dimensions.width;
-          const py = p.y * dimensions.height;
+          const px = p.x * scaleWidth;
+          const py = p.y * scaleHeight;
           if (idx === 0) ctx.moveTo(px, py);
           else ctx.lineTo(px, py);
           
@@ -167,7 +173,7 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
       if (shape.type === "rect") {
         drawSketchedRectBorder(x1, y1, x2, y2);
       } else if (shape.type === "freeform") {
-        const pts = shape.points.map(p => ({ x: p.x * dimensions.width, y: p.y * dimensions.height }));
+        const pts = shape.points.map(p => ({ x: p.x * scaleWidth, y: p.y * scaleHeight }));
         drawSketchedPolygonBorder(pts);
       }
 
@@ -252,7 +258,7 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
       ctx.setLineDash([4, 4]);
       ctx.stroke();
     }
-  }, [shapes, points, isDrawing, dimensions, mode, imageLoaded]);
+  }, [shapes, points, isDrawing, dimensions, mode, imageLoaded, zoom]);
 
   const getMousePos = (e) => {
     const canvas = canvasRef.current;
@@ -262,9 +268,12 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
     const clientX = e.clientX ?? (e.touches && e.touches[0]?.clientX);
     const clientY = e.clientY ?? (e.touches && e.touches[0]?.clientY);
 
+    const scaleWidth = dimensions.width * zoom;
+    const scaleHeight = dimensions.height * zoom;
+
     return {
-      x: Math.max(0, Math.min(clientX - rect.left, dimensions.width)),
-      y: Math.max(0, Math.min(clientY - rect.top, dimensions.height)),
+      x: Math.max(0, Math.min(clientX - rect.left, scaleWidth)),
+      y: Math.max(0, Math.min(clientY - rect.top, scaleHeight)),
     };
   };
 
@@ -294,14 +303,17 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
     if (!isDrawing || showCommentModal) return;
     setIsDrawing(false);
 
+    const scaleWidth = dimensions.width * zoom;
+    const scaleHeight = dimensions.height * zoom;
+
     if (mode === "rect" && points.length === 2) {
       const [start, end] = points;
       const dx = Math.abs(end.x - start.x);
       const dy = Math.abs(end.y - start.y);
       if (dx < 6 || dy < 6) return;
 
-      const relStart = { x: start.x / dimensions.width, y: start.y / dimensions.height };
-      const relEnd = { x: end.x / dimensions.width, y: end.y / dimensions.height };
+      const relStart = { x: start.x / scaleWidth, y: start.y / scaleHeight };
+      const relEnd = { x: end.x / scaleWidth, y: end.y / scaleHeight };
 
       setTempShape({
         type: "rect",
@@ -312,8 +324,8 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
       setShowCommentModal(true);
     } else if (mode === "freeform" && points.length > 2) {
       const relPoints = points.map((p) => ({
-        x: p.x / dimensions.width,
-        y: p.y / dimensions.height,
+        x: p.x / scaleWidth,
+        y: p.y / scaleHeight,
       }));
 
       setTempShape({
@@ -337,7 +349,6 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
   };
 
   const handleCancelComment = () => {
-    // Discard shape if user cancels comment modal
     setTempShape(null);
     setShowCommentModal(false);
   };
@@ -353,9 +364,8 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
     exportCanvas.height = img.naturalHeight;
     const ctx = exportCanvas.getContext("2d");
 
-    // 1. Fill background with fully opaque white (alpha = 255)
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+    // 1. Draw original image onto mask canvas so it contains the original pixels
+    ctx.drawImage(img, 0, 0, exportCanvas.width, exportCanvas.height);
 
     // 2. Set globalCompositeOperation to destination-out to erase selection shapes (making them fully transparent)
     ctx.globalCompositeOperation = "destination-out";
@@ -380,23 +390,23 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
       ctx.fill();
     });
 
-    // 3. Output as blob and save
+    // 3. Output as blob and save (passing both file AND the current shapes list)
     exportCanvas.toBlob((blob) => {
       if (blob) {
         const file = new File([blob], "mask.png", { type: "image/png" });
-        onSave(file);
+        onSave(file, shapes);
       }
     }, "image/png");
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="relative flex w-full max-w-3xl flex-col rounded-xl border border-border bg-background shadow-2xl overflow-hidden">
+      <div className="relative flex w-[90vw] h-[90vh] flex-col rounded-xl border border-border bg-background shadow-2xl overflow-hidden">
         
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-border px-6 py-4">
+        <div className="flex items-center justify-between border-b border-border px-6 py-3">
           <div>
-            <h3 className="text-lg font-semibold text-text-main">Edit Image Mask</h3>
+            <h3 className="text-base font-semibold text-text-main">Edit Image Mask</h3>
             <p className="text-xs text-text-muted mt-0.5">
               Draw regions to replace or modify. Preserved areas remain untouched.
             </p>
@@ -405,18 +415,19 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
             onClick={onCancel}
             className="rounded-full p-1 text-text-muted hover:bg-sidebar hover:text-text-main transition-colors"
           >
-            <span className="material-symbols-outlined">close</span>
+            <span className="material-symbols-outlined text-lg">close</span>
           </button>
         </div>
 
-        {/* Workspace Canvas */}
-        <div className="flex flex-col items-center justify-center bg-sidebar/40 p-6 min-h-[300px]">
+        {/* Workspace Canvas (Scrollable viewport) */}
+        <div className="flex-1 overflow-auto bg-sidebar/40 p-6 flex items-center justify-center min-h-[300px]">
           <div
             ref={containerRef}
-            className="relative select-none overflow-hidden rounded-lg border border-border bg-sidebar shadow-md"
+            className="relative select-none overflow-visible rounded-lg border border-border bg-sidebar shadow-md"
             style={{
-              width: dimensions.width ? `${dimensions.width}px` : "auto",
-              height: dimensions.height ? `${dimensions.height}px` : "auto",
+              width: dimensions.width ? `${dimensions.width * zoom}px` : "auto",
+              height: dimensions.height ? `${dimensions.height * zoom}px` : "auto",
+              transition: "width 0.15s ease-out, height 0.15s ease-out",
             }}
           >
             {imageUrl && (
@@ -425,10 +436,11 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
                 src={imageUrl}
                 alt="Mask Source"
                 onLoad={handleImageLoad}
-                className="pointer-events-none max-w-full"
+                className="pointer-events-none max-w-none"
                 style={{
-                  width: dimensions.width ? `${dimensions.width}px` : "auto",
-                  height: dimensions.height ? `${dimensions.height}px` : "auto",
+                  width: dimensions.width ? `${dimensions.width * zoom}px` : "auto",
+                  height: dimensions.height ? `${dimensions.height * zoom}px` : "auto",
+                  transition: "width 0.15s ease-out, height 0.15s ease-out",
                 }}
               />
             )}
@@ -436,8 +448,8 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
             {imageLoaded && (
               <canvas
                 ref={canvasRef}
-                width={dimensions.width}
-                height={dimensions.height}
+                width={dimensions.width * zoom}
+                height={dimensions.height * zoom}
                 onMouseDown={handleStart}
                 onMouseMove={handleMove}
                 onMouseUp={handleEnd}
@@ -489,6 +501,37 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
                   draw
                 </span>
                 Freeform
+              </button>
+            </div>
+
+            {/* Zoom Controls */}
+            <div className="flex items-center gap-1.5 rounded-lg bg-sidebar p-1 border border-border">
+              <button
+                type="button"
+                onClick={() => setZoom(z => Math.max(0.5, z - 0.25))}
+                className="flex items-center justify-center rounded-md p-1 text-text-muted hover:text-text-main transition-colors"
+                title="Zoom Out"
+              >
+                <span className="material-symbols-outlined text-[16px]">zoom_out</span>
+              </button>
+              <span className="text-[11px] font-mono font-medium text-text-muted px-1">
+                {Math.round(zoom * 100)}%
+              </span>
+              <button
+                type="button"
+                onClick={() => setZoom(z => Math.min(4, z + 0.25))}
+                className="flex items-center justify-center rounded-md p-1 text-text-muted hover:text-text-main transition-colors"
+                title="Zoom In"
+              >
+                <span className="material-symbols-outlined text-[16px]">zoom_in</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setZoom(1)}
+                className="flex items-center justify-center rounded-md p-1 text-text-muted hover:text-text-main transition-colors border-l border-border pl-2 ml-1"
+                title="Reset Zoom"
+              >
+                <span className="material-symbols-outlined text-[16px]">restart_alt</span>
               </button>
             </div>
 

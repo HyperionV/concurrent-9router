@@ -278,9 +278,21 @@ export default function CodexImageProviderPage() {
   const [input, setInput] = useState(IMAGE_CONFIG.defaultInput);
   const [refImage, setRefImage] = useState("");
   const [uploadedImages, setUploadedImages] = useState([]);
+  const [uploadedImagePreviewUrl, setUploadedImagePreviewUrl] = useState("");
   const [maskFile, setMaskFile] = useState(null);
   const [maskPreviewUrl, setMaskPreviewUrl] = useState("");
+  const [maskShapes, setMaskShapes] = useState([]);
   const [isMaskingEnabled, setIsMaskingEnabled] = useState(false);
+
+  useEffect(() => {
+    if (uploadedImages[0]) {
+      const url = URL.createObjectURL(uploadedImages[0]);
+      setUploadedImagePreviewUrl(url);
+      return () => URL.revokeObjectURL(url);
+    } else {
+      setUploadedImagePreviewUrl("");
+    }
+  }, [uploadedImages]);
 
   useEffect(() => {
     if (maskFile) {
@@ -295,6 +307,7 @@ export default function CodexImageProviderPage() {
   useEffect(() => {
     if (uploadedImages.length === 0) {
       setMaskFile(null);
+      setMaskShapes([]);
     }
   }, [uploadedImages]);
 
@@ -959,10 +972,10 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
                   endpoint.
                 </p>
                 {uploadedImages.length > 0 && (
-                  <div className="mt-2 border-t border-border/60 pt-3 flex flex-col gap-3">
+                  <div className="mt-4 border-t border-border/60 pt-4 flex flex-col gap-4">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-semibold text-text-main">
-                        Image Masking (Optional)
+                        Image & Mask Preview
                       </span>
                       <button
                         type="button"
@@ -975,36 +988,78 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
                         {maskFile ? "Edit Mask" : "Draw Mask"}
                       </button>
                     </div>
-                    {maskPreviewUrl ? (
-                      <div className="flex items-start gap-3 rounded-lg border border-border bg-background p-2.5">
-                        <div className="relative group size-16 shrink-0 rounded-md border border-border overflow-hidden bg-sidebar/50">
-                          <img
-                            src={maskPreviewUrl}
-                            alt="Mask Preview"
-                            className="size-full object-contain"
-                          />
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {/* Left: Original Image */}
+                      <div className="flex flex-col gap-2 rounded-lg border border-border bg-background p-3">
+                        <span className="text-[11px] font-medium text-text-muted">
+                          Original Image
+                        </span>
+                        <div className="relative aspect-square w-full rounded-md border border-border overflow-hidden bg-sidebar/30 flex items-center justify-center">
+                          {uploadedImagePreviewUrl && (
+                            <img
+                              src={uploadedImagePreviewUrl}
+                              alt="Original"
+                              className="max-h-full max-w-full object-contain"
+                            />
+                          )}
                         </div>
-                        <div className="flex-1 min-w-0">
+                        <div className="min-w-0">
                           <p className="text-xs font-medium text-text-main truncate">
-                            {maskFile.name}
+                            {uploadedImages[0]?.name}
                           </p>
                           <p className="text-[10px] text-text-muted mt-0.5">
-                            {(maskFile.size / 1024).toFixed(1)} KB · PNG Mask
+                            {(uploadedImages[0]?.size / 1024).toFixed(1)} KB · {uploadedImages[0]?.type}
                           </p>
-                          <button
-                            type="button"
-                            onClick={() => setMaskFile(null)}
-                            className="text-[10px] text-red-500 font-medium hover:underline mt-1.5 block"
-                          >
-                            Remove Mask
-                          </button>
                         </div>
                       </div>
-                    ) : (
-                      <p className="text-[11px] text-text-muted">
-                        No mask added yet. Draw a mask to specify which parts of the image the model should edit.
-                      </p>
-                    )}
+
+                      {/* Right: Mask Image */}
+                      <div className="flex flex-col gap-2 rounded-lg border border-border bg-background p-3">
+                        <span className="text-[11px] font-medium text-text-muted">
+                          Edit Mask (Alpha Channel)
+                        </span>
+                        <div className="relative aspect-square w-full rounded-md border border-border overflow-hidden bg-sidebar/30 flex items-center justify-center">
+                          {maskPreviewUrl ? (
+                            <img
+                              src={maskPreviewUrl}
+                              alt="Mask Preview"
+                              className="max-h-full max-w-full object-contain"
+                            />
+                          ) : (
+                            <div className="flex flex-col items-center gap-1.5 text-center px-4 py-8">
+                              <span className="material-symbols-outlined text-text-muted text-3xl">
+                                texture
+                              </span>
+                              <p className="text-[11px] text-text-muted leading-relaxed">
+                                No mask added yet. Click "Draw Mask" above to sketch which parts of the image to edit.
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                        {maskFile ? (
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-text-main truncate">
+                              {maskFile.name}
+                            </p>
+                            <div className="flex items-center justify-between mt-0.5">
+                              <p className="text-[10px] text-text-muted">
+                                {(maskFile.size / 1024).toFixed(1)} KB · PNG Mask
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => setMaskFile(null)}
+                                className="text-[10px] text-red-500 font-medium hover:underline"
+                              >
+                                Remove Mask
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="h-[26px]" />
+                        )}
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1274,8 +1329,10 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
       {isMaskingEnabled && uploadedImages[0] && (
         <MaskEditor
           imageFile={uploadedImages[0]}
-          onSave={(file) => {
+          initialShapes={maskShapes}
+          onSave={(file, shapes) => {
             setMaskFile(file);
+            setMaskShapes(shapes);
             setIsMaskingEnabled(false);
           }}
           onCancel={() => setIsMaskingEnabled(false)}
