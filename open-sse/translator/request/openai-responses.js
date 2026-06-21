@@ -274,6 +274,7 @@ export function openaiToOpenAIResponsesRequest(
                   };
                 }
                 if (c.type === "input_image") return c;
+                if (c.type === "file" || c.type === "input_file") return c;
                 // Serialize any unknown type (tool_use, tool_result, thinking, etc.) as text
                 const text = c.text || c.content || JSON.stringify(c);
                 return {
