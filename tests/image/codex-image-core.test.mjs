@@ -549,7 +549,7 @@ test("codex image edit parser normalizes multipart image uploads", async () => {
   assert.match(parsed.body.images[1], /^data:image\/jpeg;base64,/);
 });
 
-test("codex image edit parser rejects mask uploads", async () => {
+test("codex image edit parser accepts mask uploads", async () => {
   const { parseCodexImageEditBody } =
     await import("@/sse/handlers/codexImageRequest.js");
 
@@ -576,8 +576,10 @@ test("codex image edit parser rejects mask uploads", async () => {
     }),
   );
 
-  assert.ok(parsed.error);
-  assert.equal(parsed.error.status, 400);
-  const errorJson = await parsed.error.json();
-  assert.match(errorJson.error.message, /do not support mask uploads yet/);
+  assert.ok(!parsed.error);
+  assert.equal(parsed.body.model, "cx/gpt-5.4-image");
+  assert.equal(parsed.body.prompt, "compose a catalog shot");
+  assert.equal(parsed.body.images.length, 1);
+  assert.match(parsed.body.images[0], /^data:image\/png;base64,/);
+  assert.match(parsed.body.mask, /^data:image\/png;base64,/);
 });

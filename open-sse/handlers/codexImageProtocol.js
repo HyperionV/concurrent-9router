@@ -93,6 +93,11 @@ export function buildCodexImageRequest(model, body) {
   if (body.background && body.background !== "") {
     imageTool.background = body.background;
   }
+  if (body.mask && body.mask !== "") {
+    imageTool.input_image_mask = {
+      image_url: toCodexDataUrl(body.mask),
+    };
+  }
 
   return {
     model: stripCodexImageModel(model),

@@ -28,20 +28,15 @@ export async function parseCodexImageEditBody(request) {
     }
   }
 
-  if (form.get("mask")) {
-    return {
-      error: errorResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        "Codex image edits do not support mask uploads yet",
-      ),
-    };
-  }
+  const maskFile = form.get("mask");
+  const mask = (maskFile instanceof File && maskFile.size > 0) ? await fileToDataUrl(maskFile) : null;
 
   return {
     body: {
       model: String(form.get("model") || ""),
       prompt: String(form.get("prompt") || ""),
       images,
+      mask,
       size: String(form.get("size") || ""),
       quality: String(form.get("quality") || ""),
       background: String(form.get("background") || ""),
