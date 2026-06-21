@@ -60,14 +60,89 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, dimensions.width, dimensions.height);
 
+    // Create a striped pattern (white background with grey slate stripes)
+    const patternCanvas = document.createElement("canvas");
+    patternCanvas.width = 12;
+    patternCanvas.height = 12;
+    const pctx = patternCanvas.getContext("2d");
+    pctx.fillStyle = "#ffffff";
+    pctx.fillRect(0, 0, 12, 12);
+    pctx.strokeStyle = "#cbd5e1"; // slate-300
+    pctx.lineWidth = 1.5;
+    pctx.beginPath();
+    pctx.moveTo(0, 12);
+    pctx.lineTo(12, 0);
+    pctx.stroke();
+    const pattern = ctx.createPattern(patternCanvas, "repeat");
+
+    // Sketched border helpers
+    const drawSketchedRectBorder = (x1, y1, x2, y2) => {
+      ctx.setLineDash([]);
+      ctx.lineWidth = 1.2;
+      
+      const drawOffsetLine = (ox1, oy1, ox2, oy2) => {
+        ctx.beginPath();
+        const steps = 8;
+        ctx.moveTo(ox1, oy1);
+        for (let i = 1; i <= steps; i++) {
+          const t = i / steps;
+          // Seeded deterministic sin offset prevents flickering on typing/render
+          const offset = Math.sin(t * Math.PI) * (i % 2 === 0 ? 0.8 : -0.8);
+          const x = ox1 + (ox2 - ox1) * t + offset;
+          const y = oy1 + (oy2 - oy1) * t + offset;
+          ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      };
+
+      // Draw main dark pass
+      ctx.strokeStyle = "rgba(15, 23, 42, 0.75)"; // Slate-900
+      drawOffsetLine(x1, y1, x2, y1);
+      drawOffsetLine(x2, y1, x2, y2);
+      drawOffsetLine(x2, y2, x1, y2);
+      drawOffsetLine(x1, y2, x1, y1);
+
+      // Draw secondary offset blue pass for a modern "architect sketch" look
+      ctx.strokeStyle = "rgba(59, 130, 246, 0.4)";
+      drawOffsetLine(x1 - 1, y1 + 0.5, x2 + 1, y1 + 0.5);
+      drawOffsetLine(x2 + 0.5, y1 - 1, x2 + 0.5, y2 + 1);
+      drawOffsetLine(x2 + 1, y2 - 0.5, x1 - 1, y2 - 0.5);
+      drawOffsetLine(x1 - 0.5, y2 + 1, x1 - 0.5, y1 - 1);
+    };
+
+    const drawSketchedPolygonBorder = (pts) => {
+      ctx.setLineDash([]);
+      ctx.lineWidth = 1.2;
+
+      const drawSketchedPath = (color, offset) => {
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        pts.forEach((p, idx) => {
+          const val = (idx % 2 === 0 ? 1 : -1) * 0.8;
+          const px = p.x + val + offset;
+          const py = p.y - val + offset;
+          if (idx === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.closePath();
+        ctx.stroke();
+      };
+
+      drawSketchedPath("rgba(15, 23, 42, 0.75)", 0);
+      drawSketchedPath("rgba(59, 130, 246, 0.4)", 0.5);
+    };
+
     // Draw existing shapes
     shapes.forEach((shape) => {
       ctx.beginPath();
+      let x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+      let minX = dimensions.width, maxX = 0, minY = dimensions.height, maxY = 0;
+      
       if (shape.type === "rect") {
-        const x1 = shape.start.x * dimensions.width;
-        const y1 = shape.start.y * dimensions.height;
-        const x2 = shape.end.x * dimensions.width;
-        const y2 = shape.end.y * dimensions.height;
+        x1 = shape.start.x * dimensions.width;
+        y1 = shape.start.y * dimensions.height;
+        x2 = shape.end.x * dimensions.width;
+        y2 = shape.end.y * dimensions.height;
         ctx.rect(x1, y1, x2 - x1, y2 - y1);
       } else if (shape.type === "freeform") {
         shape.points.forEach((p, idx) => {
@@ -75,58 +150,89 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
           const py = p.y * dimensions.height;
           if (idx === 0) ctx.moveTo(px, py);
           else ctx.lineTo(px, py);
+          
+          if (px < minX) minX = px;
+          if (px > maxX) maxX = px;
+          if (py < minY) minY = py;
+          if (py > maxY) maxY = py;
         });
         ctx.closePath();
       }
 
-      // Draw semi-transparent selection fill
-      ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
+      // Draw white striped pattern (completely covering old content)
+      ctx.fillStyle = pattern;
       ctx.fill();
 
-      // Sketched dashed outer selection border (marching ants effect)
-      ctx.setLineDash([6, 4]);
-      ctx.strokeStyle = "#3b82f6"; // Primary blue selection outline
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
-
-      // Inner sketch detail outline
-      ctx.setLineDash([]);
-      ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
-      ctx.lineWidth = 1;
-      ctx.stroke();
-
-      // Render User's Comment inside the selection space
-      let cx = 0, cy = 0;
+      // Draw sketched selection borders
       if (shape.type === "rect") {
-        cx = ((shape.start.x + shape.end.x) / 2) * dimensions.width;
-        cy = ((shape.start.y + shape.end.y) / 2) * dimensions.height;
+        drawSketchedRectBorder(x1, y1, x2, y2);
       } else if (shape.type === "freeform") {
-        const sum = shape.points.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
-        cx = (sum.x / shape.points.length) * dimensions.width;
-        cy = (sum.y / shape.points.length) * dimensions.height;
+        const pts = shape.points.map(p => ({ x: p.x * dimensions.width, y: p.y * dimensions.height }));
+        drawSketchedPolygonBorder(pts);
       }
 
+      // Render Comment inside the selection space (word-wrapped to fit, not bold)
       if (shape.comment) {
-        ctx.font = "bold 11px Inter, system-ui, sans-serif";
-        const textWidth = ctx.measureText(shape.comment).width;
-        
-        // Draw comment label background badge
-        ctx.fillStyle = "rgba(15, 23, 42, 0.9)"; // Slate 900
-        ctx.fillRect(cx - textWidth / 2 - 8, cy - 10, textWidth + 16, 20);
-        
-        // Label border
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
-        ctx.strokeRect(cx - textWidth / 2 - 8, cy - 10, textWidth + 16, 20);
-
-        // Draw text
-        ctx.fillStyle = "#ffffff";
+        ctx.font = "11px Inter, system-ui, sans-serif";
+        ctx.fillStyle = "#1e293b"; // Slate-800 text
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText(shape.comment, cx, cy);
+
+        const cx = shape.type === "rect" ? (x1 + x2) / 2 : minX + (maxX - minX) / 2;
+        const cy = shape.type === "rect" ? (y1 + y2) / 2 : minY + (maxY - minY) / 2;
+        const w = shape.type === "rect" ? Math.abs(x2 - x1) : (maxX - minX);
+        const h = shape.type === "rect" ? Math.abs(y2 - y1) : (maxY - minY);
+
+        const maxWidth = w - 12;
+        const maxHeight = h - 12;
+
+        if (maxWidth > 12 && maxHeight > 12) {
+          const words = shape.comment.split(" ");
+          const lines = [];
+          let currentLine = words[0] || "";
+          for (let i = 1; i < words.length; i++) {
+            const word = words[i];
+            const width = ctx.measureText(currentLine + " " + word).width;
+            if (width < maxWidth) {
+              currentLine += " " + word;
+            } else {
+              lines.push(currentLine);
+              currentLine = word;
+            }
+          }
+          lines.push(currentLine);
+
+          const lineHeight = 14;
+          const totalHeight = lines.length * lineHeight;
+
+          // Cap lines if they exceed vertical height limit
+          let renderLines = lines;
+          if (totalHeight > maxHeight) {
+            const maxLines = Math.max(1, Math.floor(maxHeight / lineHeight));
+            renderLines = lines.slice(0, maxLines);
+            if (renderLines.length < lines.length) {
+              renderLines[renderLines.length - 1] += "...";
+            }
+          }
+
+          const startY = cy - ((renderLines.length - 1) * lineHeight) / 2;
+
+          // Draw small semi-transparent backing so stripes don't interfere with readability
+          ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+          const maxTextW = Math.min(maxWidth + 8, Math.max(...renderLines.map(l => ctx.measureText(l).width)) + 8);
+          const bgH = renderLines.length * lineHeight + 4;
+          ctx.fillRect(cx - maxTextW / 2, cy - bgH / 2, maxTextW, bgH);
+
+          // Draw text lines
+          ctx.fillStyle = "#1e293b";
+          renderLines.forEach((line, idx) => {
+            ctx.fillText(line, cx, startY + idx * lineHeight);
+          });
+        }
       }
     });
 
-    // Draw active drawing shape
+    // Draw active drawing shape (with dash line marching ants)
     if (isDrawing && points.length > 0) {
       ctx.beginPath();
       if (mode === "rect" && points.length === 2) {
@@ -139,10 +245,10 @@ export default function MaskEditor({ imageFile, onSave, onCancel }) {
         });
       }
 
-      ctx.fillStyle = "rgba(59, 130, 246, 0.15)";
+      ctx.fillStyle = "rgba(59, 130, 246, 0.1)";
       ctx.fill();
       ctx.strokeStyle = "#3b82f6";
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 4]);
       ctx.stroke();
     }
