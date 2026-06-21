@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Badge, Button, Card, Modal } from "@/shared/components";
+import { Badge, Button, Card, Modal, SegmentedControl } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { getModelsByProviderId } from "@/shared/constants/models";
@@ -723,7 +723,34 @@ ${fileFlags}${wantBinary ? " \\\n  --output image.png" : ""}`;
       </div>
 
       <Card>
-        <h2 className="mb-4 text-lg font-semibold">Example</h2>
+        <div className="border-b border-border pb-4 mb-4 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+          <SegmentedControl
+            options={[
+              { value: "generations", label: "Generate", icon: "image" },
+              { value: "edits", label: "Edit", icon: "edit" },
+            ]}
+            value={endpointMode}
+            onChange={setEndpointMode}
+          />
+          <div className="flex items-center gap-2">
+            <span className="rounded-lg bg-sidebar px-3 py-1.5 font-mono text-xs text-text-main border border-border">
+              <span className="text-green-500 font-semibold mr-1">POST</span>
+              {selectedEndpoint.path}
+            </span>
+            {tunnelEndpoint && (
+              <button
+                onClick={() => setUseTunnel((value) => !value)}
+                title={useTunnel ? "Using tunnel" : "Using local"}
+                className={`flex shrink-0 items-center gap-1 rounded-lg border px-2 py-1.5 text-xs transition-colors ${useTunnel ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-text-muted hover:text-primary"}`}
+              >
+                <span className="material-symbols-outlined text-[14px]">
+                  wifi_tethering
+                </span>
+                Tunnel
+              </button>
+            )}
+          </div>
+        </div>
         <div className="flex flex-col gap-2.5">
           <Row label="Model">
             <div className="flex flex-col gap-2">
@@ -748,44 +775,6 @@ ${fileFlags}${wantBinary ? " \\\n  --output image.png" : ""}`;
                   Add Model
                 </button>
               </div>
-            </div>
-          </Row>
-
-          <Row label="Endpoint">
-            <div className="flex flex-col gap-2">
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <select
-                  aria-label="Image endpoint"
-                  value={endpointMode}
-                  onChange={(event) => setEndpointMode(event.target.value)}
-                  className="rounded-lg border border-border bg-background px-3 py-1.5 text-sm focus:border-primary focus:outline-none sm:w-44"
-                >
-                  {endpointModeOptions.map(([key, config]) => (
-                    <option key={key} value={key}>
-                      {config.label} ({config.path})
-                    </option>
-                  ))}
-                </select>
-                <span className="flex-1 truncate rounded-lg bg-sidebar px-3 py-1.5 font-mono text-sm text-text-main">
-                  {endpoint}
-                  {selectedEndpoint.path}
-                </span>
-                {tunnelEndpoint && (
-                  <button
-                    onClick={() => setUseTunnel((value) => !value)}
-                    title={useTunnel ? "Using tunnel" : "Using local"}
-                    className={`flex shrink-0 items-center gap-1 rounded-lg border px-2 py-1.5 text-xs transition-colors ${useTunnel ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-text-muted hover:text-primary"}`}
-                  >
-                    <span className="material-symbols-outlined text-[14px]">
-                      wifi_tethering
-                    </span>
-                    Tunnel
-                  </button>
-                )}
-              </div>
-              <p className="text-xs text-text-muted">
-                {selectedEndpoint.description}
-              </p>
             </div>
           </Row>
 
