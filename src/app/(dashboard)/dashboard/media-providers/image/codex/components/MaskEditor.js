@@ -6,13 +6,12 @@ import { Button } from "@/shared/components";
 export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCancel }) {
   const [imageUrl, setImageUrl] = useState("");
   const [shapes, setShapes] = useState(initialShapes || []);
-  const [mode, setMode] = useState("rect"); // 'rect' | 'freeform'
   const [isDrawing, setIsDrawing] = useState(false);
   const [points, setPoints] = useState([]);
   const [commentInput, setCommentInput] = useState("");
   const [showCommentModal, setShowCommentModal] = useState(false);
   const [tempShape, setTempShape] = useState(null);
-  const [zoom, setZoom] = useState(1); // Zoom level scale factor (0.5 to 4)
+  const [zoom, setZoom] = useState(1); // Zoom scale factor (0.5 to 4)
 
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -34,7 +33,6 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
     const img = imgRef.current;
     if (!img) return;
 
-    // Use parent container width or standard budget size
     const containerWidth = containerRef.current ? containerRef.current.clientWidth : 800;
     const maxDisplayHeight = 550;
     const scale = Math.min(containerWidth / img.naturalWidth, maxDisplayHeight / img.naturalHeight, 1);
@@ -81,7 +79,7 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
     pctx.stroke();
     const pattern = ctx.createPattern(patternCanvas, "repeat");
 
-    // Sketched border helpers (scaled by zoom)
+    // Sketched border helper (scaled by zoom)
     const drawSketchedRectBorder = (x1, y1, x2, y2) => {
       ctx.setLineDash([]);
       ctx.lineWidth = 1.2 * Math.max(0.8, zoom * 0.7);
@@ -92,7 +90,6 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
         ctx.moveTo(ox1, oy1);
         for (let i = 1; i <= steps; i++) {
           const t = i / steps;
-          // Seeded deterministic sin offset prevents flickering on typing/render
           const offset = Math.sin(t * Math.PI) * (i % 2 === 0 ? 0.8 : -0.8) * Math.max(0.6, zoom * 0.8);
           const x = ox1 + (ox2 - ox1) * t + offset;
           const y = oy1 + (oy2 - oy1) * t + offset;
@@ -116,66 +113,21 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
       drawOffsetLine(x1 - 0.5, y2 + 1, x1 - 0.5, y1 - 1);
     };
 
-    const drawSketchedPolygonBorder = (pts) => {
-      ctx.setLineDash([]);
-      ctx.lineWidth = 1.2 * Math.max(0.8, zoom * 0.7);
-
-      const drawSketchedPath = (color, offset) => {
-        ctx.strokeStyle = color;
-        ctx.beginPath();
-        pts.forEach((p, idx) => {
-          const val = (idx % 2 === 0 ? 1 : -1) * 0.8 * Math.max(0.6, zoom * 0.8);
-          const px = p.x + val + offset;
-          const py = p.y - val + offset;
-          if (idx === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        });
-        ctx.closePath();
-        ctx.stroke();
-      };
-
-      drawSketchedPath("rgba(15, 23, 42, 0.75)", 0);
-      drawSketchedPath("rgba(59, 130, 246, 0.4)", 0.5);
-    };
-
     // Draw existing shapes
     shapes.forEach((shape) => {
       ctx.beginPath();
-      let x1 = 0, y1 = 0, x2 = 0, y2 = 0;
-      let minX = scaleWidth, maxX = 0, minY = scaleHeight, maxY = 0;
-      
-      if (shape.type === "rect") {
-        x1 = shape.start.x * scaleWidth;
-        y1 = shape.start.y * scaleHeight;
-        x2 = shape.end.x * scaleWidth;
-        y2 = shape.end.y * scaleHeight;
-        ctx.rect(x1, y1, x2 - x1, y2 - y1);
-      } else if (shape.type === "freeform") {
-        shape.points.forEach((p, idx) => {
-          const px = p.x * scaleWidth;
-          const py = p.y * scaleHeight;
-          if (idx === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-          
-          if (px < minX) minX = px;
-          if (px > maxX) maxX = px;
-          if (py < minY) minY = py;
-          if (py > maxY) maxY = py;
-        });
-        ctx.closePath();
-      }
+      const x1 = shape.start.x * scaleWidth;
+      const y1 = shape.start.y * scaleHeight;
+      const x2 = shape.end.x * scaleWidth;
+      const y2 = shape.end.y * scaleHeight;
+      ctx.rect(x1, y1, x2 - x1, y2 - y1);
 
       // Draw white striped pattern (completely covering old content)
       ctx.fillStyle = pattern;
       ctx.fill();
 
       // Draw sketched selection borders
-      if (shape.type === "rect") {
-        drawSketchedRectBorder(x1, y1, x2, y2);
-      } else if (shape.type === "freeform") {
-        const pts = shape.points.map(p => ({ x: p.x * scaleWidth, y: p.y * scaleHeight }));
-        drawSketchedPolygonBorder(pts);
-      }
+      drawSketchedRectBorder(x1, y1, x2, y2);
 
       // Render Comment inside the selection space (word-wrapped to fit, not bold)
       if (shape.comment) {
@@ -184,10 +136,10 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
 
-        const cx = shape.type === "rect" ? (x1 + x2) / 2 : minX + (maxX - minX) / 2;
-        const cy = shape.type === "rect" ? (y1 + y2) / 2 : minY + (maxY - minY) / 2;
-        const w = shape.type === "rect" ? Math.abs(x2 - x1) : (maxX - minX);
-        const h = shape.type === "rect" ? Math.abs(y2 - y1) : (maxY - minY);
+        const cx = (x1 + x2) / 2;
+        const cy = (y1 + y2) / 2;
+        const w = Math.abs(x2 - x1);
+        const h = Math.abs(y2 - y1);
 
         const maxWidth = w - 12;
         const maxHeight = h - 12;
@@ -223,7 +175,7 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
 
           const startY = cy - ((renderLines.length - 1) * lineHeight) / 2;
 
-          // Draw small semi-transparent backing so stripes don't interfere with readability
+          // Draw small semi-transparent backing so stripes don't interfere with legibility
           ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
           const maxTextW = Math.min(maxWidth + 8, Math.max(...renderLines.map(l => ctx.measureText(l).width)) + 8);
           const bgH = renderLines.length * lineHeight + 4;
@@ -239,17 +191,10 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
     });
 
     // Draw active drawing shape (with dash line marching ants)
-    if (isDrawing && points.length > 0) {
+    if (isDrawing && points.length === 2) {
       ctx.beginPath();
-      if (mode === "rect" && points.length === 2) {
-        const [start, end] = points;
-        ctx.rect(start.x, start.y, end.x - start.x, end.y - start.y);
-      } else if (mode === "freeform") {
-        points.forEach((p, idx) => {
-          if (idx === 0) ctx.moveTo(p.x, p.y);
-          else ctx.lineTo(p.x, p.y);
-        });
-      }
+      const [start, end] = points;
+      ctx.rect(start.x, start.y, end.x - start.x, end.y - start.y);
 
       ctx.fillStyle = "rgba(59, 130, 246, 0.1)";
       ctx.fill();
@@ -258,7 +203,7 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
       ctx.setLineDash([4, 4]);
       ctx.stroke();
     }
-  }, [shapes, points, isDrawing, dimensions, mode, imageLoaded, zoom]);
+  }, [shapes, points, isDrawing, dimensions, imageLoaded, zoom]);
 
   const getMousePos = (e) => {
     const canvas = canvasRef.current;
@@ -282,21 +227,13 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
     e.preventDefault();
     const pos = getMousePos(e);
     setIsDrawing(true);
-    if (mode === "rect") {
-      setPoints([pos, pos]);
-    } else {
-      setPoints([pos]);
-    }
+    setPoints([pos, pos]);
   };
 
   const handleMove = (e) => {
     if (!isDrawing || showCommentModal) return;
     const pos = getMousePos(e);
-    if (mode === "rect") {
-      setPoints(([start]) => [start, pos]);
-    } else {
-      setPoints((prev) => [...prev, pos]);
-    }
+    setPoints(([start]) => [start, pos]);
   };
 
   const handleEnd = () => {
@@ -306,7 +243,7 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
     const scaleWidth = dimensions.width * zoom;
     const scaleHeight = dimensions.height * zoom;
 
-    if (mode === "rect" && points.length === 2) {
+    if (points.length === 2) {
       const [start, end] = points;
       const dx = Math.abs(end.x - start.x);
       const dy = Math.abs(end.y - start.y);
@@ -319,18 +256,6 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
         type: "rect",
         start: relStart,
         end: relEnd,
-      });
-      setCommentInput("");
-      setShowCommentModal(true);
-    } else if (mode === "freeform" && points.length > 2) {
-      const relPoints = points.map((p) => ({
-        x: p.x / scaleWidth,
-        y: p.y / scaleHeight,
-      }));
-
-      setTempShape({
-        type: "freeform",
-        points: relPoints,
       });
       setCommentInput("");
       setShowCommentModal(true);
@@ -372,21 +297,11 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
 
     shapes.forEach((shape) => {
       ctx.beginPath();
-      if (shape.type === "rect") {
-        const x1 = shape.start.x * exportCanvas.width;
-        const y1 = shape.start.y * exportCanvas.height;
-        const x2 = shape.end.x * exportCanvas.width;
-        const y2 = shape.end.y * exportCanvas.height;
-        ctx.rect(x1, y1, x2 - x1, y2 - y1);
-      } else if (shape.type === "freeform") {
-        shape.points.forEach((p, idx) => {
-          const px = p.x * exportCanvas.width;
-          const py = p.y * exportCanvas.height;
-          if (idx === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        });
-        ctx.closePath();
-      }
+      const x1 = shape.start.x * exportCanvas.width;
+      const y1 = shape.start.y * exportCanvas.height;
+      const x2 = shape.end.x * exportCanvas.width;
+      const y2 = shape.end.y * exportCanvas.height;
+      ctx.rect(x1, y1, x2 - x1, y2 - y1);
       ctx.fill();
     });
 
@@ -408,7 +323,7 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
           <div>
             <h3 className="text-base font-semibold text-text-main">Edit Image Mask</h3>
             <p className="text-xs text-text-muted mt-0.5">
-              Draw regions to replace or modify. Preserved areas remain untouched.
+              Draw rectangular regions to replace or modify. Preserved areas remain untouched.
             </p>
           </div>
           <button
@@ -472,36 +387,12 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
         <div className="flex flex-col gap-4 border-t border-border px-6 py-4 bg-background">
           <div className="flex flex-wrap items-center justify-between gap-3">
             
-            {/* Draw Mode Selectors */}
-            <div className="flex items-center gap-1.5 rounded-lg bg-sidebar p-1 border border-border">
-              <button
-                type="button"
-                onClick={() => setMode("rect")}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                  mode === "rect"
-                    ? "bg-white dark:bg-white/10 text-text-main shadow-sm"
-                    : "text-text-muted hover:text-text-main"
-                }`}
-              >
-                <span className="material-symbols-outlined text-[14px]">
-                  rectangle
-                </span>
-                Rectangle
-              </button>
-              <button
-                type="button"
-                onClick={() => setMode("freeform")}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                  mode === "freeform"
-                    ? "bg-white dark:bg-white/10 text-text-main shadow-sm"
-                    : "text-text-muted hover:text-text-main"
-                }`}
-              >
-                <span className="material-symbols-outlined text-[14px]">
-                  draw
-                </span>
-                Freeform
-              </button>
+            {/* Mode status */}
+            <div className="flex items-center gap-1.5 rounded-lg bg-sidebar px-3 py-1.5 border border-border text-xs text-text-muted">
+              <span className="material-symbols-outlined text-[14px]">
+                rectangle
+              </span>
+              <span>Rectangle Mode Only</span>
             </div>
 
             {/* Zoom Controls */}

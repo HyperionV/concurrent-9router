@@ -2,7 +2,13 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Badge, Button, Card, Modal, SegmentedControl } from "@/shared/components";
+import {
+  Badge,
+  Button,
+  Card,
+  Modal,
+  SegmentedControl,
+} from "@/shared/components";
 import MaskEditor from "./components/MaskEditor";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
@@ -501,7 +507,8 @@ export default function CodexImageProviderPage() {
       const maskFlag = maskFile ? ` \\\n  -F "mask=@${maskFile.name}"` : "";
       const fields = Object.entries(requestBody)
         .filter(([key, value]) => {
-          if (key === "image" || key === "images" || key === "mask") return false;
+          if (key === "image" || key === "images" || key === "mask")
+            return false;
           return value !== "" && value !== null && value !== undefined;
         })
         .map(([key, value]) => `  -F "${key}=${String(value)}"`)
@@ -593,7 +600,8 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
     const preview = {
       ...Object.fromEntries(
         Object.entries(requestBody).filter(([key, value]) => {
-          if (key === "image" || key === "images" || key === "mask") return false;
+          if (key === "image" || key === "images" || key === "mask")
+            return false;
           return value !== "" && value !== null && value !== undefined;
         }),
       ),
@@ -607,7 +615,12 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
       };
     }
     return preview;
-  }, [requestBody, selectedEndpoint.bodyFormat, uploadedImageSummary, maskFile]);
+  }, [
+    requestBody,
+    selectedEndpoint.bodyFormat,
+    uploadedImageSummary,
+    maskFile,
+  ]);
 
   const requestPreviewJson = JSON.stringify(requestPreview, null, 2);
 
@@ -1009,7 +1022,8 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
                             {uploadedImages[0]?.name}
                           </p>
                           <p className="text-[10px] text-text-muted mt-0.5">
-                            {(uploadedImages[0]?.size / 1024).toFixed(1)} KB · {uploadedImages[0]?.type}
+                            {(uploadedImages[0]?.size / 1024).toFixed(1)} KB ·{" "}
+                            {uploadedImages[0]?.type}
                           </p>
                         </div>
                       </div>
@@ -1032,7 +1046,8 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
                                 texture
                               </span>
                               <p className="text-[11px] text-text-muted leading-relaxed">
-                                No mask added yet. Click "Draw Mask" above to sketch which parts of the image to edit.
+                                No mask added yet. Click "Draw Mask" above to
+                                sketch which parts of the image to edit.
                               </p>
                             </div>
                           )}
@@ -1044,7 +1059,8 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
                             </p>
                             <div className="flex items-center justify-between mt-0.5">
                               <p className="text-[10px] text-text-muted">
-                                {(maskFile.size / 1024).toFixed(1)} KB · PNG Mask
+                                {(maskFile.size / 1024).toFixed(1)} KB · PNG
+                                Mask
                               </p>
                               <button
                                 type="button"
@@ -1334,6 +1350,18 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
             setMaskFile(file);
             setMaskShapes(shapes);
             setIsMaskingEnabled(false);
+            
+            // Format and update prompt automatically with coordinates and instructions
+            if (shapes.length > 0) {
+              const instructions = shapes.map((shape) => {
+                const ymin = Math.round(Math.min(shape.start.y, shape.end.y) * 100);
+                const xmin = Math.round(Math.min(shape.start.x, shape.end.x) * 100);
+                const ymax = Math.round(Math.max(shape.start.y, shape.end.y) * 100);
+                const xmax = Math.round(Math.max(shape.start.x, shape.end.x) * 100);
+                return `- [ymin: ${ymin}%, xmin: ${xmin}%, ymax: ${ymax}%, xmax: ${xmax}%]: ${shape.comment}`;
+              }).join("\n");
+              setInput(`You are given the original slide for an IB teaser deck. Your task is to perform the changes requested by the user in each selected regions as listed below:\n${instructions}`);
+            }
           }}
           onCancel={() => setIsMaskingEnabled(false)}
         />
