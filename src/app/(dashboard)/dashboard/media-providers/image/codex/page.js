@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Button, Card, Modal, SegmentedControl } from "@/shared/components";
+import MaskEditor from "./components/MaskEditor";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { getModelsByProviderId } from "@/shared/constants/models";
@@ -277,6 +278,26 @@ export default function CodexImageProviderPage() {
   const [input, setInput] = useState(IMAGE_CONFIG.defaultInput);
   const [refImage, setRefImage] = useState("");
   const [uploadedImages, setUploadedImages] = useState([]);
+  const [maskFile, setMaskFile] = useState(null);
+  const [maskPreviewUrl, setMaskPreviewUrl] = useState("");
+  const [isMaskingEnabled, setIsMaskingEnabled] = useState(false);
+
+  useEffect(() => {
+    if (maskFile) {
+      const url = URL.createObjectURL(maskFile);
+      setMaskPreviewUrl(url);
+      return () => URL.revokeObjectURL(url);
+    } else {
+      setMaskPreviewUrl("");
+    }
+  }, [maskFile]);
+
+  useEffect(() => {
+    if (uploadedImages.length === 0) {
+      setMaskFile(null);
+    }
+  }, [uploadedImages]);
+
   const [extraValues, setExtraValues] = useState(() =>
     IMAGE_CONFIG.extraFields.reduce((acc, field) => {
       acc[field.key] = field.default;
@@ -464,9 +485,10 @@ export default function CodexImageProviderPage() {
             .map((file) => `  -F "image[]=@${file.name}"`)
             .join(" \\\n")
         : `  -F "image[]=@reference.png"`;
+      const maskFlag = maskFile ? ` \\\n  -F "mask=@${maskFile.name}"` : "";
       const fields = Object.entries(requestBody)
         .filter(([key, value]) => {
-          if (key === "image" || key === "images") return false;
+          if (key === "image" || key === "images" || key === "mask") return false;
           return value !== "" && value !== null && value !== undefined;
         })
         .map(([key, value]) => `  -F "${key}=${String(value)}"`)
@@ -474,7 +496,7 @@ export default function CodexImageProviderPage() {
       return `curl -X ${selectedEndpoint.method} ${endpoint}${apiPathWithQuery} \\
   -H "Authorization: Bearer ${apiKey || "YOUR_KEY"}"${pinnedConnectionId ? ` \\\n  -H "x-connection-id: ${pinnedConnectionId}"` : ""}${multipartAcceptHeader} \\
 ${fields} \\
-${fileFlags}${wantBinary ? " \\\n  --output image.png" : ""}`;
+${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
     }
 
     const headersPreview = `-H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${apiKey || "YOUR_KEY"}"${pinnedConnectionId ? ` \\\n  -H "x-connection-id: ${pinnedConnectionId}"` : ""}${useStreaming ? ` \\\n  -H "Accept: text/event-stream"` : ""}`;
@@ -493,6 +515,7 @@ ${fileFlags}${wantBinary ? " \\\n  --output image.png" : ""}`;
     imageOutputFormat,
     useStreaming,
     wantBinary,
+    maskFile,
   ]);
 
   const uploadedImageSummary = useMemo(
@@ -512,11 +535,14 @@ ${fileFlags}${wantBinary ? " \\\n  --output image.png" : ""}`;
   function buildEditFormData() {
     const formData = new FormData();
     Object.entries(requestBody).forEach(([key, value]) => {
-      if (key === "image" || key === "images") return;
+      if (key === "image" || key === "images" || key === "mask") return;
       if (value === "" || value === null || value === undefined) return;
       formData.append(key, String(value));
     });
     uploadedImages.forEach((file) => formData.append("image[]", file));
+    if (maskFile) {
+      formData.append("mask", maskFile);
+    }
     return formData;
   }
 
@@ -551,16 +577,24 @@ ${fileFlags}${wantBinary ? " \\\n  --output image.png" : ""}`;
 
   const requestPreview = useMemo(() => {
     if (selectedEndpoint.bodyFormat !== "multipart") return requestBody;
-    return {
+    const preview = {
       ...Object.fromEntries(
         Object.entries(requestBody).filter(([key, value]) => {
-          if (key === "image" || key === "images") return false;
+          if (key === "image" || key === "images" || key === "mask") return false;
           return value !== "" && value !== null && value !== undefined;
         }),
       ),
       image: uploadedImageSummary,
     };
-  }, [requestBody, selectedEndpoint.bodyFormat, uploadedImageSummary]);
+    if (maskFile) {
+      preview.mask = {
+        name: maskFile.name,
+        type: maskFile.type,
+        sizeKb: Math.max(1, Math.round(maskFile.size / 1024)),
+      };
+    }
+    return preview;
+  }, [requestBody, selectedEndpoint.bodyFormat, uploadedImageSummary, maskFile]);
 
   const requestPreviewJson = JSON.stringify(requestPreview, null, 2);
 
@@ -922,8 +956,57 @@ ${fileFlags}${wantBinary ? " \\\n  --output image.png" : ""}`;
                 )}
                 <p className="text-xs text-text-muted">
                   Files are sent as <code>image[]</code> form parts to the edit
-                  endpoint. Mask uploads are intentionally unsupported.
+                  endpoint.
                 </p>
+                {uploadedImages.length > 0 && (
+                  <div className="mt-2 border-t border-border/60 pt-3 flex flex-col gap-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-text-main">
+                        Image Masking (Optional)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setIsMaskingEnabled(true)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 hover:bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition-colors"
+                      >
+                        <span className="material-symbols-outlined text-[14px]">
+                          draw
+                        </span>
+                        {maskFile ? "Edit Mask" : "Draw Mask"}
+                      </button>
+                    </div>
+                    {maskPreviewUrl ? (
+                      <div className="flex items-start gap-3 rounded-lg border border-border bg-background p-2.5">
+                        <div className="relative group size-16 shrink-0 rounded-md border border-border overflow-hidden bg-sidebar/50">
+                          <img
+                            src={maskPreviewUrl}
+                            alt="Mask Preview"
+                            className="size-full object-contain"
+                          />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-text-main truncate">
+                            {maskFile.name}
+                          </p>
+                          <p className="text-[10px] text-text-muted mt-0.5">
+                            {(maskFile.size / 1024).toFixed(1)} KB · PNG Mask
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setMaskFile(null)}
+                            className="text-[10px] text-red-500 font-medium hover:underline mt-1.5 block"
+                          >
+                            Remove Mask
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-text-muted">
+                        No mask added yet. Draw a mask to specify which parts of the image the model should edit.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             </Row>
           )}
@@ -1188,6 +1271,16 @@ ${fileFlags}${wantBinary ? " \\\n  --output image.png" : ""}`;
         onClose={() => setShowAddModel(false)}
         onSave={handleAddCustomModel}
       />
+      {isMaskingEnabled && uploadedImages[0] && (
+        <MaskEditor
+          imageFile={uploadedImages[0]}
+          onSave={(file) => {
+            setMaskFile(file);
+            setIsMaskingEnabled(false);
+          }}
+          onCancel={() => setIsMaskingEnabled(false)}
+        />
+      )}
     </div>
   );
 }
