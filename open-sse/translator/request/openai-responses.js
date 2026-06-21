@@ -274,10 +274,16 @@ export function openaiToOpenAIResponsesRequest(
                   };
                 }
                 if (c.type === "input_image") return c;
-                if (c.type === "file") {
-                  return { ...c, type: "input_file" };
+                if (c.type === "file" || c.type === "input_file") {
+                  return {
+                    type: "input_file",
+                    file_data: c.file_data || c.file?.file_data,
+                    filename: c.filename || c.file?.filename,
+                    ...(c.file_url ? { file_url: c.file_url } : {}),
+                    ...(c.file_id ? { file_id: c.file_id } : {}),
+                    ...(c.detail ? { detail: c.detail } : {}),
+                  };
                 }
-                if (c.type === "input_file") return c;
                 // Serialize any unknown type (tool_use, tool_result, thinking, etc.) as text
                 const text = c.text || c.content || JSON.stringify(c);
                 return {
