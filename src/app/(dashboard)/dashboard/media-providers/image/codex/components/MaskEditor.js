@@ -3,6 +3,138 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/shared/components";
 
+
+// Helper to draw annotated shapes on a 2D canvas context
+function drawShapesOnCanvas(ctx, width, height, shapes, scaleFactor) {
+  // Create a striped pattern (white background with grey slate stripes)
+  const patternCanvas = document.createElement("canvas");
+  patternCanvas.width = 12;
+  patternCanvas.height = 12;
+  const pctx = patternCanvas.getContext("2d");
+  pctx.fillStyle = "#ffffff";
+  pctx.fillRect(0, 0, 12, 12);
+  pctx.strokeStyle = "#cbd5e1"; // slate-300
+  pctx.lineWidth = 1.5;
+  pctx.beginPath();
+  pctx.moveTo(0, 12);
+  pctx.lineTo(12, 0);
+  pctx.stroke();
+  const pattern = ctx.createPattern(patternCanvas, "repeat");
+
+  // Sketched border helper (scaled by scaleFactor)
+  const drawSketchedRectBorder = (x1, y1, x2, y2) => {
+    ctx.setLineDash([]);
+    ctx.lineWidth = 1.2 * Math.max(0.8, scaleFactor * 0.7);
+    
+    const drawOffsetLine = (ox1, oy1, ox2, oy2) => {
+      ctx.beginPath();
+      const steps = 8;
+      ctx.moveTo(ox1, oy1);
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const offset = Math.sin(t * Math.PI) * (i % 2 === 0 ? 0.8 : -0.8) * Math.max(0.6, scaleFactor * 0.8);
+        const x = ox1 + (ox2 - ox1) * t + offset;
+        const y = oy1 + (oy2 - oy1) * t + offset;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    };
+
+    // Draw main dark pass
+    ctx.strokeStyle = "rgba(15, 23, 42, 0.75)"; // Slate-900
+    drawOffsetLine(x1, y1, x2, y1);
+    drawOffsetLine(x2, y1, x2, y2);
+    drawOffsetLine(x2, y2, x1, y2);
+    drawOffsetLine(x1, y2, x1, y1);
+
+    // Draw secondary offset blue pass for a modern "architect sketch" look
+    ctx.strokeStyle = "rgba(59, 130, 246, 0.4)";
+    drawOffsetLine(x1 - 1, y1 + 0.5, x2 + 1, y1 + 0.5);
+    drawOffsetLine(x2 + 0.5, y1 - 1, x2 + 0.5, y2 + 1);
+    drawOffsetLine(x2 + 1, y2 - 0.5, x1 - 1, y2 - 0.5);
+    drawOffsetLine(x1 - 0.5, y2 + 1, x1 - 0.5, y1 - 1);
+  };
+
+  // Draw existing shapes
+  shapes.forEach((shape) => {
+    ctx.beginPath();
+    const x1 = shape.start.x * width;
+    const y1 = shape.start.y * height;
+    const x2 = shape.end.x * width;
+    const y2 = shape.end.y * height;
+    ctx.rect(x1, y1, x2 - x1, y2 - y1);
+
+    // Draw white striped pattern (completely covering old content)
+    ctx.fillStyle = pattern;
+    ctx.fill();
+
+    // Draw sketched selection borders
+    drawSketchedRectBorder(x1, y1, x2, y2);
+
+    // Render Comment inside the selection space (word-wrapped to fit, not bold)
+    if (shape.comment) {
+      const fontSize = Math.max(8, Math.round(11 * scaleFactor));
+      ctx.font = `${fontSize}px Inter, system-ui, sans-serif`;
+      ctx.fillStyle = "#1e293b"; // Slate-800 text
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
+      const cx = (x1 + x2) / 2;
+      const cy = (y1 + y2) / 2;
+      const w = Math.abs(x2 - x1);
+      const h = Math.abs(y2 - y1);
+
+      const padding = 12 * scaleFactor;
+      const maxWidth = w - padding;
+      const maxHeight = h - padding;
+
+      if (maxWidth > 12 && maxHeight > 12) {
+        const words = shape.comment.split(" ");
+        const lines = [];
+        let currentLine = words[0] || "";
+        for (let i = 1; i < words.length; i++) {
+          const word = words[i];
+          const textWidth = ctx.measureText(currentLine + " " + word).width;
+          if (textWidth < maxWidth) {
+            currentLine += " " + word;
+          } else {
+            lines.push(currentLine);
+            currentLine = word;
+          }
+        }
+        lines.push(currentLine);
+
+        const lineHeight = 14 * scaleFactor;
+        const totalHeight = lines.length * lineHeight;
+
+        // Cap lines if they exceed vertical height limit
+        let renderLines = lines;
+        if (totalHeight > maxHeight) {
+          const maxLines = Math.max(1, Math.floor(maxHeight / lineHeight));
+          renderLines = lines.slice(0, maxLines);
+          if (renderLines.length < lines.length) {
+            renderLines[renderLines.length - 1] += "...";
+          }
+        }
+
+        const startY = cy - ((renderLines.length - 1) * lineHeight) / 2;
+
+        // Draw small semi-transparent backing so stripes don't interfere with legibility
+        ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+        const maxTextW = Math.min(maxWidth + 8 * scaleFactor, Math.max(...renderLines.map(l => ctx.measureText(l).width)) + 8 * scaleFactor);
+        const bgH = renderLines.length * lineHeight + 4 * scaleFactor;
+        ctx.fillRect(cx - maxTextW / 2, cy - bgH / 2, maxTextW, bgH);
+
+        // Draw text lines
+        ctx.fillStyle = "#1e293b";
+        renderLines.forEach((line, idx) => {
+          ctx.fillText(line, cx, startY + idx * lineHeight);
+        });
+      }
+    }
+  });
+}
+
 export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCancel }) {
   const [imageUrl, setImageUrl] = useState("");
   const [shapes, setShapes] = useState(initialShapes || []);
@@ -64,131 +196,8 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
 
     ctx.clearRect(0, 0, scaleWidth, scaleHeight);
 
-    // Create a striped pattern (white background with grey slate stripes)
-    const patternCanvas = document.createElement("canvas");
-    patternCanvas.width = 12;
-    patternCanvas.height = 12;
-    const pctx = patternCanvas.getContext("2d");
-    pctx.fillStyle = "#ffffff";
-    pctx.fillRect(0, 0, 12, 12);
-    pctx.strokeStyle = "#cbd5e1"; // slate-300
-    pctx.lineWidth = 1.5;
-    pctx.beginPath();
-    pctx.moveTo(0, 12);
-    pctx.lineTo(12, 0);
-    pctx.stroke();
-    const pattern = ctx.createPattern(patternCanvas, "repeat");
-
-    // Sketched border helper (scaled by zoom)
-    const drawSketchedRectBorder = (x1, y1, x2, y2) => {
-      ctx.setLineDash([]);
-      ctx.lineWidth = 1.2 * Math.max(0.8, zoom * 0.7);
-      
-      const drawOffsetLine = (ox1, oy1, ox2, oy2) => {
-        ctx.beginPath();
-        const steps = 8;
-        ctx.moveTo(ox1, oy1);
-        for (let i = 1; i <= steps; i++) {
-          const t = i / steps;
-          const offset = Math.sin(t * Math.PI) * (i % 2 === 0 ? 0.8 : -0.8) * Math.max(0.6, zoom * 0.8);
-          const x = ox1 + (ox2 - ox1) * t + offset;
-          const y = oy1 + (oy2 - oy1) * t + offset;
-          ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-      };
-
-      // Draw main dark pass
-      ctx.strokeStyle = "rgba(15, 23, 42, 0.75)"; // Slate-900
-      drawOffsetLine(x1, y1, x2, y1);
-      drawOffsetLine(x2, y1, x2, y2);
-      drawOffsetLine(x2, y2, x1, y2);
-      drawOffsetLine(x1, y2, x1, y1);
-
-      // Draw secondary offset blue pass for a modern "architect sketch" look
-      ctx.strokeStyle = "rgba(59, 130, 246, 0.4)";
-      drawOffsetLine(x1 - 1, y1 + 0.5, x2 + 1, y1 + 0.5);
-      drawOffsetLine(x2 + 0.5, y1 - 1, x2 + 0.5, y2 + 1);
-      drawOffsetLine(x2 + 1, y2 - 0.5, x1 - 1, y2 - 0.5);
-      drawOffsetLine(x1 - 0.5, y2 + 1, x1 - 0.5, y1 - 1);
-    };
-
-    // Draw existing shapes
-    shapes.forEach((shape) => {
-      ctx.beginPath();
-      const x1 = shape.start.x * scaleWidth;
-      const y1 = shape.start.y * scaleHeight;
-      const x2 = shape.end.x * scaleWidth;
-      const y2 = shape.end.y * scaleHeight;
-      ctx.rect(x1, y1, x2 - x1, y2 - y1);
-
-      // Draw white striped pattern (completely covering old content)
-      ctx.fillStyle = pattern;
-      ctx.fill();
-
-      // Draw sketched selection borders
-      drawSketchedRectBorder(x1, y1, x2, y2);
-
-      // Render Comment inside the selection space (word-wrapped to fit, not bold)
-      if (shape.comment) {
-        ctx.font = "11px Inter, system-ui, sans-serif";
-        ctx.fillStyle = "#1e293b"; // Slate-800 text
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-
-        const cx = (x1 + x2) / 2;
-        const cy = (y1 + y2) / 2;
-        const w = Math.abs(x2 - x1);
-        const h = Math.abs(y2 - y1);
-
-        const maxWidth = w - 12;
-        const maxHeight = h - 12;
-
-        if (maxWidth > 12 && maxHeight > 12) {
-          const words = shape.comment.split(" ");
-          const lines = [];
-          let currentLine = words[0] || "";
-          for (let i = 1; i < words.length; i++) {
-            const word = words[i];
-            const width = ctx.measureText(currentLine + " " + word).width;
-            if (width < maxWidth) {
-              currentLine += " " + word;
-            } else {
-              lines.push(currentLine);
-              currentLine = word;
-            }
-          }
-          lines.push(currentLine);
-
-          const lineHeight = 14;
-          const totalHeight = lines.length * lineHeight;
-
-          // Cap lines if they exceed vertical height limit
-          let renderLines = lines;
-          if (totalHeight > maxHeight) {
-            const maxLines = Math.max(1, Math.floor(maxHeight / lineHeight));
-            renderLines = lines.slice(0, maxLines);
-            if (renderLines.length < lines.length) {
-              renderLines[renderLines.length - 1] += "...";
-            }
-          }
-
-          const startY = cy - ((renderLines.length - 1) * lineHeight) / 2;
-
-          // Draw small semi-transparent backing so stripes don't interfere with legibility
-          ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
-          const maxTextW = Math.min(maxWidth + 8, Math.max(...renderLines.map(l => ctx.measureText(l).width)) + 8);
-          const bgH = renderLines.length * lineHeight + 4;
-          ctx.fillRect(cx - maxTextW / 2, cy - bgH / 2, maxTextW, bgH);
-
-          // Draw text lines
-          ctx.fillStyle = "#1e293b";
-          renderLines.forEach((line, idx) => {
-            ctx.fillText(line, cx, startY + idx * lineHeight);
-          });
-        }
-      }
-    });
+    // Draw the annotated shapes using the helper (scaled by zoom)
+    drawShapesOnCanvas(ctx, scaleWidth, scaleHeight, shapes, zoom);
 
     // Draw active drawing shape (with dash line marching ants)
     if (isDrawing && points.length === 2) {
@@ -284,15 +293,13 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
     const img = imgRef.current;
     if (!img) return;
 
+    // 1. Draw original image onto mask canvas and erase selection shapes (leaving transparent cutouts)
     const exportCanvas = document.createElement("canvas");
     exportCanvas.width = img.naturalWidth;
     exportCanvas.height = img.naturalHeight;
     const ctx = exportCanvas.getContext("2d");
 
-    // 1. Draw original image onto mask canvas so it contains the original pixels
     ctx.drawImage(img, 0, 0, exportCanvas.width, exportCanvas.height);
-
-    // 2. Set globalCompositeOperation to destination-out to erase selection shapes (making them fully transparent)
     ctx.globalCompositeOperation = "destination-out";
 
     shapes.forEach((shape) => {
@@ -305,11 +312,30 @@ export default function MaskEditor({ imageFile, initialShapes = [], onSave, onCa
       ctx.fill();
     });
 
-    // 3. Output as blob and save (passing both file AND the current shapes list)
-    exportCanvas.toBlob((blob) => {
-      if (blob) {
-        const file = new File([blob], "mask.png", { type: "image/png" });
-        onSave(file, shapes);
+    // 2. Draw original image onto annotated canvas, then draw annotations on top
+    const annotatedCanvas = document.createElement("canvas");
+    annotatedCanvas.width = img.naturalWidth;
+    annotatedCanvas.height = img.naturalHeight;
+    const actx = annotatedCanvas.getContext("2d");
+
+    actx.drawImage(img, 0, 0, annotatedCanvas.width, annotatedCanvas.height);
+
+    // Scale annotations relative to image natural dimensions to match visual density on screen
+    const styleScale = img.naturalWidth / dimensions.width;
+    drawShapesOnCanvas(actx, annotatedCanvas.width, annotatedCanvas.height, shapes, styleScale);
+
+    // 3. Output both to blobs and callback
+    exportCanvas.toBlob((maskBlob) => {
+      if (maskBlob) {
+        const maskFile = new File([maskBlob], "mask.png", { type: "image/png" });
+        annotatedCanvas.toBlob((annotatedBlob) => {
+          if (annotatedBlob) {
+            const annotatedFile = new File([annotatedBlob], "annotated_image.png", { type: "image/png" });
+            onSave(maskFile, shapes, annotatedFile);
+          } else {
+            onSave(maskFile, shapes, null);
+          }
+        }, "image/png");
       }
     }, "image/png");
   };

@@ -289,6 +289,9 @@ export default function CodexImageProviderPage() {
   const [maskPreviewUrl, setMaskPreviewUrl] = useState("");
   const [maskShapes, setMaskShapes] = useState([]);
   const [isMaskingEnabled, setIsMaskingEnabled] = useState(false);
+  const [attachAnnotated, setAttachAnnotated] = useState(false);
+  const [annotatedFile, setAnnotatedFile] = useState(null);
+  const [annotatedPreviewUrl, setAnnotatedPreviewUrl] = useState("");
 
   useEffect(() => {
     if (uploadedImages[0]) {
@@ -311,9 +314,20 @@ export default function CodexImageProviderPage() {
   }, [maskFile]);
 
   useEffect(() => {
+    if (annotatedFile) {
+      const url = URL.createObjectURL(annotatedFile);
+      setAnnotatedPreviewUrl(url);
+      return () => URL.revokeObjectURL(url);
+    } else {
+      setAnnotatedPreviewUrl("");
+    }
+  }, [annotatedFile]);
+
+  useEffect(() => {
     if (uploadedImages.length === 0) {
       setMaskFile(null);
       setMaskShapes([]);
+      setAnnotatedFile(null);
     }
   }, [uploadedImages]);
 
@@ -505,9 +519,10 @@ export default function CodexImageProviderPage() {
             .join(" \\\n")
         : `  -F "image[]=@reference.png"`;
       const maskFlag = maskFile ? ` \\\n  -F "mask=@${maskFile.name}"` : "";
+      const annotatedFlag = annotatedFile && attachAnnotated ? ` \\\n  -F "annotated_image=@${annotatedFile.name}"` : "";
       const fields = Object.entries(requestBody)
         .filter(([key, value]) => {
-          if (key === "image" || key === "images" || key === "mask")
+          if (key === "image" || key === "images" || key === "mask" || key === "annotated_image")
             return false;
           return value !== "" && value !== null && value !== undefined;
         })
@@ -516,7 +531,7 @@ export default function CodexImageProviderPage() {
       return `curl -X ${selectedEndpoint.method} ${endpoint}${apiPathWithQuery} \\
   -H "Authorization: Bearer ${apiKey || "YOUR_KEY"}"${pinnedConnectionId ? ` \\\n  -H "x-connection-id: ${pinnedConnectionId}"` : ""}${multipartAcceptHeader} \\
 ${fields} \\
-${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
+${fileFlags}${maskFlag}${annotatedFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
     }
 
     const headersPreview = `-H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${apiKey || "YOUR_KEY"}"${pinnedConnectionId ? ` \\\n  -H "x-connection-id: ${pinnedConnectionId}"` : ""}${useStreaming ? ` \\\n  -H "Accept: text/event-stream"` : ""}`;
@@ -536,6 +551,8 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
     useStreaming,
     wantBinary,
     maskFile,
+    annotatedFile,
+    attachAnnotated,
   ]);
 
   const uploadedImageSummary = useMemo(
@@ -555,13 +572,16 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
   function buildEditFormData() {
     const formData = new FormData();
     Object.entries(requestBody).forEach(([key, value]) => {
-      if (key === "image" || key === "images" || key === "mask") return;
+      if (key === "image" || key === "images" || key === "mask" || key === "annotated_image") return;
       if (value === "" || value === null || value === undefined) return;
       formData.append(key, String(value));
     });
     uploadedImages.forEach((file) => formData.append("image[]", file));
     if (maskFile) {
       formData.append("mask", maskFile);
+    }
+    if (annotatedFile && attachAnnotated) {
+      formData.append("annotated_image", annotatedFile);
     }
     return formData;
   }
@@ -600,7 +620,7 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
     const preview = {
       ...Object.fromEntries(
         Object.entries(requestBody).filter(([key, value]) => {
-          if (key === "image" || key === "images" || key === "mask")
+          if (key === "image" || key === "images" || key === "mask" || key === "annotated_image")
             return false;
           return value !== "" && value !== null && value !== undefined;
         }),
@@ -614,12 +634,21 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
         sizeKb: Math.max(1, Math.round(maskFile.size / 1024)),
       };
     }
+    if (annotatedFile && attachAnnotated) {
+      preview.annotated_image = {
+        name: annotatedFile.name,
+        type: annotatedFile.type,
+        sizeKb: Math.max(1, Math.round(annotatedFile.size / 1024)),
+      };
+    }
     return preview;
   }, [
     requestBody,
     selectedEndpoint.bodyFormat,
     uploadedImageSummary,
     maskFile,
+    annotatedFile,
+    attachAnnotated,
   ]);
 
   const requestPreviewJson = JSON.stringify(requestPreview, null, 2);
@@ -986,10 +1015,25 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
                 </p>
                 {uploadedImages.length > 0 && (
                   <div className="mt-4 border-t border-border/60 pt-4 flex flex-col gap-4">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-text-main">
-                        Image & Mask Preview
-                      </span>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs font-semibold text-text-main">
+                          Image & Mask Preview
+                        </span>
+                        {maskFile && (
+                          <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={attachAnnotated}
+                              onChange={(event) => setAttachAnnotated(event.target.checked)}
+                              className="rounded border-border bg-background text-primary focus:ring-primary focus:ring-offset-0 text-xs"
+                            />
+                            <span className="text-xs text-text-muted hover:text-text-main transition-colors font-medium">
+                              Attach annotated image
+                            </span>
+                          </label>
+                        )}
+                      </div>
                       <button
                         type="button"
                         onClick={() => setIsMaskingEnabled(true)}
@@ -1002,7 +1046,7 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className={`grid grid-cols-1 gap-4 ${annotatedPreviewUrl && attachAnnotated ? "sm:grid-cols-2 lg:grid-cols-3" : "sm:grid-cols-2"}`}>
                       {/* Left: Original Image */}
                       <div className="flex flex-col gap-2 rounded-lg border border-border bg-background p-3">
                         <span className="text-[11px] font-medium text-text-muted">
@@ -1075,6 +1119,30 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
                           <div className="h-[26px]" />
                         )}
                       </div>
+
+                      {/* Third: Annotated Image */}
+                      {annotatedPreviewUrl && attachAnnotated && (
+                        <div className="flex flex-col gap-2 rounded-lg border border-border bg-background p-3">
+                          <span className="text-[11px] font-medium text-text-muted">
+                            Annotated Image (Reference)
+                          </span>
+                          <div className="relative aspect-square w-full rounded-md border border-border overflow-hidden bg-sidebar/30 flex items-center justify-center">
+                            <img
+                              src={annotatedPreviewUrl}
+                              alt="Annotated Preview"
+                              className="max-h-full max-w-full object-contain"
+                            />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-text-main truncate">
+                              {annotatedFile?.name}
+                            </p>
+                            <p className="text-[10px] text-text-muted mt-0.5">
+                              {((annotatedFile?.size || 0) / 1024).toFixed(1)} KB · PNG Annotated
+                            </p>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1346,9 +1414,10 @@ ${fileFlags}${maskFlag}${wantBinary ? " \\\n  --output image.png" : ""}`;
         <MaskEditor
           imageFile={uploadedImages[0]}
           initialShapes={maskShapes}
-          onSave={(file, shapes) => {
+          onSave={(file, shapes, annotatedImageFile) => {
             setMaskFile(file);
             setMaskShapes(shapes);
+            setAnnotatedFile(annotatedImageFile);
             setIsMaskingEnabled(false);
             
             // Format and update prompt automatically with coordinates and instructions

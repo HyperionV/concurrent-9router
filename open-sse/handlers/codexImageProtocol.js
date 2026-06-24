@@ -82,6 +82,11 @@ export function buildCodexImageRequest(model, body) {
   const single = toCodexDataUrl(image);
   if (single) refs.push(single);
 
+  if (body.annotated_image && body.annotated_image !== "") {
+    const annotatedUrl = toCodexDataUrl(body.annotated_image);
+    if (annotatedUrl) refs.push(annotatedUrl);
+  }
+
   const detail = body.image_detail || CODEX_REF_DETAIL;
   const imageTool = {
     type: "image_generation",
