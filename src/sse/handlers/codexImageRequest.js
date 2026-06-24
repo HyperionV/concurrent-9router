@@ -31,16 +31,12 @@ export async function parseCodexImageEditBody(request) {
   const maskFile = form.get("mask");
   const mask = (maskFile instanceof File && maskFile.size > 0) ? await fileToDataUrl(maskFile) : null;
 
-  const annotatedImageFile = form.get("annotated_image");
-  const annotatedImage = (annotatedImageFile instanceof File && annotatedImageFile.size > 0) ? await fileToDataUrl(annotatedImageFile) : null;
-
   return {
     body: {
       model: String(form.get("model") || ""),
       prompt: String(form.get("prompt") || ""),
       images,
       mask,
-      annotated_image: annotatedImage,
       size: String(form.get("size") || ""),
       quality: String(form.get("quality") || ""),
       background: String(form.get("background") || ""),

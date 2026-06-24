@@ -583,38 +583,3 @@ test("codex image edit parser accepts mask uploads", async () => {
   assert.match(parsed.body.images[0], /^data:image\/png;base64,/);
   assert.match(parsed.body.mask, /^data:image\/png;base64,/);
 });
-
-test("codex image edit parser accepts annotated_image uploads", async () => {
-  const { parseCodexImageEditBody } =
-    await import("@/sse/handlers/codexImageRequest.js");
-
-  const form = new FormData();
-  form.set("model", "cx/gpt-5.4-image");
-  form.set("prompt", "compose a catalog shot");
-  form.append(
-    "image[]",
-    new File([Buffer.from("image-one")], "body-lotion.png", {
-      type: "image/png",
-    }),
-  );
-  form.append(
-    "annotated_image",
-    new File([Buffer.from("annotated-one")], "annotated.png", {
-      type: "image/png",
-    }),
-  );
-
-  const parsed = await parseCodexImageEditBody(
-    new Request("http://localhost/v1/images/edits", {
-      method: "POST",
-      body: form,
-    }),
-  );
-
-  assert.ok(!parsed.error);
-  assert.equal(parsed.body.model, "cx/gpt-5.4-image");
-  assert.equal(parsed.body.prompt, "compose a catalog shot");
-  assert.equal(parsed.body.images.length, 1);
-  assert.match(parsed.body.images[0], /^data:image\/png;base64,/);
-  assert.match(parsed.body.annotated_image, /^data:image\/png;base64,/);
-});

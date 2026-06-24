@@ -519,10 +519,10 @@ export default function CodexImageProviderPage() {
             .join(" \\\n")
         : `  -F "image[]=@reference.png"`;
       const maskFlag = maskFile ? ` \\\n  -F "mask=@${maskFile.name}"` : "";
-      const annotatedFlag = annotatedFile && attachAnnotated ? ` \\\n  -F "annotated_image=@${annotatedFile.name}"` : "";
+      const annotatedFlag = annotatedFile && attachAnnotated ? ` \\\n  -F "image[]=@${annotatedFile.name}"` : "";
       const fields = Object.entries(requestBody)
         .filter(([key, value]) => {
-          if (key === "image" || key === "images" || key === "mask" || key === "annotated_image")
+          if (key === "image" || key === "images" || key === "mask")
             return false;
           return value !== "" && value !== null && value !== undefined;
         })
@@ -572,7 +572,7 @@ ${fileFlags}${maskFlag}${annotatedFlag}${wantBinary ? " \\\n  --output image.png
   function buildEditFormData() {
     const formData = new FormData();
     Object.entries(requestBody).forEach(([key, value]) => {
-      if (key === "image" || key === "images" || key === "mask" || key === "annotated_image") return;
+      if (key === "image" || key === "images" || key === "mask") return;
       if (value === "" || value === null || value === undefined) return;
       formData.append(key, String(value));
     });
@@ -581,7 +581,7 @@ ${fileFlags}${maskFlag}${annotatedFlag}${wantBinary ? " \\\n  --output image.png
       formData.append("mask", maskFile);
     }
     if (annotatedFile && attachAnnotated) {
-      formData.append("annotated_image", annotatedFile);
+      formData.append("image[]", annotatedFile);
     }
     return formData;
   }
@@ -617,28 +617,29 @@ ${fileFlags}${maskFlag}${annotatedFlag}${wantBinary ? " \\\n  --output image.png
 
   const requestPreview = useMemo(() => {
     if (selectedEndpoint.bodyFormat !== "multipart") return requestBody;
+    const imageList = [...uploadedImageSummary];
+    if (annotatedFile && attachAnnotated) {
+      imageList.push({
+        name: annotatedFile.name,
+        type: annotatedFile.type,
+        sizeKb: Math.max(1, Math.round(annotatedFile.size / 1024)),
+      });
+    }
     const preview = {
       ...Object.fromEntries(
         Object.entries(requestBody).filter(([key, value]) => {
-          if (key === "image" || key === "images" || key === "mask" || key === "annotated_image")
+          if (key === "image" || key === "images" || key === "mask")
             return false;
           return value !== "" && value !== null && value !== undefined;
         }),
       ),
-      image: uploadedImageSummary,
+      image: imageList,
     };
     if (maskFile) {
       preview.mask = {
         name: maskFile.name,
         type: maskFile.type,
         sizeKb: Math.max(1, Math.round(maskFile.size / 1024)),
-      };
-    }
-    if (annotatedFile && attachAnnotated) {
-      preview.annotated_image = {
-        name: annotatedFile.name,
-        type: annotatedFile.type,
-        sizeKb: Math.max(1, Math.round(annotatedFile.size / 1024)),
       };
     }
     return preview;
