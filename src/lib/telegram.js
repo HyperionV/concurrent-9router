@@ -3,6 +3,7 @@ import { getUsageStats } from "@/lib/usageDb.js";
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const TELEGRAM_THREAD_ID = process.env.TELEGRAM_THREAD_ID;
 
 /**
  * Escape string for Telegram HTML parsing.
@@ -26,17 +27,23 @@ export async function sendTelegramMessage(text) {
 
   try {
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    const payload = {
+      chat_id: TELEGRAM_CHAT_ID,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    };
+
+    if (TELEGRAM_THREAD_ID) {
+      payload.message_thread_id = Number(TELEGRAM_THREAD_ID);
+    }
+
     const response = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        chat_id: TELEGRAM_CHAT_ID,
-        text,
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-      }),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
