@@ -11,6 +11,7 @@ export function trackPendingRequest() {}
 export async function appendRequestLog() {}
 export async function saveRequestUsage() {}
 export async function saveRequestDetail() {}
+export async function getUsageStats() { return { byAccount: {} }; }
 `;
 
 function resolveRepoPath(relativePath) {

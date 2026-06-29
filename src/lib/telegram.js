@@ -91,6 +91,33 @@ export async function notifyConnectionDisconnect(connection) {
   }
 }
 
+const BASE64_BLOCK_SIZE = 4;
+
+function extractTierFromJwt(token) {
+  try {
+    if (!token || typeof token !== "string") return "free";
+    const parts = token.split(".");
+    if (parts.length !== 3) return "free";
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const missingPadding =
+      (BASE64_BLOCK_SIZE - (base64.length % BASE64_BLOCK_SIZE)) %
+      BASE64_BLOCK_SIZE;
+    const padded = base64 + "=".repeat(missingPadding);
+    const payload = JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+    
+    const tier = payload["custom:tier"] || payload.tier || payload.tierId || payload.allowedTiers?.[0] || "";
+    if (tier && typeof tier === "string") {
+      const lower = tier.toLowerCase();
+      if (lower.includes("plus") || lower.includes("pro")) return "plus";
+      if (lower.includes("free")) return "free";
+      return tier;
+    }
+    return "free";
+  } catch {
+    return "free";
+  }
+}
+
 /**
  * Retrieve current connection usage stats and send a periodic report.
  */
@@ -112,14 +139,14 @@ export async function sendUsageReport() {
       if (!connectionUsage[connId]) {
         connectionUsage[connId] = {
           requests: 0,
-          cost: 0,
+          tokens: 0,
         };
       }
       connectionUsage[connId].requests += value.requests || 0;
-      connectionUsage[connId].cost += value.cost || 0;
+      connectionUsage[connId].tokens += (value.promptTokens || 0) + (value.completionTokens || 0);
     }
 
-    let report = `📊 <b>9Router Connection & Usage Report</b>
+    let report = `<b>Router Connection & Usage Report</b>
 <b>Time:</b> ${new Date().toLocaleString("en-US", { timeZone: "Asia/Bangkok" })} (UTC+7)
 <b>Active connections:</b> ${activeCount}/${totalCount}\n\n`;
 
@@ -138,13 +165,14 @@ export async function sendUsageReport() {
       for (const conn of conns) {
         const name = escapeHtml(conn.displayName || conn.name || conn.email || conn.id.slice(0, 8));
         const statusIcon = conn.isActive === false ? "🔴" : conn.testStatus === "unavailable" ? "🟡" : "🟢";
-        const statusText = conn.isActive === false ? "Disabled" : conn.testStatus || "Active";
-        const usage = connectionUsage[conn.id] || { requests: 0, cost: 0 };
+        const statusText = conn.isActive === false ? "disabled" : conn.testStatus || "active";
+        const tier = extractTierFromJwt(conn.idToken);
+        const usage = connectionUsage[conn.id] || { requests: 0, tokens: 0 };
         
-        report += `${statusIcon} <code>${name}</code> (${statusText})
-   Requests: ${usage.requests} | Cost: $${usage.cost.toFixed(4)}\n`;
+        report += `<code>${name}</code> | <i>${tier}</i>  ${statusIcon} (<code>${statusText}</code>)
+| Requests: ${usage.requests}
+| Token usage: ${usage.tokens}\n\n`;
       }
-      report += `\n`;
     }
 
     return await sendTelegramMessage(report.trim());
