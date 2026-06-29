@@ -128,8 +128,9 @@ export function createImageDispatcherCore({
 
   function sortConnectionsForRequest(connections, request) {
     const preferredConnectionId = request?.metadata?.preferredConnectionId;
+    const excludedIds = new Set(request?.metadata?.excludeConnectionIds || []);
     return [...connections]
-      .filter((connection) => connection?.id)
+      .filter((connection) => connection?.id && !excludedIds.has(connection.id))
       .sort((a, b) => {
         const preferredDiff =
           (a.id === preferredConnectionId ? 0 : 1) -

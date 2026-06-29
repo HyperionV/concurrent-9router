@@ -12,10 +12,7 @@ const refreshDedupCache = new Map();
 const UNRECOVERABLE_REFRESH_CODES = new Set([
   "unrecoverable_refresh_error",
   "refresh_token_reused",
-  "invalid_request",
   "invalid_grant",
-  "token_expired",
-  "invalid_token",
 ]);
 
 function getRefreshCacheKey(provider, oldToken) {

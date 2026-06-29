@@ -15,9 +15,16 @@ import {
   updateProviderCredentials,
   checkAndRefreshToken,
 } from "../services/tokenRefresh.js";
-import { DISPATCH_ATTEMPT_STATE } from "@/lib/dispatcher/types.js";
+import { DISPATCH_ATTEMPT_STATE, DISPATCH_REQUEST_STATUS } from "@/lib/dispatcher/types.js";
 import * as log from "../utils/logger.js";
 import { parseCodexImageEditBody } from "./codexImageRequest.js";
+import { randomUUID } from "node:crypto";
+import {
+  getImageDispatchRequest,
+  getLatestImageDispatchAttemptForRequest,
+  insertImageDispatchAttempt,
+  updateImageDispatchRequestStatus,
+} from "@/lib/sqlite/imageDispatcherStore.js";
 
 const IMAGE_QUEUE_POLL_MS = 250;
 const IMAGE_QUEUE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -151,119 +158,175 @@ async function runCodexImageRequest({
     },
   });
 
-  const queueStartedAt = Date.now();
-  let lease = null;
-  while (!lease) {
-    lease = await dispatcher.tryLeaseRequest(queued.request.id);
-    if (lease) break;
+  const excludeConnectionIds = new Set();
+  let lastError = null;
+  let lastStatus = null;
+  let currentAttemptId = queued.attempt.id;
 
-    const activeConnections = await getConnections();
-    if (activeConnections.length === 0) {
-      await dispatcher.failAttempt(queued.attempt.id, {
-        terminalReason: "no_active_connection",
-        error: { message: `No credentials for provider: ${provider}` },
-      });
-      return errorResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        `No credentials for provider: ${provider}`,
+  while (true) {
+    const queueStartedAt = Date.now();
+    let lease = null;
+    while (!lease) {
+      lease = await dispatcher.tryLeaseRequest(queued.request.id);
+      if (lease) break;
+
+      const activeConnections = await getConnections();
+      const availableConnections = activeConnections.filter(
+        (c) => !excludeConnectionIds.has(c.id),
       );
+
+      if (availableConnections.length === 0) {
+        await dispatcher.failAttempt(currentAttemptId, {
+          terminalReason: "no_active_connection",
+          error: { message: `No credentials for provider: ${provider}` },
+        });
+        return errorResponse(
+          lastStatus || HTTP_STATUS.BAD_REQUEST,
+          lastError || `No credentials for provider: ${provider}`,
+        );
+      }
+
+      if (request.signal?.aborted) {
+        await dispatcher.failAttempt(currentAttemptId, {
+          nextState: DISPATCH_ATTEMPT_STATE.CANCELLED,
+          terminalReason: "client_disconnect",
+        });
+        return errorResponse(499, "Client disconnected");
+      }
+
+      if (Date.now() - queueStartedAt >= IMAGE_QUEUE_TIMEOUT_MS) {
+        await dispatcher.failAttempt(currentAttemptId, {
+          nextState: DISPATCH_ATTEMPT_STATE.TIMED_OUT,
+          terminalReason: "queue_expired",
+          error: { message: "Image dispatcher queue expired" },
+        });
+        return unavailableResponse(
+          HTTP_STATUS.SERVICE_UNAVAILABLE,
+          `[${provider}/${model}] Image dispatcher queue expired`,
+        );
+      }
+
+      await sleep(IMAGE_QUEUE_POLL_MS);
     }
 
-    if (request.signal?.aborted) {
-      await dispatcher.failAttempt(queued.attempt.id, {
-        nextState: DISPATCH_ATTEMPT_STATE.CANCELLED,
-        terminalReason: "client_disconnect",
+    const credentials = buildCredentialsFromConnection(lease.connection);
+    const refreshedCredentials = await checkAndRefreshToken(
+      provider,
+      credentials,
+    );
+
+    let finalized = false;
+    const finalizeFailure = async ({
+      status = HTTP_STATUS.BAD_GATEWAY,
+      error = "Image request failed",
+      terminalReason = "error",
+    } = {}) => {
+      if (finalized) return;
+      finalized = true;
+      await dispatcher.failAttempt(lease.attemptId, {
+        terminalReason,
+        error: { status, message: error },
       });
-      return errorResponse(499, "Client disconnected");
-    }
+      if (shouldMarkUnavailableForImageFailure(status, terminalReason)) {
+        await markAccountUnavailable(
+          credentials.connectionId,
+          status,
+          error,
+          provider,
+          model,
+          null,
+        );
+      }
+    };
 
-    if (Date.now() - queueStartedAt >= IMAGE_QUEUE_TIMEOUT_MS) {
-      await dispatcher.failAttempt(queued.attempt.id, {
-        nextState: DISPATCH_ATTEMPT_STATE.TIMED_OUT,
-        terminalReason: "queue_expired",
-        error: { message: "Image dispatcher queue expired" },
-      });
-      return unavailableResponse(
-        HTTP_STATUS.SERVICE_UNAVAILABLE,
-        `[${provider}/${model}] Image dispatcher queue expired`,
-      );
-    }
-
-    await sleep(IMAGE_QUEUE_POLL_MS);
-  }
-
-  const credentials = buildCredentialsFromConnection(lease.connection);
-  const refreshedCredentials = await checkAndRefreshToken(
-    provider,
-    credentials,
-  );
-
-  let finalized = false;
-  const finalizeFailure = async ({
-    status = HTTP_STATUS.BAD_GATEWAY,
-    error = "Image request failed",
-    terminalReason = "error",
-  } = {}) => {
-    if (finalized) return;
-    finalized = true;
-    await dispatcher.failAttempt(lease.attemptId, {
-      terminalReason,
-      error: { status, message: error },
-    });
-    if (shouldMarkUnavailableForImageFailure(status, terminalReason)) {
-      await markAccountUnavailable(
-        credentials.connectionId,
-        status,
-        error,
-        provider,
-        model,
-        null,
-      );
-    }
-  };
-
-  const result = await handleImageGenerationCore({
-    body,
-    modelInfo: { provider, model },
-    credentials: refreshedCredentials,
-    streamToClient: wantsStream && !binaryOutput,
-    binaryOutput,
-    abortSignal: request.signal,
-    dispatcherHooks: {
-      onConnectStart: () => dispatcher.markAttemptConnecting(lease.attemptId),
-      onStreamStart: () => dispatcher.markAttemptStreamStarted(lease.attemptId),
-      onProgress: () => dispatcher.markAttemptProgress(lease.attemptId),
-      onSuccess: async () => {
-        if (finalized) return;
-        finalized = true;
-        await dispatcher.completeAttempt(lease.attemptId);
+    const result = await handleImageGenerationCore({
+      body,
+      modelInfo: { provider, model },
+      credentials: refreshedCredentials,
+      streamToClient: wantsStream && !binaryOutput,
+      binaryOutput,
+      abortSignal: request.signal,
+      dispatcherHooks: {
+        onConnectStart: () => dispatcher.markAttemptConnecting(lease.attemptId),
+        onStreamStart: () => dispatcher.markAttemptStreamStarted(lease.attemptId),
+        onProgress: () => dispatcher.markAttemptProgress(lease.attemptId),
+        onSuccess: async () => {
+          if (finalized) return;
+          finalized = true;
+          await dispatcher.completeAttempt(lease.attemptId);
+        },
+        onFailure: finalizeFailure,
       },
-      onFailure: finalizeFailure,
-    },
-    onCredentialsRefreshed: async (newCreds) => {
-      await updateProviderCredentials(credentials.connectionId, {
-        accessToken: newCreds.accessToken,
-        refreshToken: newCreds.refreshToken,
-        idToken: newCreds.idToken,
-        email: newCreds.email,
-        providerSpecificData: newCreds.providerSpecificData,
-        testStatus: "active",
+      onCredentialsRefreshed: async (newCreds) => {
+        await updateProviderCredentials(credentials.connectionId, {
+          accessToken: newCreds.accessToken,
+          refreshToken: newCreds.refreshToken,
+          idToken: newCreds.idToken,
+          email: newCreds.email,
+          providerSpecificData: newCreds.providerSpecificData,
+          testStatus: "active",
+        });
+      },
+      onRequestSuccess: async () => {
+        await clearAccountError(credentials.connectionId, credentials, model);
+      },
+      log,
+    });
+
+    if (result.success) return result.response;
+
+    await finalizeFailure({
+      status: result.status,
+      error: result.error,
+      terminalReason: "provider_error",
+    });
+
+    const { shouldFallback } = await markAccountUnavailable(
+      credentials.connectionId,
+      result.status,
+      result.error,
+      provider,
+      model,
+      null,
+    );
+
+    if (shouldFallback) {
+      log.warn(
+        "AUTH",
+        `Image account ${credentials.connectionName} unavailable (${result.status}), trying fallback`,
+      );
+      excludeConnectionIds.add(credentials.connectionId);
+      lastError = result.error;
+      lastStatus = result.status;
+
+      // Re-enqueue for a new attempt
+      const latestAttempt = getLatestImageDispatchAttemptForRequest(queued.request.id);
+      const attempt = insertImageDispatchAttempt({
+        id: randomUUID(),
+        requestId: queued.request.id,
+        attemptIndex: latestAttempt ? latestAttempt.attemptIndex + 1 : 0,
+        provider,
+        modelId: model,
+        state: DISPATCH_ATTEMPT_STATE.QUEUED,
+        queueEnteredAt: new Date().toISOString(),
       });
-    },
-    onRequestSuccess: async () => {
-      await clearAccountError(credentials.connectionId, credentials, model);
-    },
-    log,
-  });
+      currentAttemptId = attempt.id;
 
-  if (result.success) return result.response;
+      // Update metadata to exclude connection IDs and set status back to queued
+      const currentReq = getImageDispatchRequest(queued.request.id);
+      const updatedMetadata = {
+        ...(currentReq?.metadata || {}),
+        excludeConnectionIds: [...excludeConnectionIds],
+      };
+      updateImageDispatchRequestStatus(queued.request.id, DISPATCH_REQUEST_STATUS.QUEUED, {
+        metadata: updatedMetadata,
+      });
 
-  await finalizeFailure({
-    status: result.status,
-    error: result.error,
-    terminalReason: "provider_error",
-  });
-  return result.response;
+      continue;
+    }
+
+    return result.response;
+  }
 }
 
 export async function handleImageGeneration(request) {

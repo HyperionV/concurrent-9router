@@ -268,14 +268,20 @@ export async function markAccountUnavailable(
     typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
   const lockUpdate = buildModelLockUpdate(model, cooldownMs);
 
-  await updateProviderConnection(connectionId, {
+  const updates = {
     ...lockUpdate,
     testStatus: "unavailable",
     lastError: reason,
     errorCode: status,
     lastErrorAt: new Date().toISOString(),
     backoffLevel: newBackoffLevel ?? backoffLevel,
-  });
+  };
+
+  if (status === 401 || status === 403) {
+    updates.isActive = false;
+  }
+
+  await updateProviderConnection(connectionId, updates);
 
   const lockKey = Object.keys(lockUpdate)[0];
   const connName =
