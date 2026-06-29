@@ -105,6 +105,12 @@ function extractTierFromJwt(token) {
     const padded = base64 + "=".repeat(missingPadding);
     const payload = JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
     
+    // Check OpenAI plan type in custom claims first
+    const openaiAuth = payload["https://api.openai.com/auth"];
+    if (openaiAuth && openaiAuth.chatgpt_plan_type) {
+      return openaiAuth.chatgpt_plan_type;
+    }
+    
     const tier = payload["custom:tier"] || payload.tier || payload.tierId || payload.allowedTiers?.[0] || "";
     if (tier && typeof tier === "string") {
       const lower = tier.toLowerCase();
@@ -163,16 +169,15 @@ export async function sendUsageReport() {
       report += `<b>Provider: ${escapeHtml(provider.toUpperCase())}</b>\n`;
       
       for (const conn of conns) {
-        const name = escapeHtml(conn.displayName || conn.name || conn.email || conn.id.slice(0, 8));
-        const statusIcon = conn.isActive === false ? "🔴" : conn.testStatus === "unavailable" ? "🟡" : "🟢";
+        const email = escapeHtml(conn.email || conn.displayName || conn.name || conn.id.slice(0, 8));
         const statusText = conn.isActive === false ? "disabled" : conn.testStatus || "active";
         const tier = extractTierFromJwt(conn.idToken);
         const usage = connectionUsage[conn.id] || { requests: 0, tokens: 0 };
         
-        report += `<code>${name}</code> | <i>${tier}</i>  ${statusIcon} (<code>${statusText}</code>)
-| Requests: ${usage.requests}
-| Token usage: ${usage.tokens}\n\n`;
+        report += `<code>${email}</code> | <i>${tier}</i> | <code>${statusText}</code>\n`;
+        report += `<blockquote>Requests: ${usage.requests}\nToken usage: ${usage.tokens}</blockquote>\n`;
       }
+      report += `\n`;
     }
 
     return await sendTelegramMessage(report.trim());
