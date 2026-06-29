@@ -1046,6 +1046,21 @@ export function updateProviderConnectionRecord(id, data) {
   }
   if (data.priority !== undefined)
     reorderProviderConnectionPriorities(existing.provider);
+
+  const wasActive = existing.isActive !== false;
+  const isActiveNow = merged.isActive !== false;
+  if (wasActive && !isActiveNow) {
+    import("@/lib/telegram.js")
+      .then(({ notifyConnectionDisconnect }) => {
+        notifyConnectionDisconnect(merged).catch((err) =>
+          console.error("[Telegram] failed to notify disconnect:", err),
+        );
+      })
+      .catch((err) =>
+        console.error("[Telegram] failed to load telegram lib:", err),
+      );
+  }
+
   return getProviderConnection(id);
 }
 

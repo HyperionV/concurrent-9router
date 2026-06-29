@@ -80,9 +80,49 @@ export async function initializeApp() {
 
     // Dispatcher ledger retention: keep recent operator evidence without unbounded growth
     startDispatcherRetention();
+
+    // Start Telegram periodic report scheduler (12 AM & 12 PM UTC+7)
+    startTelegramPeriodicReport();
   } catch (error) {
     console.error("[InitApp] Error:", error);
   }
+}
+
+function startTelegramPeriodicReport() {
+  if (g.telegramPeriodicReportTimeout) return;
+
+  const scheduleNext = () => {
+    const now = new Date();
+    const next = new Date(now);
+    
+    // Target hours (05:00 UTC = 12:00 PM UTC+7, 17:00 UTC = 12:00 AM UTC+7)
+    const nowUtcHours = now.getUTCHours();
+    
+    if (nowUtcHours < 5) {
+      next.setUTCHours(5, 0, 0, 0);
+    } else if (nowUtcHours < 17) {
+      next.setUTCHours(17, 0, 0, 0);
+    } else {
+      next.setUTCDate(now.getUTCDate() + 1);
+      next.setUTCHours(5, 0, 0, 0);
+    }
+    
+    const msToNext = next.getTime() - now.getTime();
+    console.log(`[Telegram] Next report scheduled in ${Math.round(msToNext / 1000 / 60)}m at target UTC ${next.toUTCString()}`);
+
+    g.telegramPeriodicReportTimeout = setTimeout(async () => {
+      try {
+        const { sendUsageReport } = await import("@/lib/telegram.js");
+        await sendUsageReport();
+      } catch (err) {
+        console.error("[Telegram] Error running periodic report:", err);
+      }
+      g.telegramPeriodicReportTimeout = null;
+      scheduleNext();
+    }, msToNext);
+  };
+
+  scheduleNext();
 }
 
 /** Periodically check tunnel process health and reconnect if crashed */

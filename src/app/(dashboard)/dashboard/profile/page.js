@@ -385,6 +385,27 @@ export default function ProfilePage() {
 
   const observabilityEnabled = settings.enableObservability === true;
 
+  const [telegramLoading, setTelegramLoading] = useState(false);
+  const [telegramStatus, setTelegramStatus] = useState({ type: "", message: "" });
+
+  const triggerTelegramReport = async () => {
+    setTelegramLoading(true);
+    setTelegramStatus({ type: "", message: "" });
+    try {
+      const res = await fetch("/api/telegram/report", { method: "POST" });
+      if (res.ok) {
+        setTelegramStatus({ type: "success", message: "Report sent successfully to Telegram!" });
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setTelegramStatus({ type: "error", message: data.error || "Failed to send Telegram report" });
+      }
+    } catch (err) {
+      setTelegramStatus({ type: "error", message: "An error occurred while sending report" });
+    } finally {
+      setTelegramLoading(false);
+    }
+  };
+
   return (
     <div className="max-w-2xl mx-auto">
       <div className="flex flex-col gap-6">
@@ -836,6 +857,49 @@ export default function ProfilePage() {
               onChange={updateObservabilityEnabled}
               disabled={loading}
             />
+          </div>
+        </Card>
+
+        {/* Telegram Integration */}
+        <Card>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 rounded-lg bg-blue-500/10 text-blue-500">
+              <span className="material-symbols-outlined text-[20px]">
+                send
+              </span>
+            </div>
+            <h3 className="text-lg font-semibold">Telegram Notifications</h3>
+          </div>
+          <div className="flex flex-col gap-4">
+            <div>
+              <p className="font-medium">Trigger Connection & Usage Report</p>
+              <p className="text-sm text-text-muted">
+                Manually compile and send the connection usage report to your configured Telegram channel.
+              </p>
+            </div>
+            
+            <div className="pt-2">
+              <Button
+                variant="primary"
+                onClick={triggerTelegramReport}
+                loading={telegramLoading}
+                icon="send"
+              >
+                Send Report Now
+              </Button>
+            </div>
+
+            {telegramStatus.message && (
+              <p
+                className={`text-sm ${
+                  telegramStatus.type === "error"
+                    ? "text-red-500"
+                    : "text-green-600 dark:text-green-400"
+                }`}
+              >
+                {telegramStatus.message}
+              </p>
+            )}
           </div>
         </Card>
 

@@ -18,6 +18,7 @@ const PROTECTED_API_PATHS = [
   "/api/keys",
   "/api/providers/client",
   "/api/provider-nodes/validate",
+  "/api/telegram",
 ];
 
 function isLocalRequest(request) {
