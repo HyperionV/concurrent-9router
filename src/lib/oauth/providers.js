@@ -139,8 +139,8 @@ const PROVIDERS = {
   codex: {
     config: CODEX_CONFIG,
     flowType: "authorization_code_pkce",
-    fixedPort: 1455,
-    callbackPath: "/auth/callback",
+    fixedPort: CODEX_CONFIG.fixedPort || 1455,
+    callbackPath: CODEX_CONFIG.callbackPath || "/auth/callback",
     buildAuthUrl: (config, redirectUri, state, codeChallenge) => {
       const params = {
         response_type: "code",
@@ -158,6 +158,7 @@ const PROVIDERS = {
       return `${config.authorizeUrl}?${queryString}`;
     },
     exchangeToken: async (config, code, redirectUri, codeVerifier) => {
+      // Codex uses form-encoded token exchange (not JSON)
       const response = await fetch(config.tokenUrl, {
         method: "POST",
         headers: {
@@ -175,19 +176,25 @@ const PROVIDERS = {
 
       if (!response.ok) {
         const error = await response.text();
-        throw new Error(`Token exchange failed: ${error}`);
+        throw new Error(`Codex token exchange failed: ${error}`);
       }
 
       return await response.json();
     },
     mapTokens: (tokens) => {
       const accountInfo = extractCodexAccountInfo(tokens.id_token);
+      const email =
+        accountInfo.email ||
+        extractEmailFromAccessToken(tokens.access_token) ||
+        undefined;
       return {
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token,
         idToken: tokens.id_token,
         expiresIn: tokens.expires_in,
-        email: accountInfo.email,
+        email,
+        // Track refresh time for durable Codex OAuth lifecycle
+        lastRefreshAt: new Date().toISOString(),
         providerSpecificData: {
           ...(accountInfo.chatgptAccountId
             ? {
@@ -291,6 +298,8 @@ const PROVIDERS = {
   "grok-cli": {
     config: GROK_CLI_CONFIG,
     flowType: "device_code",
+    // Official Grok CLI HAR: plain device_code grant, no PKCE
+    deviceCodeUsesPkce: false,
     requestDeviceCode: async (config) => {
       const body = new URLSearchParams({
         client_id: config.clientId,

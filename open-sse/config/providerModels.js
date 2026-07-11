@@ -17,30 +17,79 @@ export const PROVIDER_MODELS = {
     { id: "claude-haiku-4-5-20251001", name: "Claude 4.5 Haiku" },
   ],
   cx: [
-    // OpenAI Codex
+    // OpenAI Codex — aligned with upstream 9router registry (2026-07)
+    // Current generation
+    { id: "gpt-5.6-sol", name: "GPT 5.6 Sol" },
+    {
+      id: "gpt-5.6-sol-review",
+      name: "GPT 5.6 Sol Review",
+      upstreamModelId: "gpt-5.6-sol",
+      quotaFamily: "review",
+    },
+    { id: "gpt-5.6-terra", name: "GPT 5.6 Terra" },
+    {
+      id: "gpt-5.6-terra-review",
+      name: "GPT 5.6 Terra Review",
+      upstreamModelId: "gpt-5.6-terra",
+      quotaFamily: "review",
+    },
+    { id: "gpt-5.6-luna", name: "GPT 5.6 Luna" },
+    {
+      id: "gpt-5.6-luna-review",
+      name: "GPT 5.6 Luna Review",
+      upstreamModelId: "gpt-5.6-luna",
+      quotaFamily: "review",
+    },
+    { id: "gpt-5.5", name: "GPT 5.5" },
+    {
+      id: "gpt-5.5-review",
+      name: "GPT 5.5 Review",
+      upstreamModelId: "gpt-5.5",
+      quotaFamily: "review",
+    },
     { id: "gpt-5.4", name: "GPT 5.4" },
-    // GPT 5.3 Codex - all thinking levels
+    {
+      id: "gpt-5.4-review",
+      name: "GPT 5.4 Review",
+      upstreamModelId: "gpt-5.4",
+      quotaFamily: "review",
+    },
+    { id: "gpt-5.4-mini", name: "GPT 5.4 Mini" },
+    {
+      id: "gpt-5.4-mini-review",
+      name: "GPT 5.4 Mini Review",
+      upstreamModelId: "gpt-5.4-mini",
+      quotaFamily: "review",
+    },
+    // GPT 5.3 Codex family + thinking levels (local aliases strip to base)
     { id: "gpt-5.3-codex", name: "GPT 5.3 Codex" },
     { id: "gpt-5.3-codex-xhigh", name: "GPT 5.3 Codex (xHigh)" },
     { id: "gpt-5.3-codex-high", name: "GPT 5.3 Codex (High)" },
     { id: "gpt-5.3-codex-low", name: "GPT 5.3 Codex (Low)" },
     { id: "gpt-5.3-codex-none", name: "GPT 5.3 Codex (None)" },
     { id: "gpt-5.3-codex-spark", name: "GPT 5.3 Codex Spark" },
-    // Mini - medium and high only
-    { id: "gpt-5.1-codex-mini", name: "GPT 5.1 Codex Mini" },
-    { id: "gpt-5.1-codex-mini-high", name: "GPT 5.1 Codex Mini (High)" },
-    // Other models
+    {
+      id: "gpt-5.3-codex-spark-review",
+      name: "GPT 5.3 Codex Spark Review",
+      upstreamModelId: "gpt-5.3-codex-spark",
+      quotaFamily: "review",
+    },
+    // Still useful prior generation
     { id: "gpt-5.2-codex", name: "GPT 5.2 Codex" },
     { id: "gpt-5.2", name: "GPT 5.2" },
     { id: "gpt-5.1-codex-max", name: "GPT 5.1 Codex Max" },
     { id: "gpt-5.1-codex", name: "GPT 5.1 Codex" },
+    { id: "gpt-5.1-codex-mini", name: "GPT 5.1 Codex Mini" },
+    { id: "gpt-5.1-codex-mini-high", name: "GPT 5.1 Codex Mini (High)" },
     { id: "gpt-5.1", name: "GPT 5.1" },
     { id: "gpt-5-codex", name: "GPT 5 Codex" },
     { id: "gpt-5-codex-mini", name: "GPT 5 Codex Mini" },
+    // Image (Codex image dispatcher)
     {
       id: "gpt-5.5-image",
       name: "GPT 5.5 Image",
       type: "image",
+      kind: "image",
       capabilities: ["text2img", "edit"],
       params: [
         "size",
@@ -54,6 +103,7 @@ export const PROVIDER_MODELS = {
       id: "gpt-5.4-image",
       name: "GPT 5.4 Image",
       type: "image",
+      kind: "image",
       capabilities: ["text2img", "edit"],
       params: [
         "size",
@@ -67,6 +117,7 @@ export const PROVIDER_MODELS = {
       id: "gpt-5.3-image",
       name: "GPT 5.3 Image",
       type: "image",
+      kind: "image",
       capabilities: ["text2img", "edit"],
       params: [
         "size",
@@ -80,6 +131,7 @@ export const PROVIDER_MODELS = {
       id: "gpt-5.2-image",
       name: "GPT 5.2 Image",
       type: "image",
+      kind: "image",
       capabilities: ["text2img", "edit"],
       params: [
         "size",
@@ -88,6 +140,25 @@ export const PROVIDER_MODELS = {
         "image_detail",
         "output_format",
       ],
+    },
+  ],
+  gcli: [
+    // Grok CLI / Grok Build
+    { id: "grok-4.5", name: "Grok 4.5" },
+    {
+      id: "grok-4.5-high",
+      name: "Grok 4.5 (High)",
+      upstreamModelId: "grok-4.5",
+    },
+    {
+      id: "grok-4.5-medium",
+      name: "Grok 4.5 (Medium)",
+      upstreamModelId: "grok-4.5",
+    },
+    {
+      id: "grok-4.5-low",
+      name: "Grok 4.5 (Low)",
+      upstreamModelId: "grok-4.5",
     },
   ],
   gc: [
@@ -615,6 +686,7 @@ const OAUTH_ALIASES = {
   kilocode: "kc",
   cline: "cl",
   opencode: "oc",
+  "grok-cli": "gcli",
   vertex: "vertex",
   "vertex-partner": "vertex-partner",
 };
@@ -634,4 +706,18 @@ export function getModelsByProviderId(providerId) {
 export function getModelStrip(alias, modelId) {
   const entry = PROVIDER_MODELS[alias]?.find((m) => m.id === modelId);
   return entry?.strip || [];
+}
+
+/**
+ * Resolve the model id sent upstream (review aliases map back to base model).
+ */
+export function getModelUpstreamId(aliasOrId, modelId) {
+  if (!modelId) return modelId;
+  const models =
+    PROVIDER_MODELS[aliasOrId] ||
+    PROVIDER_MODELS[PROVIDER_ID_TO_ALIAS[aliasOrId]] ||
+    [];
+  const found = models.find((m) => m.id === modelId);
+  if (found?.upstreamModelId) return found.upstreamModelId;
+  return modelId;
 }

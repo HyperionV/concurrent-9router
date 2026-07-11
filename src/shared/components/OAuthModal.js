@@ -132,19 +132,49 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     try {
       setError(null);
 
-      // Device code flow providers (must match oauth providers with flowType: "device_code")
-      const deviceCodeProviders = [
-        "github",
-        "qwen",
-        "kiro",
-        "kimi-coding",
-        "kilocode",
-        "codebuddy",
-        "codebuddy-cn",
-        "qoder",
-        "grok-cli",
-      ];
-      if (deviceCodeProviders.includes(provider)) {
+      // Resolve flow type from server (source of truth — no stale client lists)
+      let flowType = null;
+      let fixedPort = null;
+      let callbackPath = "/callback";
+      try {
+        const metaRes = await fetch(`/api/oauth/${provider}/meta`, {
+          cache: "no-store",
+        });
+        if (metaRes.ok) {
+          const meta = await metaRes.json();
+          flowType = meta.flowType || null;
+          fixedPort = meta.fixedPort || null;
+          callbackPath = meta.callbackPath || "/callback";
+        }
+      } catch {
+        // Fall through to heuristic below
+      }
+
+      // Legacy fallback if meta endpoint unavailable
+      if (!flowType) {
+        const legacyDevice = [
+          "github",
+          "qwen",
+          "kiro",
+          "kimi-coding",
+          "kilocode",
+          "codebuddy",
+          "codebuddy-cn",
+          "qoder",
+          "grok-cli",
+        ];
+        flowType = legacyDevice.includes(provider)
+          ? "device_code"
+          : "authorization_code_pkce";
+      }
+
+      if (flowType === "import_token") {
+        throw new Error(
+          "This provider uses token import, not interactive OAuth. Use the import UI.",
+        );
+      }
+
+      if (flowType === "device_code") {
         setIsDeviceCode(true);
         setStep("waiting");
 
@@ -179,6 +209,14 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         if (!normalized.device_code) {
           throw new Error("Device code response missing device_code");
         }
+        if (
+          !normalized.verification_uri_complete &&
+          normalized.verification_uri &&
+          normalized.user_code
+        ) {
+          const sep = normalized.verification_uri.includes("?") ? "&" : "?";
+          normalized.verification_uri_complete = `${normalized.verification_uri}${sep}user_code=${encodeURIComponent(normalized.user_code)}`;
+        }
         setDeviceData(normalized);
 
         // Auto-open verification URL (Grok Build / GitHub UX)
@@ -212,7 +250,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       let redirectUri;
       let codexProxyActive = false;
 
-      if (provider === "codex") {
+      if (provider === "codex" || fixedPort === 1455) {
         // Try to start proxy on fixed port 1455 → redirect callback to app port
         try {
           const proxyRes = await fetch(`/api/oauth/codex/start-proxy?app_port=${appPort}`);
@@ -222,9 +260,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           codexProxyActive = false;
         }
         // Always use fixed port 1455 as redirect_uri (Codex requirement)
-        redirectUri = "http://localhost:1455/auth/callback";
+        redirectUri = `http://localhost:1455${callbackPath || "/auth/callback"}`;
+      } else if (fixedPort) {
+        redirectUri = `http://localhost:${fixedPort}${callbackPath || "/callback"}`;
       } else {
-        redirectUri = `http://localhost:${appPort}/callback`;
+        redirectUri = `http://localhost:${appPort}${callbackPath || "/callback"}`;
       }
 
       // Build authorize URL, optionally passing provider-specific metadata (e.g. gitlab clientId)

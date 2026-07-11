@@ -8,10 +8,7 @@ import {
 import { normalizeResponsesInput } from "../translator/helpers/responsesApiHelper.js";
 import { deriveSessionId } from "../utils/sessionManager.js";
 import { getConsistentMachineId } from "../../src/shared/utils/machineId.js";
-
-function getModelUpstreamId(_alias, modelId) {
-  return modelId;
-}
+import { getModelUpstreamId } from "../config/providerModels.js";
 
 function resolveSessionId({ body, connectionId, workspaceId, scope }) {
   const fromBody =

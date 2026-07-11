@@ -14,6 +14,7 @@ import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
 } from "../services/oauthCredentialManager.js";
+import { getModelUpstreamId } from "../config/providerModels.js";
 
 // SSE error patterns inside 200-OK bodies. Some retry same account first; capacity rotates accounts.
 const CODEX_SSE_RETRY_PATTERNS = [
@@ -429,16 +430,21 @@ export class CodexExecutor extends BaseExecutor {
     // Ensure store is false (Codex requirement)
     workingBody.store = false;
 
+    // Map review / virtual models to upstream id first
+    let requestModel =
+      getModelUpstreamId("cx", model) ||
+      getModelUpstreamId("codex", model) ||
+      model;
+
     // Extract thinking level from model name suffix
     // e.g., gpt-5.3-codex-high → high, gpt-5.3-codex → medium (default)
-    const effortLevels = ["none", "low", "medium", "high", "xhigh"];
+    const effortLevels = ["none", "minimal", "low", "medium", "high", "xhigh"];
     let modelEffort = null;
-    let requestModel = model;
     for (const level of effortLevels) {
-      if (model.endsWith(`-${level}`)) {
+      if (requestModel.endsWith(`-${level}`)) {
         modelEffort = level;
         // Strip suffix from model name for actual API call
-        requestModel = model.replace(`-${level}`, "");
+        requestModel = requestModel.slice(0, -(level.length + 1));
         break;
       }
     }

@@ -32,7 +32,10 @@ export const CODEX_CONFIG = {
   tokenUrl: "https://auth.openai.com/oauth/token",
   scope: "openid profile email offline_access",
   codeChallengeMethod: "S256",
-  // Additional OpenAI-specific params
+  // Codex requires fixed loopback port 1455
+  fixedPort: 1455,
+  callbackPath: "/auth/callback",
+  // Additional OpenAI-specific params (aligned with official codex CLI)
   extraParams: {
     id_token_add_organizations: "true",
     codex_cli_simplified_flow: "true",

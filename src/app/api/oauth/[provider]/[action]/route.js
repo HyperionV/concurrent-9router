@@ -21,7 +21,43 @@ export async function GET(request, { params }) {
     const { provider, action } = await params;
     const { searchParams } = new URL(request.url);
 
+    // GET /api/oauth/[provider]/meta — flow type for UI (avoids hardcoded device-code lists)
+    if (action === "meta") {
+      const providerData = getProvider(provider);
+      return NextResponse.json({
+        provider,
+        flowType: providerData.flowType,
+        fixedPort: providerData.fixedPort || null,
+        callbackPath: providerData.callbackPath || "/callback",
+        hasDeviceCode: providerData.flowType === "device_code",
+        hasPkce:
+          providerData.flowType === "authorization_code_pkce" ||
+          providerData.flowType === "device_code",
+        supportsImport: providerData.flowType === "import_token",
+      });
+    }
+
     if (action === "authorize") {
+      const providerData = getProvider(provider);
+      if (providerData.flowType === "device_code") {
+        return NextResponse.json(
+          {
+            error:
+              "Provider uses device code flow. Call /device-code instead of /authorize.",
+            flowType: "device_code",
+          },
+          { status: 400 },
+        );
+      }
+      if (providerData.flowType === "import_token") {
+        return NextResponse.json(
+          {
+            error: "Provider uses token import, not browser OAuth.",
+            flowType: "import_token",
+          },
+          { status: 400 },
+        );
+      }
       const redirectUri = searchParams.get("redirect_uri") || "http://localhost:8080/callback";
       // Collect provider-specific meta params (e.g. gitlab passes baseUrl, clientId, clientSecret)
       const reservedParams = new Set(["redirect_uri"]);
@@ -69,21 +105,29 @@ export async function GET(request, { params }) {
           }
         : undefined;
       
-      // Providers that don't use PKCE for device code (Grok CLI HAR: plain device_code)
-      const noPkceDeviceProviders = [
+      // Prefer provider declaration; fallback list for older handlers without flag
+      const noPkceDeviceProviders = new Set([
         "github",
         "kiro",
         "kimi-coding",
         "kilocode",
         "codebuddy",
+        "codebuddy-cn",
         "grok-cli",
-      ];
+      ]);
+      const skipPkce =
+        providerData.deviceCodeUsesPkce === false ||
+        noPkceDeviceProviders.has(provider);
       let deviceData;
-      if (noPkceDeviceProviders.includes(provider)) {
+      if (skipPkce) {
         deviceData = await requestDeviceCode(provider, undefined, deviceOptions);
       } else {
-        // Qwen and other PKCE providers
-        deviceData = await requestDeviceCode(provider, authData.codeChallenge, deviceOptions);
+        // Qwen and other PKCE device providers
+        deviceData = await requestDeviceCode(
+          provider,
+          authData.codeChallenge,
+          deviceOptions,
+        );
       }
 
       return NextResponse.json({
@@ -152,20 +196,24 @@ export async function POST(request, { params }) {
         return NextResponse.json({ error: "Missing device code" }, { status: 400 });
       }
 
-      // Providers that don't use PKCE for device code
-      const noPkceProviders = [
+      const providerData = getProvider(provider);
+      const noPkceProviders = new Set([
         "github",
         "kimi-coding",
         "kilocode",
         "codebuddy",
+        "codebuddy-cn",
         "grok-cli",
-      ];
+      ]);
+      const skipPkce =
+        providerData.deviceCodeUsesPkce === false ||
+        noPkceProviders.has(provider);
       let result;
-      if (noPkceProviders.includes(provider)) {
-        result = await pollForToken(provider, deviceCode);
-      } else if (provider === "kiro") {
+      if (provider === "kiro") {
         // Kiro needs extraData (clientId, clientSecret) from device code response
         result = await pollForToken(provider, deviceCode, null, extraData);
+      } else if (skipPkce) {
+        result = await pollForToken(provider, deviceCode);
       } else {
         // Qwen and other PKCE providers
         if (!codeVerifier) {
