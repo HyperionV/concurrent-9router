@@ -148,13 +148,18 @@ export default function ProviderLimitCard({
       {!loading && !error && !message && quotas?.length > 0 && (
         <div className="space-y-4">
           {quotas.map((quota, index) => {
-            // Prefer API remainingPercentage (Grok weekly pool, AG models).
-            // Fall back to used/total only when percentage is absent.
-            const percentage =
+            // remainingPercentage drives bar fill + color (high remaining = green).
+            // Grok Settings shows USED % — when displayAsUsed, pass usedPercentage for the number.
+            const remainingPct =
               typeof quota.remainingPercentage === "number" &&
               Number.isFinite(quota.remainingPercentage)
                 ? Math.round(quota.remainingPercentage)
                 : calculatePercentage(quota.used, quota.total);
+            const usedPct =
+              typeof quota.usedPercentage === "number" &&
+              Number.isFinite(quota.usedPercentage)
+                ? Math.round(quota.usedPercentage)
+                : Math.max(0, 100 - remainingPct);
             const unlimited = quota.total === 0 || quota.total === null;
 
             return (
@@ -163,7 +168,12 @@ export default function ProviderLimitCard({
                 label={quota.name}
                 used={quota.used}
                 total={quota.total}
-                percentage={percentage}
+                percentage={remainingPct}
+                displayPercentage={
+                  quota.displayAsUsed ? usedPct : remainingPct
+                }
+                percentageSuffix={quota.displayAsUsed ? "used" : null}
+                unit={quota.unit || null}
                 unlimited={unlimited}
                 resetTime={quota.resetAt}
               />

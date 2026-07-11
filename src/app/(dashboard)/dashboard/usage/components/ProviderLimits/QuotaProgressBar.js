@@ -63,51 +63,77 @@ const formatResetTimeDisplay = (resetTime) => {
   }
 };
 
+function formatQuotaAmount(used, total, unit) {
+  if (unit === "percent") {
+    return `${Math.round(used)}% of weekly limit used`;
+  }
+  if (unit === "dollars") {
+    const fmt = (n) =>
+      `$${Number(n).toLocaleString(undefined, {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 2,
+      })}`;
+    return `${fmt(used)} / ${fmt(total)}`;
+  }
+  if (unit === "credits") {
+    return `${Number(used).toLocaleString()} / ${Number(total).toLocaleString()} credits`;
+  }
+  return `${Number(used).toLocaleString()} / ${Number(total).toLocaleString()}`;
+}
+
 export default function QuotaProgressBar({
   percentage = 0,
+  displayPercentage = null,
+  percentageSuffix = null,
   label = "",
   used = 0,
   total = 0,
+  unit = null,
   unlimited = false,
-  resetTime = null
+  resetTime = null,
 }) {
-  const colors = getColorClasses(percentage);
+  // percentage = remaining (drives bar fill + color)
+  const remaining = percentage;
+  const shownPct =
+    displayPercentage != null && Number.isFinite(displayPercentage)
+      ? displayPercentage
+      : remaining;
+  const colors = getColorClasses(remaining);
   const countdown = formatResetTime(resetTime);
   const resetDisplay = formatResetTimeDisplay(resetTime);
-  
-  // percentage is already remaining percentage (from ProviderLimitCard)
-  const remaining = percentage;
-  
+
   return (
     <div className="space-y-2">
       {/* Label and percentage */}
       <div className="flex items-center justify-between text-sm">
-        <span className="font-semibold text-text-primary">
-          {label}
-        </span>
+        <span className="font-semibold text-text-primary">{label}</span>
         <div className="flex items-center gap-1.5">
           <span className="text-xs">{colors.emoji}</span>
           <span className={cn("font-medium", colors.text)}>
-            {remaining}%
+            {shownPct}%
+            {percentageSuffix ? (
+              <span className="text-text-muted font-normal">
+                {" "}
+                {percentageSuffix}
+              </span>
+            ) : null}
           </span>
         </div>
       </div>
 
-      {/* Progress bar */}
+      {/* Progress bar — width = remaining capacity */}
       {!unlimited && (
         <div className={cn("h-2 rounded-full overflow-hidden", colors.bgLight)}>
           <div
             className={cn("h-full transition-all duration-300", colors.bg)}
-            style={{ width: `${Math.min(remaining, 100)}%` }}
+            style={{ width: `${Math.min(Math.max(remaining, 0), 100)}%` }}
           />
         </div>
       )}
 
       {/* Usage details and countdown */}
       <div className="flex items-center justify-between text-xs text-text-muted">
-        <span>
-          {used.toLocaleString()} / {total.toLocaleString()} requests
-        </span>
+        <span>{formatQuotaAmount(used, total, unit)}</span>
         {countdown !== "-" && (
           <div className="flex items-center gap-1">
             <span>•</span>
@@ -116,11 +142,8 @@ export default function QuotaProgressBar({
         )}
       </div>
 
-      {/* Reset time display */}
       {resetDisplay && (
-        <div className="text-xs text-text-muted/70">
-          Reset at {resetDisplay}
-        </div>
+        <div className="text-xs text-text-muted/70">Reset at {resetDisplay}</div>
       )}
     </div>
   );

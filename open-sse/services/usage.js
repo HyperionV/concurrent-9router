@@ -800,13 +800,17 @@ function grokPeriodLabel(config, root) {
 /**
  * Map Grok CLI billing JSON → quota rows.
  *
- * Real SuperGrok weekly pool (what Settings → Usage shows as "Weekly limit: 71%"):
- *   config.used + config.monthlyLimit  (vals often in cents; ratio is what matters)
+ * Two different billing shapes (must merge both endpoints):
  *
- * On-demand is EXTRA pay-as-you-go spend after the weekly pool — only when
- * onDemandCap > 0. Cap 0 must NOT be shown as "0% depleted".
+ * 1) GET /v1/billing?format=credits  ← Settings → Usage "Weekly limit: 73%"
+ *    - creditUsagePercent (USED % of weekly SuperGrok pool)
+ *    - productUsage[].usagePercent (e.g. GrokBuild)
+ *    - currentPeriod weekly start/end (reset date)
  *
- * @see community captures of GET /v1/billing?format=credits
+ * 2) GET /v1/billing  ← dollar credit ledger (monthly calendar)
+ *    - used / monthlyLimit (cents) — NOT the same as Settings weekly %
+ *
+ * On-demand is EXTRA pay-as-you-go only when onDemandCap > 0.
  */
 export function parseGrokCliBilling(billing, user = null) {
   const root = billing && typeof billing === "object" ? billing : {};
@@ -815,25 +819,56 @@ export function parseGrokCliBilling(billing, user = null) {
       ? root.config
       : root;
 
+  // Prefer weekly period end from format=credits (matches Settings reset)
   const periodEnd =
-    parseResetTime(config.billingPeriodEnd) ||
     parseResetTime(config.currentPeriod?.end) ||
+    parseResetTime(config.billingPeriodEnd) ||
     parseResetTime(root.billingPeriodEnd) ||
     null;
 
   const quotas = {};
   const periodLabel = grokPeriodLabel(config, root);
 
-  // Primary: subscription weekly/monthly included pool (used vs monthlyLimit)
-  // Documented by UsageBar / community: GET /v1/billing → config.used, config.monthlyLimit
-  // (often { val: n } in cents). Do not rely on ?format=credits alone.
+  // --- Primary: Settings weekly pool (USED %) ---
+  // productUsage GrokBuild is what the CLI consumes; fall back to overall creditUsagePercent
+  let usedPercent = NaN;
+  if (Array.isArray(config.productUsage)) {
+    const build = config.productUsage.find(
+      (p) =>
+        p &&
+        typeof p === "object" &&
+        /grokbuild|build/i.test(String(p.product || "")),
+    );
+    if (build && build.usagePercent != null) {
+      usedPercent = unwrapGrokBillingVal(build.usagePercent, NaN);
+    }
+  }
+  if (!Number.isFinite(usedPercent)) {
+    usedPercent = unwrapGrokBillingVal(
+      config.creditUsagePercent ?? root.creditUsagePercent,
+      NaN,
+    );
+  }
+  if (Number.isFinite(usedPercent)) {
+    const clamped = Math.min(100, Math.max(0, usedPercent));
+    const remaining = Math.max(0, 100 - clamped);
+    // used/total as percent points so the bar subtitle reads "74 / 100 used"
+    quotas[periodLabel] = {
+      used: clamped,
+      total: 100,
+      remainingPercentage: remaining,
+      // Settings UI shows USED % ("Weekly limit: 73%") — surface that as the hero number
+      usedPercentage: clamped,
+      displayAsUsed: true,
+      unit: "percent",
+      resetAt: periodEnd,
+      unlimited: false,
+    };
+  }
+
+  // --- Secondary: dollar credit ledger from plain /v1/billing (cents → dollars) ---
   const poolUsed = unwrapGrokBillingVal(
-    config.used ??
-      root.used ??
-      config.usageUsed ??
-      root.usageUsed ??
-      config.creditsUsed ??
-      root.creditsUsed,
+    config.used ?? root.used ?? config.usageUsed ?? root.usageUsed,
     NaN,
   );
   const poolLimit = unwrapGrokBillingVal(
@@ -841,22 +876,36 @@ export function parseGrokCliBilling(billing, user = null) {
       root.monthlyLimit ??
       config.weeklyLimit ??
       root.weeklyLimit ??
-      config.creditLimit ??
-      root.creditLimit ??
       config.limit ??
       root.limit,
     NaN,
   );
-  if (Number.isFinite(poolLimit) && poolLimit > 0) {
+  if (Number.isFinite(poolLimit) && poolLimit > 0 && !quotas[periodLabel]) {
+    // Only use dollar ratio as primary when creditUsagePercent is missing
     const used = Number.isFinite(poolUsed) ? Math.max(0, poolUsed) : 0;
-    quotas[periodLabel] = grokQuotaRow({
-      used,
-      total: poolLimit,
-      resetAt: periodEnd,
-    });
+    quotas[periodLabel] = {
+      ...grokQuotaRow({ used, total: poolLimit, resetAt: periodEnd }),
+      unit: "credits",
+    };
+  } else if (Number.isFinite(poolLimit) && poolLimit > 0) {
+    // Show as extra row so operators still see $ balance vs weekly %
+    const used = Number.isFinite(poolUsed) ? Math.max(0, poolUsed) : 0;
+    const dollarsUsed = used / 100;
+    const dollarsTotal = poolLimit / 100;
+    quotas["Credits ($)"] = {
+      ...grokQuotaRow({
+        used: dollarsUsed,
+        total: dollarsTotal,
+        resetAt:
+          parseResetTime(config.billingPeriodEnd) ||
+          parseResetTime(root.billingPeriodEnd) ||
+          periodEnd,
+      }),
+      unit: "dollars",
+    };
   }
 
-  // Secondary: on-demand spending cap (extra credits / pay-as-you-go)
+  // On-demand spending cap (extra pay-as-you-go)
   const onDemandCap = unwrapGrokBillingVal(
     config.onDemandCap ?? root.onDemandCap,
     NaN,
@@ -867,14 +916,15 @@ export function parseGrokCliBilling(billing, user = null) {
   );
   if (Number.isFinite(onDemandCap) && onDemandCap > 0) {
     const used = Number.isFinite(onDemandUsed) ? Math.max(0, onDemandUsed) : 0;
-    quotas["On-demand"] = grokQuotaRow({
-      used,
-      total: onDemandCap,
-      resetAt: periodEnd,
-    });
+    quotas["On-demand"] = {
+      ...grokQuotaRow({
+        used: used / 100,
+        total: onDemandCap / 100,
+        resetAt: periodEnd,
+      }),
+      unit: "dollars",
+    };
   }
-  // Do NOT invent a 0% On-demand bar when cap is 0 — that means "no on-demand
-  // budget configured", not "weekly pool empty". (Weekly pool is above.)
 
   const prepaid = unwrapGrokBillingVal(
     config.prepaidBalance ?? root.prepaidBalance,
@@ -883,48 +933,15 @@ export function parseGrokCliBilling(billing, user = null) {
   if (Number.isFinite(prepaid) && prepaid > 0) {
     quotas.Prepaid = {
       used: 0,
-      total: prepaid,
+      total: prepaid / 100,
       remainingPercentage: 100,
       resetAt: null,
       unlimited: false,
+      unit: "dollars",
     };
   }
 
-  const creditBags = [
-    root.credits,
-    root.creditBalance,
-    root.usage,
-    config.credits,
-    config.includedCredits,
-    config.subscriptionCredits,
-  ].filter((bag) => bag && typeof bag === "object" && !Array.isArray(bag));
-
-  for (const bag of creditBags) {
-    const total = unwrapGrokBillingVal(
-      bag.total ?? bag.limit ?? bag.cap ?? bag.allocation ?? bag.amount,
-      NaN,
-    );
-    const used = unwrapGrokBillingVal(bag.used ?? bag.spent ?? bag.consumed, NaN);
-    const remaining = unwrapGrokBillingVal(
-      bag.remaining ?? bag.balance ?? bag.left,
-      NaN,
-    );
-    if (Number.isFinite(total) && total > 0 && !quotas.Credits) {
-      const resolvedUsed = Number.isFinite(used)
-        ? used
-        : Number.isFinite(remaining)
-          ? Math.max(0, total - remaining)
-          : 0;
-      quotas.Credits = grokQuotaRow({
-        used: resolvedUsed,
-        total,
-        resetAt:
-          parseResetTime(bag.resetAt || bag.resetsAt || bag.end) || periodEnd,
-      });
-    }
-  }
-
-  // True free/promo exhaustion: no pool, no on-demand, no prepaid — still chat may 402
+  // True free/promo exhaustion: nothing parseable
   if (Object.keys(quotas).length === 0) {
     const capZero =
       Number.isFinite(onDemandCap) &&
@@ -935,18 +952,26 @@ export function parseGrokCliBilling(billing, user = null) {
         used: 1,
         total: 1,
         remainingPercentage: 0,
+        usedPercentage: 100,
+        displayAsUsed: true,
         resetAt: periodEnd,
         unlimited: false,
       };
     }
   }
 
-  const tier =
-    typeof user?.subscriptionTier === "string"
-      ? user.subscriptionTier.trim()
-      : "";
-  const plan = tier
-    ? tier.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+  // settings: subscription_tier_display; user API: subscriptionTier (e.g. GrokPro)
+  const tierRaw =
+    (typeof user?.subscription_tier_display === "string" &&
+      user.subscription_tier_display) ||
+    (typeof user?.subscriptionTier === "string" && user.subscriptionTier) ||
+    (typeof user?.subscriptionTier === "string" && user.subscriptionTier) ||
+    "";
+  const plan = tierRaw
+    ? String(tierRaw)
+        .replace(/([a-z])([A-Z])/g, "$1 $2")
+        .replace(/[_-]+/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase())
     : user?.hasGrokCodeAccess
       ? "Grok Code"
       : "Grok Build";
@@ -955,16 +980,32 @@ export function parseGrokCliBilling(billing, user = null) {
 }
 
 /**
- * Merge Grok billing payloads. Plain /v1/billing carries used+monthlyLimit
- * (Settings weekly %); ?format=credits is often only on-demand/prepaid.
+ * Merge Grok billing payloads.
+ * Order: format=credits first (weekly %), then plain /v1/billing (dollar ledger).
+ * Never overwrite weekly % fields once set.
  */
 function mergeGrokBillingPayloads(...payloads) {
+  const weeklyKeys = new Set([
+    "creditUsagePercent",
+    "productUsage",
+    "currentPeriod",
+    "isUnifiedBillingUser",
+  ]);
   const merged = { config: {} };
   for (const p of payloads) {
     if (!p || typeof p !== "object") continue;
     for (const [k, v] of Object.entries(p)) {
       if (k === "config" && v && typeof v === "object" && !Array.isArray(v)) {
-        Object.assign(merged.config, v);
+        for (const [ck, cv] of Object.entries(v)) {
+          if (weeklyKeys.has(ck) && merged.config[ck] !== undefined) continue;
+          // Dollar ledger: last write wins (plain billing usually has used/monthlyLimit)
+          if (ck === "used" || ck === "monthlyLimit") {
+            merged.config[ck] = cv;
+            continue;
+          }
+          if (merged.config[ck] === undefined) merged.config[ck] = cv;
+          else if (!weeklyKeys.has(ck)) merged.config[ck] = cv;
+        }
       } else if (merged[k] === undefined) {
         merged[k] = v;
       }
@@ -1022,14 +1063,12 @@ async function getGrokCliUsage(accessToken, providerSpecificData = {}) {
     const billingPlain = billingRes.ok
       ? await billingRes.json().catch(() => null)
       : null;
-    const billingCredits =
-      creditsRes?.ok && creditsRes !== billingRes
-        ? await creditsRes.json().catch(() => null)
-        : billingRes.ok
-          ? null
-          : await primaryRes.json().catch(() => null);
+    const billingCredits = creditsRes?.ok
+      ? await creditsRes.json().catch(() => null)
+      : null;
 
-    const billing = mergeGrokBillingPayloads(billingPlain, billingCredits);
+    // credits first (weekly %), then plain (dollar used/monthlyLimit)
+    const billing = mergeGrokBillingPayloads(billingCredits, billingPlain);
     if (!billing || typeof billing !== "object" || Object.keys(billing).length === 0) {
       return { message: "Grok CLI billing response was not JSON." };
     }
@@ -1041,12 +1080,11 @@ async function getGrokCliUsage(accessToken, providerSpecificData = {}) {
     if (settingsRes?.ok) {
       const settings = await settingsRes.json().catch(() => null);
       if (settings && typeof settings === "object") {
-        // Plan label from settings when user profile lacks tiers
         if (!user) user = {};
-        if (!user.subscriptionTier && settings.subscription_tier_display) {
-          user.subscriptionTier = settings.subscription_tier_display;
+        if (settings.subscription_tier_display) {
+          user.subscription_tier_display = settings.subscription_tier_display;
         }
-        if (!user.subscriptionTier && settings.subscriptionTier) {
+        if (settings.subscriptionTier && !user.subscriptionTier) {
           user.subscriptionTier = settings.subscriptionTier;
         }
       }
