@@ -46,6 +46,10 @@ async function loadProviderConnections(provider, { force = false } = {}) {
     provider,
   );
   lastKnownSlotsByProvider.set(provider, slotsPerConnection);
+  // Shared across webpack module copies (Translators initialized ×N).
+  const sharedSlots = (globalThis.__dispatcherSlotsByProvider ||=
+    Object.create(null));
+  sharedSlots[provider] = slotsPerConnection;
 
   const query = {
     provider,
@@ -141,13 +145,27 @@ export function getProviderDispatcher(provider) {
 
   lastKnownSlotsByProvider.set(provider, 1);
 
+  // Warm slots/connections before first lease so concurrent admits don't see slots=1.
+  loadProviderConnections(provider).catch((error) => {
+    console.warn(
+      `[DISPATCHER] ${provider}: warm connection load failed:`,
+      error?.message || error,
+    );
+  });
+
   const dispatcher = createDispatcherCore({
     provider,
     getConnections: async () => {
       const { connections } = await loadProviderConnections(provider);
       return connections;
     },
-    getSlotsPerConnection: () => lastKnownSlotsByProvider.get(provider) || 1,
+    getSlotsPerConnection: () => {
+      const shared = globalThis.__dispatcherSlotsByProvider?.[provider];
+      if (Number.isFinite(Number(shared)) && Number(shared) > 0) {
+        return Number(shared);
+      }
+      return lastKnownSlotsByProvider.get(provider) || 1;
+    },
   });
 
   const watchdog = createDispatcherWatchdog({
