@@ -762,7 +762,52 @@ function buildGrokCliUsageHeaders(accessToken, providerSpecificData = {}) {
   return headers;
 }
 
-/** Exported for unit tests */
+function grokQuotaRow({ used, total, resetAt }) {
+  const safeTotal = Math.max(0, Number(total) || 0);
+  const safeUsed = Math.max(0, Number(used) || 0);
+  if (safeTotal <= 0) {
+    return {
+      used: safeUsed,
+      total: 0,
+      remainingPercentage: 0,
+      resetAt: resetAt || null,
+      unlimited: false,
+    };
+  }
+  const remaining = Math.max(0, safeTotal - safeUsed);
+  return {
+    used: safeUsed,
+    total: safeTotal,
+    remainingPercentage: (remaining / safeTotal) * 100,
+    resetAt: resetAt || null,
+    unlimited: false,
+  };
+}
+
+function grokPeriodLabel(config, root) {
+  const periodType =
+    config?.currentPeriod?.type ||
+    root?.currentPeriod?.type ||
+    config?.periodType ||
+    "";
+  if (/WEEKLY/i.test(String(periodType))) return "Weekly";
+  if (/MONTHLY|MONTH/i.test(String(periodType))) return "Monthly";
+  if (/DAILY|DAY/i.test(String(periodType))) return "Daily";
+  // Default label for SuperGrok-style shared pool (docs: weekly allowance)
+  return "Weekly";
+}
+
+/**
+ * Map Grok CLI billing JSON → quota rows.
+ *
+ * Real SuperGrok weekly pool (what Settings → Usage shows as "Weekly limit: 71%"):
+ *   config.used + config.monthlyLimit  (vals often in cents; ratio is what matters)
+ *
+ * On-demand is EXTRA pay-as-you-go spend after the weekly pool — only when
+ * onDemandCap > 0. Cap 0 must NOT be shown as "0% depleted".
+ *
+ * @see community captures of GET /v1/billing?format=credits
+ */
 export function parseGrokCliBilling(billing, user = null) {
   const root = billing && typeof billing === "object" ? billing : {};
   const config =
@@ -777,7 +822,32 @@ export function parseGrokCliBilling(billing, user = null) {
     null;
 
   const quotas = {};
+  const periodLabel = grokPeriodLabel(config, root);
 
+  // Primary: subscription weekly/monthly included pool (used vs monthlyLimit)
+  const poolUsed = unwrapGrokBillingVal(
+    config.used ?? root.used ?? config.usageUsed ?? root.usageUsed,
+    NaN,
+  );
+  const poolLimit = unwrapGrokBillingVal(
+    config.monthlyLimit ??
+      root.monthlyLimit ??
+      config.weeklyLimit ??
+      root.weeklyLimit ??
+      config.limit ??
+      root.limit,
+    NaN,
+  );
+  if (Number.isFinite(poolLimit) && poolLimit > 0) {
+    const used = Number.isFinite(poolUsed) ? Math.max(0, poolUsed) : 0;
+    quotas[periodLabel] = grokQuotaRow({
+      used,
+      total: poolLimit,
+      resetAt: periodEnd,
+    });
+  }
+
+  // Secondary: on-demand spending cap (extra credits / pay-as-you-go)
   const onDemandCap = unwrapGrokBillingVal(
     config.onDemandCap ?? root.onDemandCap,
     NaN,
@@ -788,28 +858,14 @@ export function parseGrokCliBilling(billing, user = null) {
   );
   if (Number.isFinite(onDemandCap) && onDemandCap > 0) {
     const used = Number.isFinite(onDemandUsed) ? Math.max(0, onDemandUsed) : 0;
-    const remaining = Math.max(0, onDemandCap - used);
-    quotas["On-demand"] = {
+    quotas["On-demand"] = grokQuotaRow({
       used,
       total: onDemandCap,
-      remainingPercentage: (remaining / onDemandCap) * 100,
       resetAt: periodEnd,
-      unlimited: false,
-    };
-  } else if (
-    Number.isFinite(onDemandCap) &&
-    onDemandCap === 0 &&
-    Number.isFinite(onDemandUsed)
-  ) {
-    // Cap 0 = exhausted free/promo (chat 402 spending-limit). UI treats total===0 as unlimited.
-    quotas["On-demand"] = {
-      used: 1,
-      total: 1,
-      remainingPercentage: 0,
-      resetAt: periodEnd,
-      unlimited: false,
-    };
+    });
   }
+  // Do NOT invent a 0% On-demand bar when cap is 0 — that means "no on-demand
+  // budget configured", not "weekly pool empty". (Weekly pool is above.)
 
   const prepaid = unwrapGrokBillingVal(
     config.prepaidBalance ?? root.prepaidBalance,
@@ -850,13 +906,27 @@ export function parseGrokCliBilling(billing, user = null) {
         : Number.isFinite(remaining)
           ? Math.max(0, total - remaining)
           : 0;
-      const rem = Math.max(0, total - resolvedUsed);
-      quotas.Credits = {
+      quotas.Credits = grokQuotaRow({
         used: resolvedUsed,
         total,
-        remainingPercentage: (rem / total) * 100,
         resetAt:
           parseResetTime(bag.resetAt || bag.resetsAt || bag.end) || periodEnd,
+      });
+    }
+  }
+
+  // True free/promo exhaustion: no pool, no on-demand, no prepaid — still chat may 402
+  if (Object.keys(quotas).length === 0) {
+    const capZero =
+      Number.isFinite(onDemandCap) &&
+      onDemandCap === 0 &&
+      Number.isFinite(onDemandUsed);
+    if (capZero) {
+      quotas["On-demand"] = {
+        used: 1,
+        total: 1,
+        remainingPercentage: 0,
+        resetAt: periodEnd,
         unlimited: false,
       };
     }

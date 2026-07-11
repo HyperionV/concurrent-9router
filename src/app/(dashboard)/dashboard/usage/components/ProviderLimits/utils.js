@@ -164,6 +164,23 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
+      case "grok-cli":
+      case "gcli":
+      case "gb":
+      case "grok-build":
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]) => {
+            normalizedQuotas.push({
+              name,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              resetAt: quota.resetAt || null,
+              remainingPercentage: quota.remainingPercentage,
+            });
+          });
+        }
+        break;
+
       default:
         // Generic fallback for unknown providers
         if (data.quotas) {
@@ -173,6 +190,7 @@ export function parseQuotaData(provider, data) {
               used: quota.used || 0,
               total: quota.total || 0,
               resetAt: quota.resetAt || null,
+              remainingPercentage: quota.remainingPercentage,
             });
           });
         }
