@@ -58,6 +58,11 @@ export async function getUsageForProvider(connection) {
       return await getQwenUsage(accessToken, providerSpecificData);
     case "iflow":
       return await getIflowUsage(accessToken);
+    case "grok-cli":
+    case "gcli":
+    case "gb":
+    case "grok-build":
+      return await getGrokCliUsage(accessToken, providerSpecificData);
     default:
       return { message: `Usage API not implemented for ${provider}` };
   }
@@ -722,5 +727,216 @@ async function getIflowUsage(accessToken) {
     return { message: "iFlow connected. Usage tracked per request." };
   } catch (error) {
     return { message: "Unable to fetch iFlow usage." };
+  }
+}
+
+/**
+ * Grok CLI / Grok Build billing + subscription
+ * Official CLI: GET /v1/billing?format=credits + GET /v1/user?include=subscription
+ * Values often arrive as protobuf-json `{ val: number }`.
+ */
+function unwrapGrokBillingVal(value, fallback = 0) {
+  if (value == null) return fallback;
+  if (typeof value === "object" && !Array.isArray(value) && "val" in value) {
+    const n = Number(value.val);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function buildGrokCliUsageHeaders(accessToken, providerSpecificData = {}) {
+  const psd = providerSpecificData || {};
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    Accept: "application/json",
+    "User-Agent": "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)",
+    "x-xai-token-auth": "xai-grok-cli",
+    "x-grok-client-identifier": "grok-pager",
+    "x-grok-client-version": "0.2.93",
+  };
+  if (psd.email) headers["x-email"] = psd.email;
+  if (psd.userId || psd.principalId) {
+    headers["x-userid"] = psd.userId || psd.principalId;
+  }
+  return headers;
+}
+
+/** Exported for unit tests */
+export function parseGrokCliBilling(billing, user = null) {
+  const root = billing && typeof billing === "object" ? billing : {};
+  const config =
+    root.config && typeof root.config === "object" && !Array.isArray(root.config)
+      ? root.config
+      : root;
+
+  const periodEnd =
+    parseResetTime(config.billingPeriodEnd) ||
+    parseResetTime(config.currentPeriod?.end) ||
+    parseResetTime(root.billingPeriodEnd) ||
+    null;
+
+  const quotas = {};
+
+  const onDemandCap = unwrapGrokBillingVal(
+    config.onDemandCap ?? root.onDemandCap,
+    NaN,
+  );
+  const onDemandUsed = unwrapGrokBillingVal(
+    config.onDemandUsed ?? root.onDemandUsed,
+    NaN,
+  );
+  if (Number.isFinite(onDemandCap) && onDemandCap > 0) {
+    const used = Number.isFinite(onDemandUsed) ? Math.max(0, onDemandUsed) : 0;
+    const remaining = Math.max(0, onDemandCap - used);
+    quotas["On-demand"] = {
+      used,
+      total: onDemandCap,
+      remainingPercentage: (remaining / onDemandCap) * 100,
+      resetAt: periodEnd,
+      unlimited: false,
+    };
+  } else if (
+    Number.isFinite(onDemandCap) &&
+    onDemandCap === 0 &&
+    Number.isFinite(onDemandUsed)
+  ) {
+    // Cap 0 = exhausted free/promo (chat 402 spending-limit). UI treats total===0 as unlimited.
+    quotas["On-demand"] = {
+      used: 1,
+      total: 1,
+      remainingPercentage: 0,
+      resetAt: periodEnd,
+      unlimited: false,
+    };
+  }
+
+  const prepaid = unwrapGrokBillingVal(
+    config.prepaidBalance ?? root.prepaidBalance,
+    NaN,
+  );
+  if (Number.isFinite(prepaid) && prepaid > 0) {
+    quotas.Prepaid = {
+      used: 0,
+      total: prepaid,
+      remainingPercentage: 100,
+      resetAt: null,
+      unlimited: false,
+    };
+  }
+
+  const creditBags = [
+    root.credits,
+    root.creditBalance,
+    root.usage,
+    config.credits,
+    config.includedCredits,
+    config.subscriptionCredits,
+  ].filter((bag) => bag && typeof bag === "object" && !Array.isArray(bag));
+
+  for (const bag of creditBags) {
+    const total = unwrapGrokBillingVal(
+      bag.total ?? bag.limit ?? bag.cap ?? bag.allocation ?? bag.amount,
+      NaN,
+    );
+    const used = unwrapGrokBillingVal(bag.used ?? bag.spent ?? bag.consumed, NaN);
+    const remaining = unwrapGrokBillingVal(
+      bag.remaining ?? bag.balance ?? bag.left,
+      NaN,
+    );
+    if (Number.isFinite(total) && total > 0 && !quotas.Credits) {
+      const resolvedUsed = Number.isFinite(used)
+        ? used
+        : Number.isFinite(remaining)
+          ? Math.max(0, total - remaining)
+          : 0;
+      const rem = Math.max(0, total - resolvedUsed);
+      quotas.Credits = {
+        used: resolvedUsed,
+        total,
+        remainingPercentage: (rem / total) * 100,
+        resetAt:
+          parseResetTime(bag.resetAt || bag.resetsAt || bag.end) || periodEnd,
+        unlimited: false,
+      };
+    }
+  }
+
+  const tier =
+    typeof user?.subscriptionTier === "string"
+      ? user.subscriptionTier.trim()
+      : "";
+  const plan = tier
+    ? tier.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+    : user?.hasGrokCodeAccess
+      ? "Grok Code"
+      : "Grok Build";
+
+  return { plan, quotas, periodEnd };
+}
+
+async function getGrokCliUsage(accessToken, providerSpecificData = {}) {
+  if (!accessToken) {
+    return { message: "Grok CLI access token not available." };
+  }
+
+  const headers = buildGrokCliUsageHeaders(accessToken, providerSpecificData);
+
+  try {
+    const [billingRes, userRes] = await Promise.all([
+      fetch("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
+        method: "GET",
+        headers,
+      }),
+      fetch("https://cli-chat-proxy.grok.com/v1/user?include=subscription", {
+        method: "GET",
+        headers,
+      }).catch(() => null),
+    ]);
+
+    if (billingRes.status === 401 || billingRes.status === 403) {
+      return {
+        message: "Grok CLI authentication expired. Please re-authorize.",
+      };
+    }
+    if (!billingRes.ok) {
+      const errText = await billingRes.text().catch(() => "");
+      const trimmed = errText ? `: ${errText.slice(0, 200)}` : "";
+      return {
+        message: `Grok CLI billing API error (${billingRes.status})${trimmed}`,
+      };
+    }
+
+    const billing = await billingRes.json().catch(() => null);
+    if (!billing || typeof billing !== "object") {
+      return { message: "Grok CLI billing response was not JSON." };
+    }
+
+    let user = null;
+    if (userRes?.ok) {
+      user = await userRes.json().catch(() => null);
+    }
+
+    const parsed = parseGrokCliBilling(billing, user);
+
+    // Dashboard hides QuotaTable when `message` is set — only set when no rows.
+    if (!parsed.quotas || Object.keys(parsed.quotas).length === 0) {
+      return {
+        plan: parsed.plan,
+        message:
+          "Grok Build connected, but no credit allotment was returned. Free promo may be exhausted — upgrade at https://grok.com/supergrok or add credits at https://grok.com/?_s=usage.",
+        quotas: {},
+      };
+    }
+
+    return {
+      plan: parsed.plan,
+      quotas: parsed.quotas,
+      resetDate: parsed.periodEnd,
+    };
+  } catch (error) {
+    return {
+      message: `Unable to fetch Grok CLI usage: ${error?.message || error}`,
+    };
   }
 }
