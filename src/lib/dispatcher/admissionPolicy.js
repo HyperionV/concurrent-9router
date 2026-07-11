@@ -13,26 +13,26 @@ export function isTextDispatchProvider(provider) {
 }
 
 /**
- * Default admission policy for a provider.
- * Codex uses codexDefaultAdmissionPolicy; AG/Grok default to legacy unless
- * settings.providerAdmissionPolicies[provider] opts into managed.
+ * Single global default for all text-dispatch providers (Codex, AG, Grok CLI).
+ * Stored as settings.codexDefaultAdmissionPolicy for backward compatibility.
  */
-export function getDefaultAdmissionPolicyForProvider(settings = {}, provider = "codex") {
-  if (provider === "codex") {
-    return settings.codexDefaultAdmissionPolicy || LEGACY;
-  }
-  const map = settings.providerAdmissionPolicies || {};
-  return map[provider] || LEGACY;
+export function getDefaultAdmissionPolicy(settings = {}) {
+  return settings.codexDefaultAdmissionPolicy || LEGACY;
+}
+
+/** @deprecated use getDefaultAdmissionPolicy — kept for call-site compatibility */
+export function getDefaultAdmissionPolicyForProvider(settings = {}, _provider) {
+  return getDefaultAdmissionPolicy(settings);
 }
 
 function normalizePolicy(value, { allowInherit = false } = {}) {
   if (value == null || value === "") return allowInherit ? null : LEGACY;
   if (value === "inherit") {
     if (allowInherit) return null;
-    throw new Error("Global Codex admission policy cannot be inherit");
+    throw new Error("Global admission policy cannot be inherit");
   }
   if (value === LEGACY || value === MANAGED) return value;
-  throw new Error(`Unsupported Codex admission policy: ${value}`);
+  throw new Error(`Unsupported admission policy: ${value}`);
 }
 
 export function normalizeCodexAdmissionPolicyOverride(value) {
@@ -47,6 +47,16 @@ export function getApiKeyScope(apiKeyId = null) {
   return apiKeyId || NO_KEY_SCOPE;
 }
 
+/**
+ * Resolve admission for any text-dispatch provider.
+ *
+ * Only rule:
+ * - API key coding  → legacy  (codexAdmissionPolicyOverride = "legacy")
+ * - API key production → managed (codexAdmissionPolicyOverride = "managed")
+ * - No key override → global default (codexDefaultAdmissionPolicy)
+ *
+ * Same rule for Codex, Antigravity, and Grok CLI. No per-provider pool policies.
+ */
 export function computeCodexAdmissionDecision({
   runtimeMode = "off",
   defaultPolicy = LEGACY,
@@ -54,7 +64,7 @@ export function computeCodexAdmissionDecision({
   hasManagedAffinity = false,
 } = {}) {
   if (apiKeyRecord && apiKeyRecord.isActive === false) {
-    throw new Error("Inactive API key cannot resolve Codex admission policy");
+    throw new Error("Inactive API key cannot resolve admission policy");
   }
 
   const requestedPolicy = apiKeyRecord
@@ -96,9 +106,10 @@ export function computeCodexAdmissionDecisionFromSettings({
   hasManagedAffinity = false,
   provider = "codex",
 } = {}) {
+  void provider; // same policy for all text-dispatch providers
   return computeCodexAdmissionDecision({
     runtimeMode: deriveDispatcherMode(settings),
-    defaultPolicy: getDefaultAdmissionPolicyForProvider(settings, provider),
+    defaultPolicy: getDefaultAdmissionPolicy(settings),
     apiKeyRecord,
     hasManagedAffinity,
   });

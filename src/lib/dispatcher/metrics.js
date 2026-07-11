@@ -322,12 +322,9 @@ export function getDispatcherStatusSnapshot({
       )
     : [];
 
-  const providerPolicies = settings.providerAdmissionPolicies || {};
   const mode = deriveDispatcherMode(settings);
-  const poolDefaultPolicy =
-    provider === "codex"
-      ? settings.codexDefaultAdmissionPolicy || "legacy"
-      : providerPolicies[provider] || "legacy";
+  const defaultAdmission =
+    settings.codexDefaultAdmissionPolicy || "legacy";
 
   const base = {
     provider,
@@ -338,14 +335,10 @@ export function getDispatcherStatusSnapshot({
       dispatcherEnabled: settings.dispatcherEnabled === true,
       dispatcherShadowMode: settings.dispatcherShadowMode === true,
       dispatcherCodexOnly: settings.dispatcherCodexOnly !== false,
-      codexDefaultAdmissionPolicy:
-        settings.codexDefaultAdmissionPolicy || "legacy",
-      providerAdmissionPolicies: {
-        codex: settings.codexDefaultAdmissionPolicy || "legacy",
-        antigravity: providerPolicies.antigravity || "legacy",
-        "grok-cli": providerPolicies["grok-cli"] || "legacy",
-      },
-      providerAdmissionPolicy: poolDefaultPolicy,
+      codexDefaultAdmissionPolicy: defaultAdmission,
+      // Admission is API-key only: production=managed, coding=legacy
+      admissionRule:
+        "API key production → managed; coding → legacy. Same for Codex, Antigravity, Grok CLI.",
       dispatcherSlotsPerConnection:
         Number(
           settings[`dispatcherSlotsPerConnection_${provider}`] ??
@@ -354,30 +347,12 @@ export function getDispatcherStatusSnapshot({
     },
     coverage: {
       summary:
-        "These metrics cover dispatcher-managed and shadow-tracked traffic for this provider pool only.",
+        "Managed vs legacy is decided only by the caller's API key type (production vs coding). Provider filter below is for capacity/accounts, not a separate admission policy.",
       managedOnly: true,
       mixedModeAware: true,
-      isolatedPools: true,
-      pools: {
-        codex: {
-          defaultPolicy: settings.codexDefaultAdmissionPolicy || "legacy",
-          effectiveUnderRuntime:
-            mode === "managed" &&
-            (settings.codexDefaultAdmissionPolicy || "legacy") === "managed"
-              ? "managed"
-              : mode === "shadow"
-                ? "shadow-or-legacy"
-                : "legacy",
-        },
-        antigravity: {
-          defaultPolicy: providerPolicies.antigravity || "legacy",
-          note: "Global pool policy only (no per-API-key override).",
-        },
-        "grok-cli": {
-          defaultPolicy: providerPolicies["grok-cli"] || "legacy",
-          note: "Global pool policy only (no per-API-key override).",
-        },
-      },
+      admissionByApiKey: true,
+      defaultAdmissionPolicy: defaultAdmission,
+      runtimeMode: mode,
     },
   };
 

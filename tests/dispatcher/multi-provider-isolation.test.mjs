@@ -63,8 +63,6 @@ test("text dispatcher pools isolate codex from grok-cli leases", async () => {
     assert.ok(grokLease, "grok should lease");
     assert.equal(codexLease.connectionId, "codex-1");
     assert.equal(grokLease.connectionId, "gcli-1");
-
-    // Grok queue must not hand out a Codex connection
     assert.notEqual(grokLease.connectionId, "codex-1");
     assert.notEqual(codexLease.connectionId, "gcli-1");
   } finally {
@@ -74,42 +72,51 @@ test("text dispatcher pools isolate codex from grok-cli leases", async () => {
   }
 });
 
-test("antigravity and grok-cli default admission policy is legacy", async () => {
+test("admission is API-key only: production managed, coding legacy (all providers)", async () => {
   const {
     computeCodexAdmissionDecisionFromSettings,
-    getDefaultAdmissionPolicyForProvider,
+    getDefaultAdmissionPolicy,
   } = await import("@/lib/dispatcher/admissionPolicy.js");
 
   assert.equal(
-    getDefaultAdmissionPolicyForProvider({}, "antigravity"),
-    "legacy",
-  );
-  assert.equal(getDefaultAdmissionPolicyForProvider({}, "grok-cli"), "legacy");
-  assert.equal(
-    getDefaultAdmissionPolicyForProvider(
-      { codexDefaultAdmissionPolicy: "managed" },
-      "codex",
-    ),
+    getDefaultAdmissionPolicy({ codexDefaultAdmissionPolicy: "managed" }),
     "managed",
   );
 
-  const decision = computeCodexAdmissionDecisionFromSettings({
-    settings: {
-      dispatcherEnabled: true,
-      providerAdmissionPolicies: {},
-    },
-    provider: "grok-cli",
-  });
-  assert.equal(decision.effectiveBehavior, "legacy");
+  const productionKey = {
+    id: "k-prod",
+    isActive: true,
+    codexAdmissionPolicyOverride: "managed",
+  };
+  const codingKey = {
+    id: "k-coding",
+    isActive: true,
+    codexAdmissionPolicyOverride: "legacy",
+  };
 
-  const managedGrok = computeCodexAdmissionDecisionFromSettings({
-    settings: {
-      dispatcherEnabled: true,
-      providerAdmissionPolicies: { "grok-cli": "managed" },
-    },
-    provider: "grok-cli",
-  });
-  assert.equal(managedGrok.effectiveBehavior, "managed");
+  for (const provider of ["codex", "antigravity", "grok-cli"]) {
+    const managed = computeCodexAdmissionDecisionFromSettings({
+      settings: { dispatcherEnabled: true },
+      apiKeyRecord: productionKey,
+      provider,
+    });
+    assert.equal(
+      managed.effectiveBehavior,
+      "managed",
+      `${provider} production key should be managed`,
+    );
+
+    const legacy = computeCodexAdmissionDecisionFromSettings({
+      settings: { dispatcherEnabled: true },
+      apiKeyRecord: codingKey,
+      provider,
+    });
+    assert.equal(
+      legacy.effectiveBehavior,
+      "legacy",
+      `${provider} coding key should be legacy`,
+    );
+  }
 });
 
 test("TEXT_DISPATCH_PROVIDERS includes codex, antigravity, grok-cli", async () => {
@@ -159,29 +166,27 @@ test("evented lease waiters wake after completeAttempt", async () => {
       modelId: "gpt-5-codex",
     });
 
-    const lease1 = await dispatcher.waitForAssignedLease(first.request.id, 2000);
+    const lease1 = await dispatcher.waitForAssignedLease(
+      first.request.id,
+      2000,
+    );
     assert.ok(lease1);
 
     dispatcher.resetLeaseMetrics?.();
-    // Second request: slot busy → one immediate tryLeaseRequest fails, then evented refill
     const waitPromise = dispatcher.waitForAssignedLease(
       second.request.id,
       2000,
     );
-    // Complete first attempt → central refill assigns second
     await dispatcher.completeAttempt(lease1.attemptId);
     const lease2 = await waitPromise;
     assert.ok(lease2, "second request should lease after first completes");
     assert.equal(lease2.connectionId, "conn-1");
 
     const metrics = dispatcher.getLeaseMetrics?.() || {};
-    // Immediate free-slot check uses tryLeaseRequest once or twice; no poll loop
     assert.ok(
       (metrics.tryLeaseRequestCount ?? 0) <= 3,
       "must not busy-poll tryLeaseRequest",
     );
-    // Lease must succeed via immediate path and/or evented refill
-    assert.ok(lease2, "second lease assigned");
   } finally {
     const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
     closeSqlite();

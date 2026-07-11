@@ -69,7 +69,8 @@ function getEffectiveCodexBehavior({ key, runtimeMode, defaultPolicy }) {
     return {
       label: "Legacy",
       tone: "default",
-      detail: "Runtime is off, so Codex requests bypass dispatcher.",
+      detail:
+        "Dispatcher runtime is off — all providers use direct account selection.",
     };
   }
   if (runtimeMode === "shadow") {
@@ -78,21 +79,23 @@ function getEffectiveCodexBehavior({ key, runtimeMode, defaultPolicy }) {
       tone: "info",
       detail:
         requestedPolicy === "managed"
-          ? "Runtime is shadow: legacy execution with shadow-only tracking."
-          : "Legacy execution without dispatcher admission.",
+          ? "Shadow runtime: legacy execution with ledger tracking for production keys."
+          : "Coding key: legacy execution without dispatcher admission.",
     };
   }
   if (requestedPolicy === "managed") {
     return {
       label: "Managed",
       tone: "success",
-      detail: "Dispatcher owns admission and slot control for Codex.",
+      detail:
+        "Production key: managed dispatcher for Codex, Antigravity, and Grok CLI.",
     };
   }
   return {
     label: "Legacy",
     tone: "default",
-    detail: "Codex uses the direct account-selection path.",
+    detail:
+      "Coding key: direct account selection (no dispatcher) for all providers.",
   };
 }
 
@@ -107,11 +110,6 @@ export default function APIPageClient({ machineId }) {
   const [codexDefaultAdmissionPolicy, setCodexDefaultAdmissionPolicy] =
     useState("legacy");
   const [dispatcherRuntimeMode, setDispatcherRuntimeMode] = useState("off");
-  const [providerAdmissionPolicies, setProviderAdmissionPolicies] = useState({
-    codex: "legacy",
-    antigravity: "legacy",
-    "grok-cli": "legacy",
-  });
   const [requireLogin, setRequireLogin] = useState(true);
   const [hasPassword, setHasPassword] = useState(true);
   const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
@@ -285,22 +283,10 @@ export default function APIPageClient({ machineId }) {
       if (dispatcherRes.ok) {
         const dispatcherData = await dispatcherRes.json();
         setDispatcherRuntimeMode(dispatcherData.mode || "off");
-        if (dispatcherData.providerAdmissionPolicies) {
-          setProviderAdmissionPolicies({
-            codex:
-              dispatcherData.providerAdmissionPolicies.codex ||
-              dispatcherData.codexDefaultAdmissionPolicy ||
-              "legacy",
-            antigravity:
-              dispatcherData.providerAdmissionPolicies.antigravity || "legacy",
-            "grok-cli":
-              dispatcherData.providerAdmissionPolicies["grok-cli"] || "legacy",
-          });
-        } else if (dispatcherData.codexDefaultAdmissionPolicy) {
-          setProviderAdmissionPolicies((prev) => ({
-            ...prev,
-            codex: dispatcherData.codexDefaultAdmissionPolicy,
-          }));
+        if (dispatcherData.codexDefaultAdmissionPolicy) {
+          setCodexDefaultAdmissionPolicy(
+            dispatcherData.codexDefaultAdmissionPolicy,
+          );
         }
       }
     } catch (error) {
@@ -1201,7 +1187,7 @@ export default function APIPageClient({ machineId }) {
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <Badge variant="info">
-                      Codex requested:{" "}
+                      Key type:{" "}
                       {KEY_TYPE_OPTIONS.find(
                         (option) =>
                           option.value ===
@@ -1217,7 +1203,7 @@ export default function APIPageClient({ machineId }) {
                         }).tone
                       }
                     >
-                      Codex effective:{" "}
+                      Admission:{" "}
                       {
                         getEffectiveCodexBehavior({
                           key,
@@ -1235,19 +1221,6 @@ export default function APIPageClient({ machineId }) {
                         defaultPolicy: codexDefaultAdmissionPolicy,
                       }).detail
                     }
-                  </p>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    <Badge variant="default">
-                      AG pool: {providerAdmissionPolicies.antigravity}
-                    </Badge>
-                    <Badge variant="default">
-                      Grok pool: {providerAdmissionPolicies["grok-cli"]}
-                    </Badge>
-                  </div>
-                  <p className="text-xs text-text-muted mt-1">
-                    Antigravity and Grok CLI use global pool policy only (not
-                    per-key). Default is legacy; opt into managed on the text
-                    dispatcher settings when ready.
                   </p>
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>

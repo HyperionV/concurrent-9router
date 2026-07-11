@@ -63,7 +63,7 @@ The current custom provider surface is intentionally narrower than upstream mark
 - API-key providers: OpenAI and Anthropic
 - OpenAI-compatible and Anthropic-compatible provider nodes
 - Codex supports both LLM and image service kinds
-- Text dispatcher managed admission is available for Codex, Antigravity, and Grok CLI (isolated pools). Antigravity and Grok CLI default to **legacy** admission unless `settings.providerAdmissionPolicies[provider]` is set to `managed`.
+- Text dispatcher applies to Codex, Antigravity, and Grok CLI. **Admission is API-key only:** production keys → managed, coding keys → legacy. No per-provider pool policies.
 
 Model and provider metadata live primarily in:
 

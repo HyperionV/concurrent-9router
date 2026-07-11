@@ -12,20 +12,15 @@ import {
 import { invalidateDispatcherConnectionCache } from "@/lib/dispatcher/connectionCache.js";
 
 function toSafeDispatcherSettings(settings) {
-  const policies = settings.providerAdmissionPolicies || {};
   return {
     mode: deriveDispatcherMode(settings),
     dispatcherEnabled: settings.dispatcherEnabled === true,
     dispatcherShadowMode: settings.dispatcherShadowMode === true,
     dispatcherCodexOnly: settings.dispatcherCodexOnly !== false,
+    // Global default when API key has no coding/production override
     codexDefaultAdmissionPolicy:
       settings.codexDefaultAdmissionPolicy || "managed",
-    // AG / Grok: global pool policy only (no per-API-key override)
-    providerAdmissionPolicies: {
-      codex: settings.codexDefaultAdmissionPolicy || "legacy",
-      antigravity: policies.antigravity || "legacy",
-      "grok-cli": policies["grok-cli"] || "legacy",
-    },
+    // Providers that share the same key-based admission rule
     textDispatchProviders: TEXT_DISPATCH_PROVIDERS,
     dispatcherSlotsPerConnection:
       Number(settings.dispatcherSlotsPerConnection) || 1,
@@ -72,19 +67,9 @@ export async function PATCH(request) {
         body.textDispatcherCollectionId || null;
     }
 
-    if (body.providerAdmissionPolicies !== undefined) {
-      const incoming = body.providerAdmissionPolicies || {};
-      const next = {};
-      for (const provider of ["antigravity", "grok-cli"]) {
-        const value = incoming[provider];
-        if (value === "managed" || value === "legacy") {
-          next[provider] = value;
-        }
-      }
-      updates.providerAdmissionPolicies = {
-        ...((await getSettings()).providerAdmissionPolicies || {}),
-        ...next,
-      };
+    if (body.codexDefaultAdmissionPolicy !== undefined) {
+      updates.codexDefaultAdmissionPolicy =
+        body.codexDefaultAdmissionPolicy === "legacy" ? "legacy" : "managed";
     }
 
     if (Object.keys(updates).length === 0) {
@@ -101,7 +86,7 @@ export async function PATCH(request) {
       dispatcherCodexOnly: true,
       codexDefaultAdmissionPolicy:
         updates.codexDefaultAdmissionPolicy ||
-        body.codexDefaultAdmissionPolicy ||
+        (await getSettings()).codexDefaultAdmissionPolicy ||
         "managed",
     });
     invalidateDispatcherConnectionCache();

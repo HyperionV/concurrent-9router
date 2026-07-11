@@ -590,8 +590,7 @@ export default function DispatcherPage() {
     );
   }
 
-  const poolPolicies = snapshot.settings?.providerAdmissionPolicies || {};
-  const poolOptions = [
+  const providerFilterOptions = [
     { id: "codex", label: "Codex" },
     { id: "antigravity", label: "Antigravity" },
     { id: "grok-cli", label: "Grok CLI" },
@@ -601,27 +600,20 @@ export default function DispatcherPage() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          {poolOptions.map((pool) => {
-            const policy =
-              pool.id === "codex"
-                ? poolPolicies.codex ||
-                  snapshot.settings?.codexDefaultAdmissionPolicy ||
-                  "legacy"
-                : poolPolicies[pool.id] || "legacy";
-            const selected = statusProvider === pool.id;
+          {providerFilterOptions.map((option) => {
+            const selected = statusProvider === option.id;
             return (
               <button
-                key={pool.id}
+                key={option.id}
                 type="button"
-                onClick={() => setStatusProvider(pool.id)}
+                onClick={() => setStatusProvider(option.id)}
                 className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
                   selected
                     ? "border-primary bg-primary/10 text-primary"
                     : "border-black/10 text-text-muted hover:border-black/20 dark:border-white/10"
                 }`}
               >
-                {pool.label}
-                <span className="ml-2 text-xs opacity-70">{policy}</span>
+                {option.label}
               </button>
             );
           })}
@@ -637,16 +629,16 @@ export default function DispatcherPage() {
         </Button>
       </div>
       <Card
-        title="Text dispatcher pools"
-        subtitle="Isolated queues per provider. Live metrics poll every 3s; history every 20s. Image dispatcher remains Codex-only."
+        title="Text dispatcher"
+        subtitle="Admission is decided only by API key type. Live metrics every 3s; history every 20s. Image dispatcher stays Codex-only."
         icon="hub"
       >
         <p className="text-sm text-text-muted">
-          Viewing pool <code className="text-xs">{statusProvider}</code>. Antigravity
-          and Grok CLI default to legacy admission; set{" "}
-          <code className="text-xs">providerAdmissionPolicies</code> to{" "}
-          <code className="text-xs">managed</code> to opt a pool into dispatcher
-          control. API keys only override Codex admission.
+          <strong>Production</strong> keys → managed (dispatcher).{" "}
+          <strong>Coding</strong> keys → legacy (direct accounts). Same rule for
+          Codex, Antigravity, and Grok CLI. The filter above only changes which
+          provider&apos;s accounts/queue you are inspecting — not admission
+          policy.
         </p>
       </Card>
       <DispatcherOverview snapshot={snapshot} />
