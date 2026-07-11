@@ -78,3 +78,28 @@ test("getUsageForProvider routes grok-cli (not default unimplemented)", async ()
     "must not fall through to default 'not implemented'",
   );
 });
+
+test("merge: format=credits onDemand alone must not hide weekly pool from plain billing", () => {
+  // Simulates merging plain /v1/billing + ?format=credits responses
+  const plain = {
+    config: {
+      currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY" },
+      used: { val: 2900 },
+      monthlyLimit: { val: 10000 },
+      billingPeriodEnd: "2026-07-14T15:12:00+00:00",
+    },
+  };
+  const creditsOnly = {
+    config: {
+      onDemandCap: { val: 0 },
+      onDemandUsed: { val: 0 },
+      prepaidBalance: { val: 0 },
+    },
+  };
+  const merged = {
+    config: { ...plain.config, ...creditsOnly.config },
+  };
+  const parsed = parseGrokCliBilling(merged, { hasGrokCodeAccess: true });
+  assert.equal(Math.round(parsed.quotas.Weekly.remainingPercentage), 71);
+  assert.equal(parsed.quotas["On-demand"], undefined);
+});

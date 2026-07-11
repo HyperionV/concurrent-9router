@@ -825,8 +825,15 @@ export function parseGrokCliBilling(billing, user = null) {
   const periodLabel = grokPeriodLabel(config, root);
 
   // Primary: subscription weekly/monthly included pool (used vs monthlyLimit)
+  // Documented by UsageBar / community: GET /v1/billing → config.used, config.monthlyLimit
+  // (often { val: n } in cents). Do not rely on ?format=credits alone.
   const poolUsed = unwrapGrokBillingVal(
-    config.used ?? root.used ?? config.usageUsed ?? root.usageUsed,
+    config.used ??
+      root.used ??
+      config.usageUsed ??
+      root.usageUsed ??
+      config.creditsUsed ??
+      root.creditsUsed,
     NaN,
   );
   const poolLimit = unwrapGrokBillingVal(
@@ -834,6 +841,8 @@ export function parseGrokCliBilling(billing, user = null) {
       root.monthlyLimit ??
       config.weeklyLimit ??
       root.weeklyLimit ??
+      config.creditLimit ??
+      root.creditLimit ??
       config.limit ??
       root.limit,
     NaN,
@@ -945,6 +954,26 @@ export function parseGrokCliBilling(billing, user = null) {
   return { plan, quotas, periodEnd };
 }
 
+/**
+ * Merge Grok billing payloads. Plain /v1/billing carries used+monthlyLimit
+ * (Settings weekly %); ?format=credits is often only on-demand/prepaid.
+ */
+function mergeGrokBillingPayloads(...payloads) {
+  const merged = { config: {} };
+  for (const p of payloads) {
+    if (!p || typeof p !== "object") continue;
+    for (const [k, v] of Object.entries(p)) {
+      if (k === "config" && v && typeof v === "object" && !Array.isArray(v)) {
+        Object.assign(merged.config, v);
+      } else if (merged[k] === undefined) {
+        merged[k] = v;
+      }
+    }
+  }
+  if (Object.keys(merged.config).length === 0) delete merged.config;
+  return merged;
+}
+
 async function getGrokCliUsage(accessToken, providerSpecificData = {}) {
   if (!accessToken) {
     return { message: "Grok CLI access token not available." };
@@ -953,12 +982,22 @@ async function getGrokCliUsage(accessToken, providerSpecificData = {}) {
   const headers = buildGrokCliUsageHeaders(accessToken, providerSpecificData);
 
   try {
-    const [billingRes, userRes] = await Promise.all([
-      fetch("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
+    // Critical: plain /v1/billing has config.used + config.monthlyLimit (weekly %).
+    // format=credits often omits those and only returns onDemandCap=0 → false 0% bar.
+    const [billingRes, creditsRes, userRes, settingsRes] = await Promise.all([
+      fetch("https://cli-chat-proxy.grok.com/v1/billing", {
         method: "GET",
         headers,
       }),
+      fetch("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
+        method: "GET",
+        headers,
+      }).catch(() => null),
       fetch("https://cli-chat-proxy.grok.com/v1/user?include=subscription", {
+        method: "GET",
+        headers,
+      }).catch(() => null),
+      fetch("https://cli-chat-proxy.grok.com/v1/settings", {
         method: "GET",
         headers,
       }).catch(() => null),
@@ -969,16 +1008,29 @@ async function getGrokCliUsage(accessToken, providerSpecificData = {}) {
         message: "Grok CLI authentication expired. Please re-authorize.",
       };
     }
-    if (!billingRes.ok) {
-      const errText = await billingRes.text().catch(() => "");
+    // Fall back to credits-only if plain billing fails
+    const primaryRes =
+      billingRes.ok || !creditsRes?.ok ? billingRes : creditsRes;
+    if (!primaryRes.ok) {
+      const errText = await primaryRes.text().catch(() => "");
       const trimmed = errText ? `: ${errText.slice(0, 200)}` : "";
       return {
-        message: `Grok CLI billing API error (${billingRes.status})${trimmed}`,
+        message: `Grok CLI billing API error (${primaryRes.status})${trimmed}`,
       };
     }
 
-    const billing = await billingRes.json().catch(() => null);
-    if (!billing || typeof billing !== "object") {
+    const billingPlain = billingRes.ok
+      ? await billingRes.json().catch(() => null)
+      : null;
+    const billingCredits =
+      creditsRes?.ok && creditsRes !== billingRes
+        ? await creditsRes.json().catch(() => null)
+        : billingRes.ok
+          ? null
+          : await primaryRes.json().catch(() => null);
+
+    const billing = mergeGrokBillingPayloads(billingPlain, billingCredits);
+    if (!billing || typeof billing !== "object" || Object.keys(billing).length === 0) {
       return { message: "Grok CLI billing response was not JSON." };
     }
 
@@ -986,11 +1038,29 @@ async function getGrokCliUsage(accessToken, providerSpecificData = {}) {
     if (userRes?.ok) {
       user = await userRes.json().catch(() => null);
     }
+    if (settingsRes?.ok) {
+      const settings = await settingsRes.json().catch(() => null);
+      if (settings && typeof settings === "object") {
+        // Plan label from settings when user profile lacks tiers
+        if (!user) user = {};
+        if (!user.subscriptionTier && settings.subscription_tier_display) {
+          user.subscriptionTier = settings.subscription_tier_display;
+        }
+        if (!user.subscriptionTier && settings.subscriptionTier) {
+          user.subscriptionTier = settings.subscriptionTier;
+        }
+      }
+    }
 
     const parsed = parseGrokCliBilling(billing, user);
 
     // Dashboard hides QuotaTable when `message` is set — only set when no rows.
     if (!parsed.quotas || Object.keys(parsed.quotas).length === 0) {
+      const cfg = billing.config || billing;
+      const keys = Object.keys(cfg || {}).slice(0, 24).join(",");
+      console.warn(
+        `[Grok usage] no quota rows parsed; billing config keys: ${keys || "(none)"}`,
+      );
       return {
         plan: parsed.plan,
         message:
