@@ -13,10 +13,8 @@ import {
   invalidateDispatcherConnectionCache,
 } from "@/lib/dispatcher/connectionCache.js";
 import {
-  getLatestDispatchAttemptForRequest,
   insertDispatchAttemptEvent,
   listActiveDispatchAttempts,
-  listQueuedDispatchRequests,
   transitionDispatchAttempt,
   updateDispatchRequestStatus,
 } from "@/lib/sqlite/dispatcherStore.js";
@@ -99,32 +97,54 @@ async function loadProviderConnections(provider, { force = false } = {}) {
 }
 
 /**
- * After process restart, SQLite still holds leased/connecting/streaming rows
- * from the previous process. Occupancy is rebuilt from those zombies, which
- * blocks real traffic until the watchdog times them out (looks like "idle
- * timeouts" right after start). Must run synchronously on pool create.
+ * Only clear *stale* active attempts when a dispatcher pool is first created
+ * in this process.
+ *
+ * CRITICAL: Next may load routes in separate module instances / workers that
+ * each call getProviderDispatcher. Naively reconciling ALL open attempts on
+ * every pool create kills live work owned by another instance (user log:
+ * 5 admissions → open dashboard → "reconciled 5 orphaned" → tasks never run).
+ *
+ * - Do not touch young attempts (other worker may own them).
+ * - Do not cancel queued waiters (they are not process-local).
+ * - Watchdog still times out true zombies via connect/ttft/idle/deadline.
  */
-function reconcileOrphanedRuntime(provider) {
-  const openAttempts = [
-    ...listActiveDispatchAttempts(provider),
-    ...listQueuedDispatchRequests(provider, 500)
-      .map((request) => getLatestDispatchAttemptForRequest(request.id))
-      .filter(
-        (attempt) =>
-          attempt && attempt.state === DISPATCH_ATTEMPT_STATE.QUEUED,
-      ),
-  ];
+const RECONCILE_STALE_AFTER_MS = 2 * 60 * 1000;
 
-  // Dedupe by attempt id
-  const seen = new Set();
+function attemptActivityAgeMs(attempt, now = Date.now()) {
+  const stamps = [
+    attempt?.lastProgressAt,
+    attempt?.firstProgressAt,
+    attempt?.streamStartedAt,
+    attempt?.connectStartedAt,
+    attempt?.leasedAt,
+    attempt?.queueEnteredAt,
+  ];
+  for (const stamp of stamps) {
+    if (!stamp) continue;
+    const ms = new Date(stamp).getTime();
+    if (Number.isFinite(ms)) return Math.max(0, now - ms);
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+function reconcileOrphanedRuntime(provider) {
+  const now = Date.now();
+  const active = listActiveDispatchAttempts(provider);
   let reconciled = 0;
-  for (const attempt of openAttempts) {
-    if (!attempt?.id || seen.has(attempt.id)) continue;
-    seen.add(attempt.id);
+  let skippedFresh = 0;
+
+  for (const attempt of active) {
+    if (!attempt?.id) continue;
+    const ageMs = attemptActivityAgeMs(attempt, now);
+    if (ageMs < RECONCILE_STALE_AFTER_MS) {
+      skippedFresh += 1;
+      continue;
+    }
+
     const updated = transitionDispatchAttempt(
       attempt.id,
       [
-        DISPATCH_ATTEMPT_STATE.QUEUED,
         DISPATCH_ATTEMPT_STATE.LEASED,
         DISPATCH_ATTEMPT_STATE.CONNECTING,
         DISPATCH_ATTEMPT_STATE.STREAMING,
@@ -134,9 +154,9 @@ function reconcileOrphanedRuntime(provider) {
         finishedAt: nowIso(),
         terminalReason: DEFAULT_TERMINAL_REASON.RECONCILED,
         error: {
-          code: "process_restart",
-          message:
-            "Open after process restart; reconciled so capacity is free",
+          code: "stale_after_process_start",
+          message: `Active attempt older than ${RECONCILE_STALE_AFTER_MS}ms with no owning process; freed capacity`,
+          ageMs,
         },
       },
     );
@@ -146,7 +166,7 @@ function reconcileOrphanedRuntime(provider) {
       id: randomUUID(),
       attemptId: attempt.id,
       eventType: DISPATCH_EVENT_TYPE.RECONCILED,
-      payload: { reason: "process_restart" },
+      payload: { reason: "stale_after_process_start", ageMs },
     });
     if (attempt.requestId) {
       updateDispatchRequestStatus(
@@ -157,9 +177,9 @@ function reconcileOrphanedRuntime(provider) {
     }
   }
 
-  if (reconciled > 0) {
+  if (reconciled > 0 || skippedFresh > 0) {
     console.log(
-      `[DISPATCHER] ${provider}: reconciled ${reconciled} orphaned attempt(s) after process start`,
+      `[DISPATCHER] ${provider}: startup reconcile stale=${reconciled} skipped_fresh=${skippedFresh} (fresh < ${RECONCILE_STALE_AFTER_MS}ms kept alive)`,
     );
   }
   return reconciled;
