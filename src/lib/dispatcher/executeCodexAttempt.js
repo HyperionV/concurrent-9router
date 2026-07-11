@@ -31,22 +31,24 @@ function resolveTargetFormat(provider) {
 }
 
 /**
- * OPT-001: wait for central refill to assign this request.
- * Prefer waitForAssignedLease (no per-waiter tryLeaseRequest loop).
+ * origin/main lease wait: poll tryLeaseRequest. The evented waiter/refill path
+ * regressed concurrent Codex (all 5 connect_timeout, never FORMAT). Polling is
+ * what the deployed origin/main uses and what passes the responses_probe.
  */
-async function waitForLease(dispatcher, requestId, timeoutMs) {
-  if (typeof dispatcher.waitForAssignedLease === "function") {
-    return dispatcher.waitForAssignedLease(requestId, timeoutMs);
-  }
+const LEASE_POLL_INTERVAL_MS = 100;
 
-  // Fallback for older cores / tests that only expose tryLeaseRequest
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForLease(dispatcher, requestId, timeoutMs) {
   const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
   while (Date.now() <= deadline) {
     const lease = await dispatcher.tryLeaseRequest(requestId);
     if (lease) return lease;
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
-    await dispatcher.waitForLeaseSignal?.(requestId, remaining);
+    await sleep(Math.min(LEASE_POLL_INTERVAL_MS, remaining));
   }
   return null;
 }
@@ -197,13 +199,11 @@ async function executeManagedProviderRequest({
     ).response;
   }
 
-  // Connecting is marked at lease handoff inside the dispatcher core. Keep a
-  // best-effort mark here for older cores / tests that return bare leases.
-  if (typeof dispatcher.markAttemptConnecting === "function") {
-    await dispatcher.markAttemptConnecting(lease.attemptId, {
-      pathMode: lease.pathMode || null,
-    });
-  }
+  // Mark connecting immediately (same as origin/main intent) so the 30s
+  // connect_timeout cannot fire while we load credentials / refresh tokens.
+  await dispatcher.markAttemptConnecting(lease.attemptId, {
+    pathMode: lease.pathMode || null,
+  });
 
   const rawConnection = await getProviderConnectionById(lease.connectionId);
   if (!rawConnection || rawConnection.isActive !== true) {

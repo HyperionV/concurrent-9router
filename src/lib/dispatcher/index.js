@@ -260,8 +260,9 @@ export function getProviderDispatcher(provider) {
     },
   };
 
-  // Close zombies BEFORE any lease plan reads occupancy from SQLite.
-  reconcileOrphanedRuntime(provider);
+  // Do NOT reconcile open attempts here. Multi-instance Next route loads were
+  // cancelling live work as "orphans" (5 admissions → reconcile 5 → nothing runs).
+  // Stale zombies are left to the watchdog timeouts.
   dispatcherByProvider.set(provider, entry);
   ensureSharedWatchdogInterval();
   return entry;
