@@ -26,14 +26,9 @@ import { createErrorResult } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { PROVIDERS } from "open-sse/config/providers.js";
 
-function resolveTargetFormat(provider) {
-  return PROVIDERS[provider]?.format || "openai";
-}
-
 /**
- * origin/main lease wait: poll tryLeaseRequest. The evented waiter/refill path
- * regressed concurrent Codex (all 5 connect_timeout, never FORMAT). Polling is
- * what the deployed origin/main uses and what passes the responses_probe.
+ * origin/main lease wait — poll tryLeaseRequest every 100ms.
+ * Do not use evented waiters here; that path regressed concurrent Codex.
  */
 const LEASE_POLL_INTERVAL_MS = 100;
 
@@ -53,9 +48,12 @@ async function waitForLease(dispatcher, requestId, timeoutMs) {
   return null;
 }
 
+function resolveTargetFormat(provider) {
+  return PROVIDERS[provider]?.format || "openai";
+}
+
 /**
  * Managed admission for Codex, Antigravity, and Grok CLI (isolated pools).
- * Returns null when this request should use the legacy account-selection path.
  */
 export async function maybeHandleManagedCodexRequest({
   body,
@@ -139,6 +137,7 @@ async function executeManagedProviderRequest({
   );
   const { dispatcher } = getProviderDispatcher(provider);
   const targetFormat = resolveTargetFormat(provider);
+
   const queued = requestId
     ? await dispatcher.requeueRequest(requestId, {
         metadataPatch: {
@@ -170,7 +169,6 @@ async function executeManagedProviderRequest({
     ).response;
   }
 
-  // waiting_limit is measured from queue arrival inside waitForAssignedLease
   const lease = await waitForLease(
     dispatcher,
     queued.request.id,
@@ -191,16 +189,16 @@ async function executeManagedProviderRequest({
     });
     log.warn(
       "DISPATCHER",
-      `${provider}/${model}: no lease within waiting_limit (5m from queue arrival), empty pool, or collection filter. Managed path does not fall back to legacy.`,
+      `${provider}/${model}: no lease within waiting_limit. Check active accounts, slots, collection membership.`,
     );
     return createErrorResult(
       HTTP_STATUS.SERVICE_UNAVAILABLE,
-      `${provider} dispatcher could not assign a connection for ${model} within the 5-minute queue waiting limit. Check: active accounts, slots free enough for your concurrency, and dispatcher collection membership.`,
+      `${provider} dispatcher could not assign a connection for ${model} within the queue waiting limit.`,
     ).response;
   }
 
-  // Mark connecting immediately (same as origin/main intent) so the 30s
-  // connect_timeout cannot fire while we load credentials / refresh tokens.
+  // origin/main marks connect in chatCore hooks; we mark immediately so the
+  // 30s connect_timeout cannot fire during token refresh / credential build.
   await dispatcher.markAttemptConnecting(lease.attemptId, {
     pathMode: lease.pathMode || null,
   });
@@ -241,8 +239,6 @@ async function executeManagedProviderRequest({
     onFirstProgress: async () => {
       await dispatcher.markAttemptProgress(lease.attemptId);
     },
-    // Ongoing stream heartbeats — refresh lastProgressAt so idle_timeout
-    // does not kill live multi-minute Codex / AG / Grok streams.
     onProgress: async () => {
       await dispatcher.markAttemptProgress(lease.attemptId);
     },
@@ -320,10 +316,6 @@ async function executeManagedProviderRequest({
   });
 
   if (result.success) {
-    // Non-stream JSON: finalize here (forced SSE→JSON paths never call onCompleted).
-    // Streaming: do NOT finalize yet — slot stays held until stream onCompleted
-    // after the body is fully consumed. Completing early would free the slot
-    // while Grok is still streaming and break queueing.
     const contentType =
       result.response?.headers?.get?.("Content-Type") || "";
     if (contentType.includes("application/json")) {
@@ -387,7 +379,7 @@ async function executeManagedProviderRequest({
     result.response ||
     createErrorResult(
       result.status || HTTP_STATUS.BAD_GATEWAY,
-      result.error || `${provider} managed request failed`,
+      result.error || `${provider} upstream error`,
     ).response
   );
 }

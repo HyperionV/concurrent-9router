@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import {
-  getDispatchAttempt,
   getDispatchConversationAffinity,
   getDispatchRequest,
   getLatestDispatchAttemptForRequest,
@@ -16,16 +15,12 @@ import {
 import { nowIso } from "@/lib/sqlite/helpers.js";
 import { createPathHealthTracker } from "@/lib/dispatcher/pathHealth.js";
 import { dispatcherQuotaHealth } from "@/lib/dispatcher/quotaHealth.js";
-import {
-  createTimeoutPolicy,
-  remainingQueueWaitMs,
-} from "@/lib/dispatcher/timeoutPolicy.js";
+import { createTimeoutPolicy } from "@/lib/dispatcher/timeoutPolicy.js";
 import {
   DEFAULT_TERMINAL_REASON,
   DISPATCH_ATTEMPT_STATE,
   DISPATCH_EVENT_TYPE,
   DISPATCH_REQUEST_STATUS,
-  DISPATCH_TIMEOUT_KIND,
 } from "@/lib/dispatcher/types.js";
 import { isModelLockActive } from "open-sse/services/accountFallback.js";
 
@@ -61,261 +56,6 @@ export function createDispatcherCore({
   const policy = createTimeoutPolicy(timeoutPolicy);
   const occupancyByConnection = {};
   const leaseCountByConnection = {};
-  const leaseWaiters = new Map(); // requestId -> { resolve, timer }
-  const pendingLeases = new Map(); // requestId -> lease
-  let refillScheduled = false;
-  let refillInFlight = false;
-  let tryLeaseRequestCount = 0;
-  let tryLeaseAvailableWorkCount = 0;
-  // Serialize lease grants: concurrent tryLeaseRequest was racing occupancy
-  // (5 admits, only 2 FORMAT, 3 pure-LEASED ghosts until connect_timeout).
-  let leaseGate = Promise.resolve();
-
-  function withLeaseGate(fn) {
-    const run = leaseGate.then(
-      () => fn(),
-      () => fn(),
-    );
-    leaseGate = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
-  }
-
-  function resolveWaiter(requestId, lease) {
-    const waiter = leaseWaiters.get(requestId);
-    if (!waiter) return false;
-    leaseWaiters.delete(requestId);
-    if (waiter.timer) clearTimeout(waiter.timer);
-    waiter.resolve(lease);
-    return true;
-  }
-
-  function claimPendingLease(requestId) {
-    const lease = pendingLeases.get(requestId);
-    if (!lease) return null;
-    pendingLeases.delete(requestId);
-    return lease;
-  }
-
-  /** Deliver lease to waiter, or park for the poll path to claim. */
-  function deliverLease(requestId, lease) {
-    if (!lease) return;
-    if (resolveWaiter(requestId, lease)) return;
-    pendingLeases.set(requestId, lease);
-  }
-
-  function releaseAbandonedLease(requestId) {
-    const parked = pendingLeases.get(requestId);
-    if (parked) pendingLeases.delete(requestId);
-    const attempt =
-      (parked?.attemptId && getDispatchAttempt(parked.attemptId)) ||
-      getLatestDispatchAttemptForRequest(requestId);
-    if (
-      !attempt ||
-      (attempt.state !== DISPATCH_ATTEMPT_STATE.LEASED &&
-        attempt.state !== DISPATCH_ATTEMPT_STATE.CONNECTING)
-    ) {
-      return;
-    }
-    const failed = transitionDispatchAttempt(
-      attempt.id,
-      [
-        DISPATCH_ATTEMPT_STATE.LEASED,
-        DISPATCH_ATTEMPT_STATE.CONNECTING,
-      ],
-      DISPATCH_ATTEMPT_STATE.TIMED_OUT,
-      {
-        finishedAt: nowIso(),
-        terminalReason: DEFAULT_TERMINAL_REASON.TIMEOUT,
-        timeoutKind: DISPATCH_TIMEOUT_KIND.QUEUE_EXPIRED,
-        error: { code: "lease_abandoned" },
-      },
-    );
-    if (!failed) return;
-    releaseConnectionOccupancy(attempt.connectionId);
-    finalizeRequestForAttempt(failed, DISPATCH_ATTEMPT_STATE.TIMED_OUT);
-    insertDispatchAttemptEvent({
-      id: randomUUID(),
-      attemptId: attempt.id,
-      eventType: DISPATCH_EVENT_TYPE.TIMED_OUT,
-      payload: { timeoutKind: DISPATCH_TIMEOUT_KIND.QUEUE_EXPIRED },
-    });
-  }
-
-  function notifyLeaseWaiters(requestId = null) {
-    // Wake signal for any waiter that is still using waitForLeaseSignal fallback
-    if (requestId) {
-      const waiter = leaseWaiters.get(requestId);
-      if (waiter && waiter.mode === "signal") {
-        resolveWaiter(requestId, null);
-      }
-      return;
-    }
-    for (const [id, waiter] of [...leaseWaiters.entries()]) {
-      if (waiter.mode === "signal") resolveWaiter(id, null);
-    }
-  }
-
-  function scheduleRefill() {
-    // Only schedule when someone is waiting for assignment. Eager refill on
-    // enqueue would pre-lease work and break tryLeaseRequest call sites.
-    if (leaseWaiters.size === 0) return;
-    if (refillScheduled) return;
-    refillScheduled = true;
-    queueMicrotask(() => {
-      refillScheduled = false;
-      runRefill().catch((error) => {
-        console.error("[DISPATCHER] refill failed:", error);
-      });
-    });
-  }
-
-  async function runRefill() {
-    if (refillInFlight) {
-      // Coalesce one more pass after the in-flight refill finishes
-      queueMicrotask(() => scheduleRefill());
-      return;
-    }
-    if (leaseWaiters.size === 0) return;
-    refillInFlight = true;
-    try {
-      const leases = await tryLeaseAvailableWork();
-      for (const lease of leases) {
-        deliverLease(lease.requestId, lease);
-      }
-      // Continuous gate: only re-enter when we actually filled a gate and more
-      // waiters remain. Re-scheduling when slots are full busy-loops microtasks
-      // and starves waiting_limit timers (queued work never times out / progresses).
-      if (leases.length > 0 && leaseWaiters.size > 0) {
-        scheduleRefill();
-      }
-    } finally {
-      refillInFlight = false;
-    }
-  }
-
-  /**
-   * Continuous gate model:
-   * - Slots = gates. Vacant gate → next queued request immediately.
-   * - On finish → notify vacancy → refill assigns next waiter (not batch-oriented).
-   * - waiting_limit (queueTtlMs / 5 min) counted from queue arrival, not from wait() call.
-   */
-  async function waitForAssignedLease(requestId, timeoutMs) {
-    // waiting_limit from queue arrival (attempt.queueEnteredAt / request.queuedAt)
-    const attempt = getLatestDispatchAttemptForRequest(requestId);
-    const request = getDispatchRequest(requestId);
-    const queueEnteredAt =
-      attempt?.queueEnteredAt || request?.queuedAt || null;
-    const remainingMs = remainingQueueWaitMs(
-      queueEnteredAt,
-      {
-        waitingLimitMs:
-          Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
-            ? Number(timeoutMs)
-            : policy.waitingLimitMs,
-      },
-      Date.now(),
-    );
-
-    if (remainingMs <= 0) {
-      console.warn(
-        `[DISPATCHER] ${provider}: request ${requestId} exceeded waiting_limit (${policy.waitingLimitMs}ms) while queued`,
-      );
-      return null;
-    }
-
-    // Fail fast when the pool has zero eligible connections
-    try {
-      const connections = await getConnections();
-      if (!Array.isArray(connections) || connections.length === 0) {
-        console.warn(
-          `[DISPATCHER] ${provider}: no active connections available for lease (check collection filter / isActive)`,
-        );
-        return null;
-      }
-    } catch (error) {
-      console.error(`[DISPATCHER] ${provider}: getConnections failed:`, error);
-      return null;
-    }
-
-    const parked = claimPendingLease(requestId);
-    if (parked) return parked;
-
-    // Free-slot fast path — one attempt, not a poll loop
-    try {
-      const immediate = await tryLeaseRequest(requestId);
-      if (immediate) return immediate;
-    } catch (error) {
-      console.error(`[DISPATCHER] ${provider}: immediate lease failed:`, error);
-    }
-
-    // Refill may have parked a lease between tryLease and waiter registration
-    const parkedAfterTry = claimPendingLease(requestId);
-    if (parkedAfterTry) return parkedAfterTry;
-
-    return new Promise((resolve) => {
-      if (leaseWaiters.has(requestId)) {
-        const prev = leaseWaiters.get(requestId);
-        if (prev?.timer) clearTimeout(prev.timer);
-      }
-      const timer = setTimeout(() => {
-        leaseWaiters.delete(requestId);
-        // Free any LEASED attempt that was parked or assigned without a consumer
-        releaseAbandonedLease(requestId);
-        console.warn(
-          `[DISPATCHER] ${provider}: request ${requestId} waiting_limit elapsed (queue wait)`,
-        );
-        resolve(null);
-      }, remainingMs);
-      // Do NOT unref — waiting_limit must keep the event loop alive until timeout
-      // or lease delivery. unref caused queued waits to never fire under load.
-      leaseWaiters.set(requestId, { resolve, timer, mode: "lease" });
-
-      // Race: lease parked after we decided to wait but before map insert
-      const raced = claimPendingLease(requestId);
-      if (raced) {
-        resolveWaiter(requestId, raced);
-        return;
-      }
-      // Continuous gate: try to fill this waiter from any vacant slot now
-      scheduleRefill();
-    });
-  }
-
-  /** Legacy signal-only wait (tests / fallback) */
-  function waitForLeaseSignal(requestId, timeoutMs) {
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        leaseWaiters.delete(requestId);
-        resolve();
-      }, Math.max(50, Math.min(Number(timeoutMs) || 500, 1000)));
-      timer.unref?.();
-      leaseWaiters.set(requestId, {
-        resolve: () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        timer,
-        mode: "signal",
-      });
-      scheduleRefill();
-    });
-  }
-
-  function getLeaseMetrics() {
-    return {
-      tryLeaseRequestCount,
-      tryLeaseAvailableWorkCount,
-      waiterCount: leaseWaiters.size,
-    };
-  }
-
-  function resetLeaseMetrics() {
-    tryLeaseRequestCount = 0;
-    tryLeaseAvailableWorkCount = 0;
-  }
 
   function resolveSlotsPerConnection() {
     if (typeof getSlotsPerConnection === "function") {
@@ -397,7 +137,6 @@ export function createDispatcherCore({
       },
     });
 
-    // Waiters register via waitForAssignedLease after enqueue; they schedule refill.
     return { request, attempt };
   }
 
@@ -437,31 +176,23 @@ export function createDispatcherCore({
       },
     });
 
-    // If a waiter is already registered for this request, refill now
-    scheduleRefill();
     return { request, attempt };
   }
 
-  /**
-   * OPT-002: eligibility uses precomputed affinity + request maps when provided.
-   * Falls back to store lookups only when maps are omitted (tryLeaseRequest hot path).
-   */
   function requestIsEligibleForConnection(
     request,
     connectionId,
     activeAttempts,
-    affinityByKey = null,
-    requestById = null,
   ) {
     const conversationKey = request?.conversationKey;
     if (!conversationKey) return true;
     const apiKeyScope =
       request?.metadata?.admission?.apiKeyScope || "__no_key__";
-    const affinityKey = `${conversationKey}::${apiKeyScope}`;
 
-    const affinity = affinityByKey
-      ? affinityByKey.get(affinityKey)
-      : getDispatchConversationAffinity(conversationKey, apiKeyScope);
+    const affinity = getDispatchConversationAffinity(
+      conversationKey,
+      apiKeyScope,
+    );
     if (
       affinity &&
       affinity.connectionId &&
@@ -470,45 +201,16 @@ export function createDispatcherCore({
       return false;
     }
 
-    return !activeAttempts.some((attempt) => {
-      if (attempt.requestId === request.id) return true;
-      if (!request.conversationKey || attempt.connectionId === connectionId) {
-        return false;
-      }
-      const other =
-        requestById?.get(attempt.requestId) ||
-        getDispatchRequest(attempt.requestId);
-      if (!other) return false;
-      if (other.conversationKey !== request.conversationKey) return false;
-      const otherScope =
-        other?.metadata?.admission?.apiKeyScope || "__no_key__";
-      return otherScope === apiKeyScope;
-    });
-  }
-
-  function buildPlanningContext(queuedRequests, activeAttempts) {
-    const requestById = new Map();
-    const affinityByKey = new Map();
-    for (const req of queuedRequests) {
-      requestById.set(req.id, req);
-      const conversationKey = req?.conversationKey;
-      if (!conversationKey) continue;
-      const apiKeyScope =
-        req?.metadata?.admission?.apiKeyScope || "__no_key__";
-      const affinityKey = `${conversationKey}::${apiKeyScope}`;
-      if (!affinityByKey.has(affinityKey)) {
-        affinityByKey.set(
-          affinityKey,
-          getDispatchConversationAffinity(conversationKey, apiKeyScope),
-        );
-      }
-    }
-    for (const attempt of activeAttempts) {
-      if (requestById.has(attempt.requestId)) continue;
-      const req = getDispatchRequest(attempt.requestId);
-      if (req) requestById.set(attempt.requestId, req);
-    }
-    return { requestById, affinityByKey };
+    return !activeAttempts.some(
+      (attempt) =>
+        attempt.requestId === request.id ||
+        (request.conversationKey &&
+          getDispatchRequest(attempt.requestId)?.conversationKey ===
+            request.conversationKey &&
+          (getDispatchRequest(attempt.requestId)?.metadata?.admission
+            ?.apiKeyScope || "__no_key__") === apiKeyScope &&
+          attempt.connectionId !== connectionId),
+    );
   }
 
   function connectionCanServeRequest(connection, request) {
@@ -550,12 +252,6 @@ export function createDispatcherCore({
   function planLeases(queuedRequests, connections, activeAttempts) {
     const leasePlan = [];
     const leasedRequestIds = new Set();
-    const plannedOccupancy = {};
-    const slots = resolveSlotsPerConnection();
-    const { requestById, affinityByKey } = buildPlanningContext(
-      queuedRequests,
-      activeAttempts,
-    );
 
     for (const queuedRequest of queuedRequests) {
       if (leasedRequestIds.has(queuedRequest.id)) continue;
@@ -566,180 +262,70 @@ export function createDispatcherCore({
       ).find((candidateConnection) => {
         const currentOccupancy =
           (occupancyByConnection[candidateConnection.id] || 0) +
-          (plannedOccupancy[candidateConnection.id] || 0);
-        if (currentOccupancy >= slots) return false;
+          leasePlan.filter(
+            (plannedLease) =>
+              plannedLease.connection.id === candidateConnection.id,
+          ).length;
+        if (currentOccupancy >= resolveSlotsPerConnection()) return false;
         return (
           connectionCanServeRequest(candidateConnection, queuedRequest) &&
           requestIsEligibleForConnection(
             queuedRequest,
             candidateConnection.id,
             activeAttempts,
-            affinityByKey,
-            requestById,
           )
         );
       });
       if (!connection) continue;
 
       leasedRequestIds.add(queuedRequest.id);
-      plannedOccupancy[connection.id] =
-        (plannedOccupancy[connection.id] || 0) + 1;
-      leasePlan.push({
-        requestId: queuedRequest.id,
-        connection,
-        attempt: getLatestDispatchAttemptForRequest(queuedRequest.id),
-      });
+      leasePlan.push({ requestId: queuedRequest.id, connection });
     }
 
     return leasePlan;
   }
 
   async function tryLeaseAvailableWork() {
-    return withLeaseGate(async () => {
-      tryLeaseAvailableWorkCount += 1;
-      const [connections, activeAttempts] = await Promise.all([
-        getConnections(),
-        syncOccupancy(),
-      ]);
-      const queuedRequests = sortRequestsByQueueTime(
-        listQueuedDispatchRequests(provider, 500),
+    const [connections, activeAttempts] = await Promise.all([
+      getConnections(),
+      syncOccupancy(),
+    ]);
+    const queuedRequests = sortRequestsByQueueTime(
+      listQueuedDispatchRequests(provider, 500),
+    );
+    const leases = [];
+
+    for (const plannedLease of planLeases(
+      queuedRequests,
+      connections,
+      activeAttempts,
+    )) {
+      const request = queuedRequests.find(
+        (candidate) => candidate.id === plannedLease.requestId,
       );
-      const leases = [];
-
-      for (const plannedLease of planLeases(
-        queuedRequests,
-        connections,
-        activeAttempts,
-      )) {
-        const request = queuedRequests.find(
-          (candidate) => candidate.id === plannedLease.requestId,
-        );
-        const connection = plannedLease.connection;
-        const attempt =
-          plannedLease.attempt?.state === DISPATCH_ATTEMPT_STATE.QUEUED
-            ? plannedLease.attempt
-            : getLatestDispatchAttemptForRequest(request.id);
-        if (!attempt || attempt.state !== DISPATCH_ATTEMPT_STATE.QUEUED) {
-          continue;
-        }
-
-        const leasedAt = nowIso();
-        const leaseKey = buildLeaseKey(connection.id);
-        const pathMode = connection?.providerSpecificData?.vercelRelayUrl
-          ? "vercel-relay"
-          : connection?.providerSpecificData?.connectionProxyEnabled
-            ? "connection-proxy"
-            : "direct";
-        const leased = leaseDispatchAttempt(attempt.id, {
-          connectionId: connection.id,
-          leaseKey,
-          leasedAt,
-          connectStartedAt: leasedAt,
-          pathMode,
-        });
-        if (!leased) {
-          continue;
-        }
-
-        updateDispatchRequestStatus(request.id, DISPATCH_REQUEST_STATUS.RUNNING);
-        occupancyByConnection[connection.id] =
-          (occupancyByConnection[connection.id] || 0) + 1;
-        leaseCountByConnection[connection.id] =
-          (leaseCountByConnection[connection.id] || 0) + 1;
-
-        insertDispatchAttemptEvent({
-          id: randomUUID(),
-          attemptId: leased.id,
-          eventType: DISPATCH_EVENT_TYPE.LEASED,
-          payload: { connectionId: connection.id, leaseKey },
-        });
-        insertDispatchAttemptEvent({
-          id: randomUUID(),
-          attemptId: leased.id,
-          eventType: DISPATCH_EVENT_TYPE.CONNECT_STARTED,
-          payload: { at: leased.connectStartedAt, source: "bulk_lease" },
-        });
-
-        leases.push({
-          requestId: request.id,
-          attemptId: leased.id,
-          connectionId: connection.id,
-          connection,
-          request,
-          attempt: leased,
-          pathMode,
-        });
-      }
-
-      return leases;
-    });
-  }
-
-  /**
-   * Single-request lease (poll loop in executeCodexAttempt). Serialized so
-   * concurrent polls cannot oversubscribe slots or leave pure-LEASED ghosts.
-   */
-  async function tryLeaseRequest(requestId) {
-    return withLeaseGate(async () => {
-      tryLeaseRequestCount += 1;
-
-      const parked = claimPendingLease(requestId);
-      if (parked) return parked;
-
-      const [connections, activeAttempts] = await Promise.all([
-        getConnections(),
-        syncOccupancy(),
-      ]);
-      const slots = resolveSlotsPerConnection();
-      const queuedRequests = sortRequestsByQueueTime(
-        listQueuedDispatchRequests(provider, 500),
-      );
-      const targetRequest = queuedRequests.find(
-        (request) => request.id === requestId,
-      );
-      if (!targetRequest) return null;
-
-      const connection = getSortedConnectionsForRequest(
-        connections,
-        targetRequest,
-      ).find((candidateConnection) => {
-        const currentOccupancy =
-          occupancyByConnection[candidateConnection.id] || 0;
-        if (currentOccupancy >= slots) return false;
-        return (
-          connectionCanServeRequest(candidateConnection, targetRequest) &&
-          requestIsEligibleForConnection(
-            targetRequest,
-            candidateConnection.id,
-            activeAttempts,
-          )
-        );
-      });
-      if (!connection) return null;
-
-      const attempt = getLatestDispatchAttemptForRequest(requestId);
+      const connection = plannedLease.connection;
+      const attempt = getLatestDispatchAttemptForRequest(request.id);
       if (!attempt || attempt.state !== DISPATCH_ATTEMPT_STATE.QUEUED) {
-        return null;
+        continue;
       }
 
       const leasedAt = nowIso();
       const leaseKey = buildLeaseKey(connection.id);
-      const pathMode = connection?.providerSpecificData?.vercelRelayUrl
-        ? "vercel-relay"
-        : connection?.providerSpecificData?.connectionProxyEnabled
-          ? "connection-proxy"
-          : "direct";
-      // Atomic: state=connecting + connect_started_at (no pure-LEASED limbo)
       const leased = leaseDispatchAttempt(attempt.id, {
         connectionId: connection.id,
         leaseKey,
         leasedAt,
-        connectStartedAt: leasedAt,
-        pathMode,
+        pathMode: connection?.providerSpecificData?.vercelRelayUrl
+          ? "vercel-relay"
+          : connection?.providerSpecificData?.connectionProxyEnabled
+            ? "connection-proxy"
+            : "direct",
       });
-      if (!leased) return null;
+      if (!leased) {
+        continue;
+      }
 
-      updateDispatchRequestStatus(requestId, DISPATCH_REQUEST_STATUS.RUNNING);
+      updateDispatchRequestStatus(request.id, DISPATCH_REQUEST_STATUS.RUNNING);
       occupancyByConnection[connection.id] =
         (occupancyByConnection[connection.id] || 0) + 1;
       leaseCountByConnection[connection.id] =
@@ -749,25 +335,98 @@ export function createDispatcherCore({
         id: randomUUID(),
         attemptId: leased.id,
         eventType: DISPATCH_EVENT_TYPE.LEASED,
-        payload: { connectionId: connection.id, leaseKey },
-      });
-      insertDispatchAttemptEvent({
-        id: randomUUID(),
-        attemptId: leased.id,
-        eventType: DISPATCH_EVENT_TYPE.CONNECT_STARTED,
-        payload: { at: leased.connectStartedAt, source: "try_lease" },
+        payload: {
+          connectionId: connection.id,
+          leaseKey,
+        },
       });
 
-      return {
-        requestId,
+      leases.push({
+        requestId: request.id,
         attemptId: leased.id,
         connectionId: connection.id,
         connection,
-        request: targetRequest,
+        request,
         attempt: leased,
-        pathMode,
-      };
+      });
+    }
+
+    return leases;
+  }
+
+  async function tryLeaseRequest(requestId) {
+    const [connections, activeAttempts] = await Promise.all([
+      getConnections(),
+      syncOccupancy(),
+    ]);
+    const queuedRequests = sortRequestsByQueueTime(
+      listQueuedDispatchRequests(provider, 500),
+    );
+    const targetRequest = queuedRequests.find(
+      (request) => request.id === requestId,
+    );
+    if (!targetRequest) return null;
+
+    const connection = getSortedConnectionsForRequest(
+      connections,
+      targetRequest,
+    ).find((candidateConnection) => {
+      const currentOccupancy =
+        occupancyByConnection[candidateConnection.id] || 0;
+      if (currentOccupancy >= resolveSlotsPerConnection()) return false;
+      return (
+        connectionCanServeRequest(candidateConnection, targetRequest) &&
+        requestIsEligibleForConnection(
+          targetRequest,
+          candidateConnection.id,
+          activeAttempts,
+        )
+      );
     });
+    if (!connection) return null;
+
+    const attempt = getLatestDispatchAttemptForRequest(requestId);
+    if (!attempt || attempt.state !== DISPATCH_ATTEMPT_STATE.QUEUED)
+      return null;
+
+    const leasedAt = nowIso();
+    const leaseKey = buildLeaseKey(connection.id);
+    const leased = leaseDispatchAttempt(attempt.id, {
+      connectionId: connection.id,
+      leaseKey,
+      leasedAt,
+      pathMode: connection?.providerSpecificData?.vercelRelayUrl
+        ? "vercel-relay"
+        : connection?.providerSpecificData?.connectionProxyEnabled
+          ? "connection-proxy"
+          : "direct",
+    });
+    if (!leased) return null;
+
+    updateDispatchRequestStatus(requestId, DISPATCH_REQUEST_STATUS.RUNNING);
+    occupancyByConnection[connection.id] =
+      (occupancyByConnection[connection.id] || 0) + 1;
+    leaseCountByConnection[connection.id] =
+      (leaseCountByConnection[connection.id] || 0) + 1;
+
+    insertDispatchAttemptEvent({
+      id: randomUUID(),
+      attemptId: leased.id,
+      eventType: DISPATCH_EVENT_TYPE.LEASED,
+      payload: {
+        connectionId: connection.id,
+        leaseKey,
+      },
+    });
+
+    return {
+      requestId,
+      attemptId: leased.id,
+      connectionId: connection.id,
+      connection,
+      request: targetRequest,
+      attempt: leased,
+    };
   }
 
   function finalizeRequestForAttempt(attempt, nextState) {
@@ -817,17 +476,9 @@ export function createDispatcherCore({
   }
 
   async function markAttemptConnecting(attemptId, updates = {}) {
-    const existing = getDispatchAttempt(attemptId);
-    // tryLease already lands in connecting — idempotent success.
-    if (
-      existing?.state === DISPATCH_ATTEMPT_STATE.CONNECTING &&
-      existing.connectStartedAt
-    ) {
-      return existing;
-    }
     return markAttemptState(
       attemptId,
-      [DISPATCH_ATTEMPT_STATE.LEASED, DISPATCH_ATTEMPT_STATE.CONNECTING],
+      DISPATCH_ATTEMPT_STATE.LEASED,
       DISPATCH_ATTEMPT_STATE.CONNECTING,
       DISPATCH_EVENT_TYPE.CONNECT_STARTED,
       {
@@ -852,17 +503,12 @@ export function createDispatcherCore({
 
   async function markAttemptProgress(attemptId, updates = {}) {
     const at = updates.at || nowIso();
-    // Only seed firstProgressAt when still empty — COALESCE overwrites if we
-    // keep passing a new firstProgressAt on every heartbeat.
-    const existing = getDispatchAttempt(attemptId);
-    if (!existing) return null;
-    const isFirst = !existing.firstProgressAt;
     const progress = transitionDispatchAttempt(
       attemptId,
       [DISPATCH_ATTEMPT_STATE.CONNECTING, DISPATCH_ATTEMPT_STATE.STREAMING],
       DISPATCH_ATTEMPT_STATE.STREAMING,
       {
-        firstProgressAt: isFirst ? updates.firstProgressAt || at : null,
+        firstProgressAt: updates.firstProgressAt || at,
         lastProgressAt: updates.lastProgressAt || at,
       },
     );
@@ -870,9 +516,10 @@ export function createDispatcherCore({
     insertDispatchAttemptEvent({
       id: randomUUID(),
       attemptId,
-      eventType: isFirst
-        ? DISPATCH_EVENT_TYPE.FIRST_PROGRESS
-        : DISPATCH_EVENT_TYPE.LAST_PROGRESS,
+      eventType:
+        progress.firstProgressAt === progress.lastProgressAt
+          ? DISPATCH_EVENT_TYPE.FIRST_PROGRESS
+          : DISPATCH_EVENT_TYPE.LAST_PROGRESS,
       payload: {
         at,
       },
@@ -899,7 +546,6 @@ export function createDispatcherCore({
     );
     if (!attempt) return null;
 
-    // Gate vacated — immediately pull next queued task (continuous, not batch)
     releaseConnectionOccupancy(attempt.connectionId);
     finalizeRequestForAttempt(attempt, DISPATCH_ATTEMPT_STATE.COMPLETED);
     insertDispatchAttemptEvent({
@@ -908,7 +554,6 @@ export function createDispatcherCore({
       eventType: DISPATCH_EVENT_TYPE.COMPLETED,
       payload: { terminalReason },
     });
-    scheduleRefill();
     return attempt;
   }
 
@@ -949,16 +594,13 @@ export function createDispatcherCore({
           ? DISPATCH_EVENT_TYPE.TIMED_OUT
           : nextState === DISPATCH_ATTEMPT_STATE.CANCELLED
             ? DISPATCH_EVENT_TYPE.CANCELLED
-            : nextState === DISPATCH_ATTEMPT_STATE.RECONCILED
-              ? DISPATCH_EVENT_TYPE.RECONCILED
-              : DISPATCH_EVENT_TYPE.FAILED,
+            : DISPATCH_EVENT_TYPE.FAILED,
       payload: {
         terminalReason,
         timeoutKind,
         error,
       },
     });
-    scheduleRefill();
     return attempt;
   }
 
@@ -968,22 +610,14 @@ export function createDispatcherCore({
       leaseCountByConnection: { ...leaseCountByConnection },
       timeoutPolicy: { ...policy },
       pathHealth: pathHealth.snapshot(),
-      leaseMetrics: getLeaseMetrics(),
     };
   }
 
   return {
-    provider,
     enqueueRequest,
     requeueRequest,
     tryLeaseAvailableWork,
     tryLeaseRequest,
-    waitForAssignedLease,
-    waitForLeaseSignal,
-    scheduleRefill,
-    notifyLeaseWaiters,
-    getLeaseMetrics,
-    resetLeaseMetrics,
     markAttemptConnecting,
     markAttemptStreamStarted,
     markAttemptProgress,

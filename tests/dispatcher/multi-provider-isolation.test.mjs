@@ -129,7 +129,7 @@ test("TEXT_DISPATCH_PROVIDERS includes codex, antigravity, grok-cli", async () =
   );
 });
 
-test("5 concurrent tryLeaseRequest all admit under slots=15 (no pure-LEASED ghosts)", async () => {
+test("5 concurrent tryLeaseRequest all admit under slots=15", async () => {
   const tempDir = makeTempDataDir();
 
   try {
@@ -169,15 +169,9 @@ test("5 concurrent tryLeaseRequest all admit under slots=15 (no pure-LEASED ghos
     const active = listActiveDispatchAttempts("codex");
     assert.equal(active.length, 5);
     for (const attempt of active) {
-      assert.equal(
-        attempt.state,
-        "connecting",
-        "lease must land in connecting, not pure leased",
-      );
-      assert.ok(
-        attempt.connectStartedAt,
-        "connect_started_at must be set at admit time",
-      );
+      assert.equal(attempt.state, "leased");
+      assert.ok(attempt.leasedAt);
+      assert.equal(attempt.connectionId, "conn-1");
     }
   } finally {
     const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
@@ -379,7 +373,7 @@ test("specialized executors registered for antigravity and grok-cli", async () =
   assert.equal(getExecutor("gb").provider, "grok-cli");
 });
 
-test("evented lease waiters wake after completeAttempt", async () => {
+test("poll lease path acquires second slot after completeAttempt", async () => {
   const tempDir = makeTempDataDir();
 
   try {
@@ -403,71 +397,18 @@ test("evented lease waiters wake after completeAttempt", async () => {
       modelId: "gpt-5-codex",
     });
 
-    const lease1 = await dispatcher.waitForAssignedLease(
-      first.request.id,
-      2000,
-    );
+    const lease1 = await dispatcher.tryLeaseRequest(first.request.id);
     assert.ok(lease1);
-
-    dispatcher.resetLeaseMetrics?.();
-    const waitPromise = dispatcher.waitForAssignedLease(
-      second.request.id,
-      2000,
+    assert.equal(
+      await dispatcher.tryLeaseRequest(second.request.id),
+      null,
+      "second must wait while slot is full",
     );
+
     await dispatcher.completeAttempt(lease1.attemptId);
-    const lease2 = await waitPromise;
+    const lease2 = await dispatcher.tryLeaseRequest(second.request.id);
     assert.ok(lease2, "second request should lease after first completes");
     assert.equal(lease2.connectionId, "conn-1");
-
-    const metrics = dispatcher.getLeaseMetrics?.() || {};
-    assert.ok(
-      (metrics.tryLeaseRequestCount ?? 0) <= 3,
-      "must not busy-poll tryLeaseRequest",
-    );
-  } finally {
-    const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
-    closeSqlite();
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-});
-
-test("pending lease is claimed if refill assigns before waiter registers", async () => {
-  const tempDir = makeTempDataDir();
-
-  try {
-    await resetDispatcherTables(tempDir);
-    const { createDispatcherCore } = await import("@/lib/dispatcher/core.js");
-
-    const dispatcher = createDispatcherCore({
-      provider: "grok-cli",
-      getConnections: async () => [
-        { id: "g-conn-1", priority: 1, providerSpecificData: {} },
-      ],
-      getSlotsPerConnection: () => 1,
-    });
-
-    const first = await dispatcher.enqueueRequest({
-      provider: "grok-cli",
-      modelId: "grok-4.5",
-    });
-    const second = await dispatcher.enqueueRequest({
-      provider: "grok-cli",
-      modelId: "grok-4.5",
-    });
-
-    const lease1 = await dispatcher.waitForAssignedLease(
-      first.request.id,
-      2000,
-    );
-    assert.ok(lease1);
-
-    // Simulate a waiter for second so refill runs, then complete first.
-    // deliverLease must park the lease if we claim it without a waiter briefly.
-    const waiterReady = dispatcher.waitForAssignedLease(second.request.id, 2000);
-    await dispatcher.completeAttempt(lease1.attemptId);
-    const lease2 = await waiterReady;
-    assert.ok(lease2, "queued request must receive lease after slot frees");
-    assert.equal(lease2.connectionId, "g-conn-1");
   } finally {
     const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
     closeSqlite();
