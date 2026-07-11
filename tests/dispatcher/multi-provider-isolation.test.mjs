@@ -159,17 +159,31 @@ test("evented lease waiters wake after completeAttempt", async () => {
       modelId: "gpt-5-codex",
     });
 
-    const lease1 = await dispatcher.tryLeaseRequest(first.request.id);
+    const lease1 = await dispatcher.waitForAssignedLease(first.request.id, 2000);
     assert.ok(lease1);
 
-    const waitPromise = dispatcher.waitForLeaseSignal(second.request.id, 2000);
-    // Complete first attempt → notify waiters
+    dispatcher.resetLeaseMetrics?.();
+    const waitPromise = dispatcher.waitForAssignedLease(
+      second.request.id,
+      2000,
+    );
+    // Complete first attempt → central refill assigns second without tryLeaseRequest poll
     await dispatcher.completeAttempt(lease1.attemptId);
-    await waitPromise;
-
-    const lease2 = await dispatcher.tryLeaseRequest(second.request.id);
+    const lease2 = await waitPromise;
     assert.ok(lease2, "second request should lease after first completes");
     assert.equal(lease2.connectionId, "conn-1");
+
+    const metrics = dispatcher.getLeaseMetrics?.() || {};
+    // Under true evented refill, waiters should not drive tryLeaseRequest
+    assert.equal(
+      metrics.tryLeaseRequestCount ?? 0,
+      0,
+      "waitForAssignedLease must not poll tryLeaseRequest",
+    );
+    assert.ok(
+      (metrics.tryLeaseAvailableWorkCount ?? 0) >= 1,
+      "refill should call tryLeaseAvailableWork",
+    );
   } finally {
     const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
     closeSqlite();

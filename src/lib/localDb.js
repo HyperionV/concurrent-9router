@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import { ensureSqliteReady } from "@/lib/sqlite/bootstrap.js";
+import { invalidateDispatcherConnectionCache } from "@/lib/dispatcher/connectionCache.js";
 import {
   cleanupProviderConnectionRecords,
   createApiKeyRecord,
@@ -200,19 +201,41 @@ export async function getProviderConnectionById(id) {
   return getProviderConnection(id);
 }
 
+function invalidateDispatchCacheForConnection(providerOrRecord) {
+  const provider =
+    typeof providerOrRecord === "string"
+      ? providerOrRecord
+      : providerOrRecord?.provider;
+  if (provider) invalidateDispatcherConnectionCache(provider);
+  else invalidateDispatcherConnectionCache();
+}
+
 export async function createProviderConnection(data) {
   await ensureSqliteReady();
-  return createProviderConnectionRecord({ id: data.id || uuidv4(), ...data });
+  const record = createProviderConnectionRecord({
+    id: data.id || uuidv4(),
+    ...data,
+  });
+  invalidateDispatchCacheForConnection(record?.provider || data.provider);
+  return record;
 }
 
 export async function updateProviderConnection(id, data) {
   await ensureSqliteReady();
-  return updateProviderConnectionRecord(id, data);
+  const existing = getProviderConnection(id);
+  const record = updateProviderConnectionRecord(id, data);
+  invalidateDispatchCacheForConnection(
+    record?.provider || existing?.provider || data.provider,
+  );
+  return record;
 }
 
 export async function deleteProviderConnection(id) {
   await ensureSqliteReady();
-  return deleteProviderConnectionRecord(id);
+  const existing = getProviderConnection(id);
+  const result = deleteProviderConnectionRecord(id);
+  invalidateDispatchCacheForConnection(existing?.provider);
+  return result;
 }
 
 export async function reorderProviderConnections(providerId) {
@@ -357,7 +380,10 @@ export async function getSettings() {
 
 export async function updateSettings(updates) {
   await ensureSqliteReady();
-  return writeSettings(updates);
+  const result = writeSettings(updates);
+  // Dispatcher connection views depend on slots / collection / enable flags
+  invalidateDispatcherConnectionCache();
+  return result;
 }
 
 export async function exportDb() {

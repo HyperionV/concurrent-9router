@@ -107,6 +107,11 @@ export default function APIPageClient({ machineId }) {
   const [codexDefaultAdmissionPolicy, setCodexDefaultAdmissionPolicy] =
     useState("legacy");
   const [dispatcherRuntimeMode, setDispatcherRuntimeMode] = useState("off");
+  const [providerAdmissionPolicies, setProviderAdmissionPolicies] = useState({
+    codex: "legacy",
+    antigravity: "legacy",
+    "grok-cli": "legacy",
+  });
   const [requireLogin, setRequireLogin] = useState(true);
   const [hasPassword, setHasPassword] = useState(true);
   const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
@@ -280,6 +285,23 @@ export default function APIPageClient({ machineId }) {
       if (dispatcherRes.ok) {
         const dispatcherData = await dispatcherRes.json();
         setDispatcherRuntimeMode(dispatcherData.mode || "off");
+        if (dispatcherData.providerAdmissionPolicies) {
+          setProviderAdmissionPolicies({
+            codex:
+              dispatcherData.providerAdmissionPolicies.codex ||
+              dispatcherData.codexDefaultAdmissionPolicy ||
+              "legacy",
+            antigravity:
+              dispatcherData.providerAdmissionPolicies.antigravity || "legacy",
+            "grok-cli":
+              dispatcherData.providerAdmissionPolicies["grok-cli"] || "legacy",
+          });
+        } else if (dispatcherData.codexDefaultAdmissionPolicy) {
+          setProviderAdmissionPolicies((prev) => ({
+            ...prev,
+            codex: dispatcherData.codexDefaultAdmissionPolicy,
+          }));
+        }
       }
     } catch (error) {
       console.log("Error fetching data:", error);
@@ -1179,7 +1201,7 @@ export default function APIPageClient({ machineId }) {
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <Badge variant="info">
-                      Requested:{" "}
+                      Codex requested:{" "}
                       {KEY_TYPE_OPTIONS.find(
                         (option) =>
                           option.value ===
@@ -1195,7 +1217,7 @@ export default function APIPageClient({ machineId }) {
                         }).tone
                       }
                     >
-                      Effective:{" "}
+                      Codex effective:{" "}
                       {
                         getEffectiveCodexBehavior({
                           key,
@@ -1213,6 +1235,19 @@ export default function APIPageClient({ machineId }) {
                         defaultPolicy: codexDefaultAdmissionPolicy,
                       }).detail
                     }
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <Badge variant="default">
+                      AG pool: {providerAdmissionPolicies.antigravity}
+                    </Badge>
+                    <Badge variant="default">
+                      Grok pool: {providerAdmissionPolicies["grok-cli"]}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-text-muted mt-1">
+                    Antigravity and Grok CLI use global pool policy only (not
+                    per-key). Default is legacy; opt into managed on the text
+                    dispatcher settings when ready.
                   </p>
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>

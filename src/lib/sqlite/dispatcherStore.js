@@ -220,11 +220,17 @@ export function listActiveDispatchAttempts(provider = null) {
   return rows.map(normalizeAttempt);
 }
 
-export function listDispatchAttemptsByState(states, provider = null) {
+export function listDispatchAttemptsByState(
+  states,
+  provider = null,
+  { limit = null } = {},
+) {
   if (!Array.isArray(states) || states.length === 0) {
     return [];
   }
   const placeholders = states.map(() => "?").join(", ");
+  const limitSql =
+    Number.isInteger(limit) && limit > 0 ? ` LIMIT ${Number(limit)}` : "";
   if (provider) {
     const rows = getSqlite()
       .prepare(
@@ -233,7 +239,8 @@ export function listDispatchAttemptsByState(states, provider = null) {
           FROM dispatch_attempts
           WHERE state IN (${placeholders})
             AND provider = ?
-          ORDER BY queue_entered_at ASC
+          ORDER BY queue_entered_at DESC
+          ${limitSql}
         `,
       )
       .all(...states, provider);
@@ -245,7 +252,8 @@ export function listDispatchAttemptsByState(states, provider = null) {
         SELECT *
         FROM dispatch_attempts
         WHERE state IN (${placeholders})
-        ORDER BY queue_entered_at ASC
+        ORDER BY queue_entered_at DESC
+        ${limitSql}
       `,
     )
     .all(...states);

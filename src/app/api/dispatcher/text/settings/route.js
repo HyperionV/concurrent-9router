@@ -7,9 +7,12 @@ import {
 import {
   deriveDispatcherMode,
   normalizeDispatcherSlotsPerConnection,
+  TEXT_DISPATCH_PROVIDERS,
 } from "@/lib/dispatcher/settings.js";
+import { invalidateDispatcherConnectionCache } from "@/lib/dispatcher/connectionCache.js";
 
 function toSafeDispatcherSettings(settings) {
+  const policies = settings.providerAdmissionPolicies || {};
   return {
     mode: deriveDispatcherMode(settings),
     dispatcherEnabled: settings.dispatcherEnabled === true,
@@ -17,6 +20,13 @@ function toSafeDispatcherSettings(settings) {
     dispatcherCodexOnly: settings.dispatcherCodexOnly !== false,
     codexDefaultAdmissionPolicy:
       settings.codexDefaultAdmissionPolicy || "managed",
+    // AG / Grok: global pool policy only (no per-API-key override)
+    providerAdmissionPolicies: {
+      codex: settings.codexDefaultAdmissionPolicy || "legacy",
+      antigravity: policies.antigravity || "legacy",
+      "grok-cli": policies["grok-cli"] || "legacy",
+    },
+    textDispatchProviders: TEXT_DISPATCH_PROVIDERS,
     dispatcherSlotsPerConnection:
       Number(settings.dispatcherSlotsPerConnection) || 1,
     textDispatcherCollectionId: settings.textDispatcherCollectionId || null,
@@ -62,6 +72,21 @@ export async function PATCH(request) {
         body.textDispatcherCollectionId || null;
     }
 
+    if (body.providerAdmissionPolicies !== undefined) {
+      const incoming = body.providerAdmissionPolicies || {};
+      const next = {};
+      for (const provider of ["antigravity", "grok-cli"]) {
+        const value = incoming[provider];
+        if (value === "managed" || value === "legacy") {
+          next[provider] = value;
+        }
+      }
+      updates.providerAdmissionPolicies = {
+        ...((await getSettings()).providerAdmissionPolicies || {}),
+        ...next,
+      };
+    }
+
     if (Object.keys(updates).length === 0) {
       return NextResponse.json(
         { error: "No dispatcher settings update was provided" },
@@ -74,8 +99,12 @@ export async function PATCH(request) {
       dispatcherEnabled: true,
       dispatcherShadowMode: false,
       dispatcherCodexOnly: true,
-      codexDefaultAdmissionPolicy: "managed",
+      codexDefaultAdmissionPolicy:
+        updates.codexDefaultAdmissionPolicy ||
+        body.codexDefaultAdmissionPolicy ||
+        "managed",
     });
+    invalidateDispatcherConnectionCache();
     return NextResponse.json(toSafeDispatcherSettings(settings));
   } catch (error) {
     console.error("[API] Failed to update dispatcher settings:", error);

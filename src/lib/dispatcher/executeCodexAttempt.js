@@ -30,20 +30,24 @@ function resolveTargetFormat(provider) {
   return PROVIDERS[provider]?.format || "openai";
 }
 
+/**
+ * OPT-001: wait for central refill to assign this request.
+ * Prefer waitForAssignedLease (no per-waiter tryLeaseRequest loop).
+ */
 async function waitForLease(dispatcher, requestId, timeoutMs) {
-  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
-
-  while (Date.now() <= deadline) {
-    const lease = await dispatcher.tryLeaseRequest(requestId);
-    if (lease) {
-      return lease;
-    }
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) break;
-    // OPT-001: block on lease signal / short timeout instead of fixed 100ms busy poll
-    await dispatcher.waitForLeaseSignal?.(requestId, remaining);
+  if (typeof dispatcher.waitForAssignedLease === "function") {
+    return dispatcher.waitForAssignedLease(requestId, timeoutMs);
   }
 
+  // Fallback for older cores / tests that only expose tryLeaseRequest
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  while (Date.now() <= deadline) {
+    const lease = await dispatcher.tryLeaseRequest(requestId);
+    if (lease) return lease;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await dispatcher.waitForLeaseSignal?.(requestId, remaining);
+  }
   return null;
 }
 

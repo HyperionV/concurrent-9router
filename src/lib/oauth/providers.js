@@ -296,6 +296,7 @@ const PROVIDERS = {
         client_id: config.clientId,
         scope: config.scope,
       });
+      // Official CLI sends referrer=grok-build
       if (config.referrer) body.set("referrer", config.referrer);
 
       const response = await fetch(config.deviceCodeUrl, {
@@ -310,10 +311,30 @@ const PROVIDERS = {
 
       if (!response.ok) {
         const error = await response.text();
-        throw new Error(`Grok CLI device code request failed: ${error}`);
+        throw new Error(
+          `Grok CLI device code request failed (${response.status}): ${error.slice(0, 300)}`,
+        );
       }
 
-      return await response.json();
+      const data = await response.json();
+      // Normalize so OAuthModal always has device_code / user_code / verification_uri
+      return {
+        ...data,
+        device_code: data.device_code || data.deviceCode,
+        user_code: data.user_code || data.userCode,
+        verification_uri:
+          data.verification_uri ||
+          data.verificationUri ||
+          data.verification_url,
+        verification_uri_complete:
+          data.verification_uri_complete ||
+          data.verificationUriComplete ||
+          (data.verification_uri && data.user_code
+            ? `${data.verification_uri}${data.verification_uri.includes("?") ? "&" : "?"}user_code=${encodeURIComponent(data.user_code)}`
+            : undefined),
+        interval: data.interval || 5,
+        expires_in: data.expires_in || data.expiresIn,
+      };
     },
     pollToken: async (config, deviceCode) => {
       const response = await fetch(config.tokenUrl, {
@@ -338,8 +359,11 @@ const PROVIDERS = {
         data = { error: "invalid_response", error_description: text };
       }
 
+      // Some IdPs return 400 for authorization_pending — treat as ok+pending
       const pending =
-        data?.error === "authorization_pending" || data?.error === "slow_down";
+        data?.error === "authorization_pending" ||
+        data?.error === "slow_down" ||
+        data?.error === "authorization_pending_error";
       return {
         ok: response.ok || pending,
         data,

@@ -56,43 +56,122 @@ export function createDispatcherCore({
   const policy = createTimeoutPolicy(timeoutPolicy);
   const occupancyByConnection = {};
   const leaseCountByConnection = {};
-  // OPT-001: evented waiters keyed by requestId → Set of resolve fns
-  const leaseWaiters = new Map();
+  // OPT-001: waiters resolve with a lease object when central refill assigns them
+  const leaseWaiters = new Map(); // requestId -> { resolve, timer }
+  let refillScheduled = false;
+  let refillInFlight = false;
+  let tryLeaseRequestCount = 0;
+  let tryLeaseAvailableWorkCount = 0;
+
+  function resolveWaiter(requestId, lease) {
+    const waiter = leaseWaiters.get(requestId);
+    if (!waiter) return false;
+    leaseWaiters.delete(requestId);
+    if (waiter.timer) clearTimeout(waiter.timer);
+    waiter.resolve(lease);
+    return true;
+  }
 
   function notifyLeaseWaiters(requestId = null) {
+    // Wake signal for any waiter that is still using waitForLeaseSignal fallback
     if (requestId) {
-      const waiters = leaseWaiters.get(requestId);
-      if (waiters) {
-        for (const resolve of waiters) resolve();
-        leaseWaiters.delete(requestId);
+      const waiter = leaseWaiters.get(requestId);
+      if (waiter && waiter.mode === "signal") {
+        resolveWaiter(requestId, null);
       }
       return;
     }
-    for (const [, waiters] of leaseWaiters) {
-      for (const resolve of waiters) resolve();
+    for (const [id, waiter] of [...leaseWaiters.entries()]) {
+      if (waiter.mode === "signal") resolveWaiter(id, null);
     }
-    leaseWaiters.clear();
   }
 
+  function scheduleRefill() {
+    // Only schedule when someone is waiting for assignment. Eager refill on
+    // enqueue would pre-lease work and break tryLeaseRequest call sites.
+    if (leaseWaiters.size === 0) return;
+    if (refillScheduled) return;
+    refillScheduled = true;
+    queueMicrotask(() => {
+      refillScheduled = false;
+      runRefill().catch((error) => {
+        console.error("[DISPATCHER] refill failed:", error);
+      });
+    });
+  }
+
+  async function runRefill() {
+    if (refillInFlight) {
+      // Coalesce: try again after current pass if waiters remain
+      queueMicrotask(() => scheduleRefill());
+      return;
+    }
+    if (leaseWaiters.size === 0) return;
+    refillInFlight = true;
+    try {
+      const leases = await tryLeaseAvailableWork();
+      for (const lease of leases) {
+        resolveWaiter(lease.requestId, lease);
+      }
+    } finally {
+      refillInFlight = false;
+      // Another waiter may have arrived during this pass
+      if (leaseWaiters.size > 0) scheduleRefill();
+    }
+  }
+
+  /**
+   * OPT-001: wait only for this request's lease. Central refill drives tryLeaseAvailableWork.
+   * Does not call tryLeaseRequest in a poll loop.
+   */
+  function waitForAssignedLease(requestId, timeoutMs) {
+    return new Promise((resolve) => {
+      if (leaseWaiters.has(requestId)) {
+        // Replace existing waiter
+        const prev = leaseWaiters.get(requestId);
+        if (prev?.timer) clearTimeout(prev.timer);
+      }
+      const timer = setTimeout(() => {
+        leaseWaiters.delete(requestId);
+        resolve(null);
+      }, Math.max(0, Number(timeoutMs) || 0));
+      timer.unref?.();
+      leaseWaiters.set(requestId, { resolve, timer, mode: "lease" });
+      scheduleRefill();
+    });
+  }
+
+  /** Legacy signal-only wait (tests / fallback) */
   function waitForLeaseSignal(requestId, timeoutMs) {
     return new Promise((resolve) => {
-      let settled = false;
-      const done = () => {
-        if (settled) return;
-        settled = true;
-        const waiters = leaseWaiters.get(requestId);
-        if (waiters) {
-          waiters.delete(done);
-          if (waiters.size === 0) leaseWaiters.delete(requestId);
-        }
-        clearTimeout(timer);
+      const timer = setTimeout(() => {
+        leaseWaiters.delete(requestId);
         resolve();
-      };
-      if (!leaseWaiters.has(requestId)) leaseWaiters.set(requestId, new Set());
-      leaseWaiters.get(requestId).add(done);
-      const timer = setTimeout(done, Math.max(50, Math.min(Number(timeoutMs) || 500, 1000)));
+      }, Math.max(50, Math.min(Number(timeoutMs) || 500, 1000)));
       timer.unref?.();
+      leaseWaiters.set(requestId, {
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        timer,
+        mode: "signal",
+      });
+      scheduleRefill();
     });
+  }
+
+  function getLeaseMetrics() {
+    return {
+      tryLeaseRequestCount,
+      tryLeaseAvailableWorkCount,
+      waiterCount: leaseWaiters.size,
+    };
+  }
+
+  function resetLeaseMetrics() {
+    tryLeaseRequestCount = 0;
+    tryLeaseAvailableWorkCount = 0;
   }
 
   function resolveSlotsPerConnection() {
@@ -175,7 +254,7 @@ export function createDispatcherCore({
       },
     });
 
-    notifyLeaseWaiters();
+    // Waiters register via waitForAssignedLease after enqueue; they schedule refill.
     return { request, attempt };
   }
 
@@ -215,6 +294,8 @@ export function createDispatcherCore({
       },
     });
 
+    // If a waiter is already registered for this request, refill now
+    scheduleRefill();
     return { request, attempt };
   }
 
@@ -371,6 +452,7 @@ export function createDispatcherCore({
   }
 
   async function tryLeaseAvailableWork() {
+    tryLeaseAvailableWorkCount += 1;
     const [connections, activeAttempts] = await Promise.all([
       getConnections(),
       syncOccupancy(),
@@ -443,6 +525,7 @@ export function createDispatcherCore({
   }
 
   async function tryLeaseRequest(requestId) {
+    tryLeaseRequestCount += 1;
     const [connections, activeAttempts] = await Promise.all([
       getConnections(),
       syncOccupancy(),
@@ -642,7 +725,7 @@ export function createDispatcherCore({
       eventType: DISPATCH_EVENT_TYPE.COMPLETED,
       payload: { terminalReason },
     });
-    notifyLeaseWaiters();
+    scheduleRefill();
     return attempt;
   }
 
@@ -690,7 +773,7 @@ export function createDispatcherCore({
         error,
       },
     });
-    notifyLeaseWaiters();
+    scheduleRefill();
     return attempt;
   }
 
@@ -700,6 +783,7 @@ export function createDispatcherCore({
       leaseCountByConnection: { ...leaseCountByConnection },
       timeoutPolicy: { ...policy },
       pathHealth: pathHealth.snapshot(),
+      leaseMetrics: getLeaseMetrics(),
     };
   }
 
@@ -709,8 +793,12 @@ export function createDispatcherCore({
     requeueRequest,
     tryLeaseAvailableWork,
     tryLeaseRequest,
+    waitForAssignedLease,
     waitForLeaseSignal,
+    scheduleRefill,
     notifyLeaseWaiters,
+    getLeaseMetrics,
+    resetLeaseMetrics,
     markAttemptConnecting,
     markAttemptStreamStarted,
     markAttemptProgress,

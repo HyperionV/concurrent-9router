@@ -132,8 +132,18 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     try {
       setError(null);
 
-      // Device code flow providers
-      const deviceCodeProviders = ["github", "qwen", "kiro", "kimi-coding", "kilocode", "codebuddy"];
+      // Device code flow providers (must match oauth providers with flowType: "device_code")
+      const deviceCodeProviders = [
+        "github",
+        "qwen",
+        "kiro",
+        "kimi-coding",
+        "kilocode",
+        "codebuddy",
+        "codebuddy-cn",
+        "qoder",
+        "grok-cli",
+      ];
       if (deviceCodeProviders.includes(provider)) {
         setIsDeviceCode(true);
         setStep("waiting");
@@ -148,9 +158,35 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         }
         const res = await fetch(deviceCodeUrl.toString());
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error);
+        if (!res.ok) throw new Error(data.error || "Device code request failed");
 
-        setDeviceData(data);
+        // Normalize device-code field names across providers (OAuth2 + GitHub variants)
+        const normalized = {
+          ...data,
+          device_code: data.device_code || data.deviceCode || data.code,
+          user_code: data.user_code || data.userCode,
+          verification_uri:
+            data.verification_uri ||
+            data.verificationUri ||
+            data.verification_url ||
+            data.verificationUrl,
+          verification_uri_complete:
+            data.verification_uri_complete ||
+            data.verificationUriComplete ||
+            data.verification_url_complete,
+          interval: Number(data.interval) > 0 ? Number(data.interval) : 5,
+        };
+        if (!normalized.device_code) {
+          throw new Error("Device code response missing device_code");
+        }
+        setDeviceData(normalized);
+
+        // Auto-open verification URL (Grok Build / GitHub UX)
+        const verifyUrl =
+          normalized.verification_uri_complete || normalized.verification_uri;
+        if (verifyUrl) {
+          window.open(verifyUrl, "_blank", "noopener,noreferrer");
+        }
 
         // Pass extraData for Kiro (contains _clientId, _clientSecret)
         const extraData = provider === "kiro"
@@ -162,7 +198,12 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
               _startUrl: data._startUrl,
             }
           : null;
-        startPolling(data.device_code, data.codeVerifier, data.interval || 5, extraData);
+        startPolling(
+          normalized.device_code,
+          data.codeVerifier,
+          normalized.interval,
+          extraData,
+        );
         return;
       }
 

@@ -11,7 +11,8 @@ import {
   Spinner,
 } from "@/shared/components";
 
-const REFRESH_INTERVAL_MS = 5000;
+const LIVE_REFRESH_INTERVAL_MS = 3000;
+const HISTORY_REFRESH_INTERVAL_MS = 20000;
 
 function formatTimestamp(value) {
   if (!value) return "Never";
@@ -500,41 +501,75 @@ export default function DispatcherPage() {
   const [snapshot, setSnapshot] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [statusProvider, setStatusProvider] = useState("codex");
 
-  const fetchStatus = useCallback(async ({ silent = false } = {}) => {
-    if (silent) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
+  const mergeSnapshot = useCallback((prev, next, view) => {
+    if (!prev || view === "full") return next;
+    if (view === "live") {
+      return {
+        ...prev,
+        ...next,
+        terminal: prev.terminal,
+        models: prev.models,
+        paths: prev.paths,
+      };
     }
-
-    try {
-      const response = await fetch("/api/dispatcher/text/status", {
-        cache: "no-store",
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data?.error || "Failed to fetch dispatcher status");
-      }
-      setSnapshot(data);
-    } catch (error) {
-      console.error("Failed to fetch dispatcher status:", error);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+    if (view === "history") {
+      return {
+        ...prev,
+        terminal: next.terminal,
+        models: next.models || prev.models,
+        paths: next.paths || prev.paths,
+        generatedAt: next.generatedAt || prev.generatedAt,
+      };
     }
+    return next;
   }, []);
 
+  const fetchStatus = useCallback(
+    async ({ silent = false, view = "full" } = {}) => {
+      if (silent) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+
+      try {
+        const url = `/api/dispatcher/text/status?provider=${encodeURIComponent(statusProvider)}&view=${encodeURIComponent(view)}&terminalLimit=100`;
+        const response = await fetch(url, {
+          cache: "no-store",
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data?.error || "Failed to fetch dispatcher status");
+        }
+        setSnapshot((prev) => mergeSnapshot(prev, data, view));
+      } catch (error) {
+        console.error("Failed to fetch dispatcher status:", error);
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [statusProvider, mergeSnapshot],
+  );
+
   useEffect(() => {
-    fetchStatus();
+    fetchStatus({ view: "full" });
   }, [fetchStatus]);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      fetchStatus({ silent: true });
-    }, REFRESH_INTERVAL_MS);
+    const liveInterval = setInterval(() => {
+      fetchStatus({ silent: true, view: "live" });
+    }, LIVE_REFRESH_INTERVAL_MS);
+    const historyInterval = setInterval(() => {
+      fetchStatus({ silent: true, view: "history" });
+    }, HISTORY_REFRESH_INTERVAL_MS);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(liveInterval);
+      clearInterval(historyInterval);
+    };
   }, [fetchStatus]);
 
   if (loading && !snapshot) {
@@ -555,19 +590,65 @@ export default function DispatcherPage() {
     );
   }
 
+  const poolPolicies = snapshot.settings?.providerAdmissionPolicies || {};
+  const poolOptions = [
+    { id: "codex", label: "Codex" },
+    { id: "antigravity", label: "Antigravity" },
+    { id: "grok-cli", label: "Grok CLI" },
+  ];
+
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-end">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          {poolOptions.map((pool) => {
+            const policy =
+              pool.id === "codex"
+                ? poolPolicies.codex ||
+                  snapshot.settings?.codexDefaultAdmissionPolicy ||
+                  "legacy"
+                : poolPolicies[pool.id] || "legacy";
+            const selected = statusProvider === pool.id;
+            return (
+              <button
+                key={pool.id}
+                type="button"
+                onClick={() => setStatusProvider(pool.id)}
+                className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+                  selected
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-black/10 text-text-muted hover:border-black/20 dark:border-white/10"
+                }`}
+              >
+                {pool.label}
+                <span className="ml-2 text-xs opacity-70">{policy}</span>
+              </button>
+            );
+          })}
+        </div>
         <Button
           variant="outline"
           size="sm"
           icon={refreshing ? undefined : "refresh"}
-          onClick={() => fetchStatus({ silent: true })}
+          onClick={() => fetchStatus({ silent: true, view: "full" })}
           disabled={refreshing}
         >
           {refreshing ? <Spinner size="sm" /> : "Refresh"}
         </Button>
       </div>
+      <Card
+        title="Text dispatcher pools"
+        subtitle="Isolated queues per provider. Live metrics poll every 3s; history every 20s. Image dispatcher remains Codex-only."
+        icon="hub"
+      >
+        <p className="text-sm text-text-muted">
+          Viewing pool <code className="text-xs">{statusProvider}</code>. Antigravity
+          and Grok CLI default to legacy admission; set{" "}
+          <code className="text-xs">providerAdmissionPolicies</code> to{" "}
+          <code className="text-xs">managed</code> to opt a pool into dispatcher
+          control. API keys only override Codex admission.
+        </p>
+      </Card>
       <DispatcherOverview snapshot={snapshot} />
       <DispatcherControlsCard
         snapshot={snapshot}

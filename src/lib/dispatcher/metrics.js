@@ -288,24 +288,51 @@ function summarizePaths(activeAttempts, terminalAttempts) {
   });
 }
 
+/**
+ * @param {object} options
+ * @param {"live"|"history"|"full"} [options.view]
+ *   live = queue + active + capacity only
+ *   history = terminal aggregates only
+ *   full = both (default)
+ * @param {number} [options.terminalLimit] cap terminal rows (default 100)
+ */
 export function getDispatcherStatusSnapshot({
   provider = "codex",
   settings = {},
   inMemory = null,
   connectionViews = [],
+  view = "full",
+  terminalLimit = 100,
 } = {}) {
-  const queuedRequests = listQueuedDispatchRequests(provider, 500);
-  const activeAttempts = listActiveDispatchAttempts(provider);
-  // OPT-004: filter terminal attempts in SQL by provider
-  const terminalAttempts = listDispatchAttemptsByState(
-    ["completed", "failed", "timed_out", "cancelled", "reconciled"],
-    provider,
-  );
+  const includeLive = view === "live" || view === "full";
+  const includeHistory = view === "history" || view === "full";
+
+  const queuedRequests = includeLive
+    ? listQueuedDispatchRequests(provider, 500)
+    : [];
+  const activeAttempts = includeLive
+    ? listActiveDispatchAttempts(provider)
+    : [];
+  // OPT-004: filter + cap terminal attempts in SQL by provider
+  const terminalAttempts = includeHistory
+    ? listDispatchAttemptsByState(
+        ["completed", "failed", "timed_out", "cancelled", "reconciled"],
+        provider,
+        { limit: Math.max(1, Math.min(500, Number(terminalLimit) || 100)) },
+      )
+    : [];
 
   const providerPolicies = settings.providerAdmissionPolicies || {};
-  return {
+  const mode = deriveDispatcherMode(settings);
+  const poolDefaultPolicy =
+    provider === "codex"
+      ? settings.codexDefaultAdmissionPolicy || "legacy"
+      : providerPolicies[provider] || "legacy";
+
+  const base = {
     provider,
-    mode: deriveDispatcherMode(settings),
+    mode,
+    view,
     generatedAt: new Date().toISOString(),
     settings: {
       dispatcherEnabled: settings.dispatcherEnabled === true,
@@ -313,10 +340,12 @@ export function getDispatcherStatusSnapshot({
       dispatcherCodexOnly: settings.dispatcherCodexOnly !== false,
       codexDefaultAdmissionPolicy:
         settings.codexDefaultAdmissionPolicy || "legacy",
-      providerAdmissionPolicy:
-        provider === "codex"
-          ? settings.codexDefaultAdmissionPolicy || "legacy"
-          : providerPolicies[provider] || "legacy",
+      providerAdmissionPolicies: {
+        codex: settings.codexDefaultAdmissionPolicy || "legacy",
+        antigravity: providerPolicies.antigravity || "legacy",
+        "grok-cli": providerPolicies["grok-cli"] || "legacy",
+      },
+      providerAdmissionPolicy: poolDefaultPolicy,
       dispatcherSlotsPerConnection:
         Number(
           settings[`dispatcherSlotsPerConnection_${provider}`] ??
@@ -329,24 +358,71 @@ export function getDispatcherStatusSnapshot({
       managedOnly: true,
       mixedModeAware: true,
       isolatedPools: true,
+      pools: {
+        codex: {
+          defaultPolicy: settings.codexDefaultAdmissionPolicy || "legacy",
+          effectiveUnderRuntime:
+            mode === "managed" &&
+            (settings.codexDefaultAdmissionPolicy || "legacy") === "managed"
+              ? "managed"
+              : mode === "shadow"
+                ? "shadow-or-legacy"
+                : "legacy",
+        },
+        antigravity: {
+          defaultPolicy: providerPolicies.antigravity || "legacy",
+          note: "Global pool policy only (no per-API-key override).",
+        },
+        "grok-cli": {
+          defaultPolicy: providerPolicies["grok-cli"] || "legacy",
+          note: "Global pool policy only (no per-API-key override).",
+        },
+      },
     },
-    capacity: buildCapacitySummary({
+  };
+
+  if (includeLive) {
+    base.capacity = buildCapacitySummary({
       connectionViews,
       settings,
       inMemory,
       activeAttempts,
-    }),
-    queued: summarizeQueuedRequests(queuedRequests),
-    active: summarizeActiveAttempts(activeAttempts),
-    terminal: summarizeTerminalAttempts(terminalAttempts),
-    models: summarizeModels(queuedRequests, activeAttempts, terminalAttempts),
-    paths: summarizePaths(activeAttempts, terminalAttempts),
-    connections: summarizeConnections({
+    });
+    base.queued = summarizeQueuedRequests(queuedRequests);
+    base.active = summarizeActiveAttempts(activeAttempts);
+    base.connections = summarizeConnections({
+      connectionViews,
+      settings,
+      inMemory,
+      activeAttempts,
+      terminalAttempts: [],
+    });
+  }
+
+  if (includeHistory) {
+    base.terminal = summarizeTerminalAttempts(terminalAttempts);
+    base.terminalLimit = Math.max(
+      1,
+      Math.min(500, Number(terminalLimit) || 100),
+    );
+  }
+
+  if (includeLive && includeHistory) {
+    base.models = summarizeModels(
+      queuedRequests,
+      activeAttempts,
+      terminalAttempts,
+    );
+    base.paths = summarizePaths(activeAttempts, terminalAttempts);
+    // Recompute connections with terminal for full view
+    base.connections = summarizeConnections({
       connectionViews,
       settings,
       inMemory,
       activeAttempts,
       terminalAttempts,
-    }),
-  };
+    });
+  }
+
+  return base;
 }

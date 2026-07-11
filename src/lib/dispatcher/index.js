@@ -3,27 +3,21 @@ import { createDispatcherCore } from "@/lib/dispatcher/core.js";
 import { createDispatcherWatchdog } from "@/lib/dispatcher/watchdog.js";
 import { buildDispatchConnectionView } from "@/lib/dispatcher/connectionState.js";
 import { TEXT_DISPATCH_PROVIDERS } from "@/lib/dispatcher/settings.js";
+import {
+  CONNECTION_CACHE_TTL_MS,
+  getConnectionCacheEntry,
+  setConnectionCacheEntry,
+  invalidateDispatcherConnectionCache,
+} from "@/lib/dispatcher/connectionCache.js";
 
-export { TEXT_DISPATCH_PROVIDERS };
+export { TEXT_DISPATCH_PROVIDERS, invalidateDispatcherConnectionCache };
 
 const dispatcherByProvider = new Map();
 const lastKnownSlotsByProvider = new Map();
 const watchdogSweepInFlightByProvider = new Map();
 let sharedWatchdogInterval = null;
 
-// OPT-003: short-lived connection view cache per provider
-const connectionCacheByProvider = new Map();
-const CONNECTION_CACHE_TTL_MS = 1000;
-
 const WATCHDOG_SWEEP_INTERVAL_MS = 5000;
-
-export function invalidateDispatcherConnectionCache(provider = null) {
-  if (provider) {
-    connectionCacheByProvider.delete(provider);
-    return;
-  }
-  connectionCacheByProvider.clear();
-}
 
 function slotsSettingKey(provider) {
   if (provider === "codex") return "dispatcherSlotsPerConnection";
@@ -32,7 +26,7 @@ function slotsSettingKey(provider) {
 
 async function loadProviderConnections(provider, { force = false } = {}) {
   const now = Date.now();
-  const cached = connectionCacheByProvider.get(provider);
+  const cached = getConnectionCacheEntry(provider);
   if (
     !force &&
     cached &&
@@ -65,7 +59,7 @@ async function loadProviderConnections(provider, { force = false } = {}) {
   const connections = await Promise.all(
     rawConnections.map((connection) => buildDispatchConnectionView(connection)),
   );
-  connectionCacheByProvider.set(provider, {
+  setConnectionCacheEntry(provider, {
     at: now,
     connections,
     slotsPerConnection,
