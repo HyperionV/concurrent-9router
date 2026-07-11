@@ -12,20 +12,7 @@ import {
   setConnectionCacheEntry,
   invalidateDispatcherConnectionCache,
 } from "@/lib/dispatcher/connectionCache.js";
-import {
-  insertDispatchAttemptEvent,
-  listActiveDispatchAttempts,
-  transitionDispatchAttempt,
-  updateDispatchRequestStatus,
-} from "@/lib/sqlite/dispatcherStore.js";
-import { nowIso } from "@/lib/sqlite/helpers.js";
-import { randomUUID } from "node:crypto";
-import {
-  DEFAULT_TERMINAL_REASON,
-  DISPATCH_ATTEMPT_STATE,
-  DISPATCH_EVENT_TYPE,
-  DISPATCH_REQUEST_STATUS,
-} from "@/lib/dispatcher/types.js";
+import { clearZombieAttemptsOnProcessBoot } from "@/lib/dispatcher/processBootClean.js";
 
 export { TEXT_DISPATCH_PROVIDERS, invalidateDispatcherConnectionCache };
 
@@ -96,95 +83,6 @@ async function loadProviderConnections(provider, { force = false } = {}) {
   return { connections, slotsPerConnection };
 }
 
-/**
- * Only clear *stale* active attempts when a dispatcher pool is first created
- * in this process.
- *
- * CRITICAL: Next may load routes in separate module instances / workers that
- * each call getProviderDispatcher. Naively reconciling ALL open attempts on
- * every pool create kills live work owned by another instance (user log:
- * 5 admissions → open dashboard → "reconciled 5 orphaned" → tasks never run).
- *
- * - Do not touch young attempts (other worker may own them).
- * - Do not cancel queued waiters (they are not process-local).
- * - Watchdog still times out true zombies via connect/ttft/idle/deadline.
- */
-const RECONCILE_STALE_AFTER_MS = 2 * 60 * 1000;
-
-function attemptActivityAgeMs(attempt, now = Date.now()) {
-  const stamps = [
-    attempt?.lastProgressAt,
-    attempt?.firstProgressAt,
-    attempt?.streamStartedAt,
-    attempt?.connectStartedAt,
-    attempt?.leasedAt,
-    attempt?.queueEnteredAt,
-  ];
-  for (const stamp of stamps) {
-    if (!stamp) continue;
-    const ms = new Date(stamp).getTime();
-    if (Number.isFinite(ms)) return Math.max(0, now - ms);
-  }
-  return Number.POSITIVE_INFINITY;
-}
-
-function reconcileOrphanedRuntime(provider) {
-  const now = Date.now();
-  const active = listActiveDispatchAttempts(provider);
-  let reconciled = 0;
-  let skippedFresh = 0;
-
-  for (const attempt of active) {
-    if (!attempt?.id) continue;
-    const ageMs = attemptActivityAgeMs(attempt, now);
-    if (ageMs < RECONCILE_STALE_AFTER_MS) {
-      skippedFresh += 1;
-      continue;
-    }
-
-    const updated = transitionDispatchAttempt(
-      attempt.id,
-      [
-        DISPATCH_ATTEMPT_STATE.LEASED,
-        DISPATCH_ATTEMPT_STATE.CONNECTING,
-        DISPATCH_ATTEMPT_STATE.STREAMING,
-      ],
-      DISPATCH_ATTEMPT_STATE.RECONCILED,
-      {
-        finishedAt: nowIso(),
-        terminalReason: DEFAULT_TERMINAL_REASON.RECONCILED,
-        error: {
-          code: "stale_after_process_start",
-          message: `Active attempt older than ${RECONCILE_STALE_AFTER_MS}ms with no owning process; freed capacity`,
-          ageMs,
-        },
-      },
-    );
-    if (!updated) continue;
-    reconciled += 1;
-    insertDispatchAttemptEvent({
-      id: randomUUID(),
-      attemptId: attempt.id,
-      eventType: DISPATCH_EVENT_TYPE.RECONCILED,
-      payload: { reason: "stale_after_process_start", ageMs },
-    });
-    if (attempt.requestId) {
-      updateDispatchRequestStatus(
-        attempt.requestId,
-        DISPATCH_REQUEST_STATUS.CANCELLED,
-        { completedAt: nowIso() },
-      );
-    }
-  }
-
-  if (reconciled > 0 || skippedFresh > 0) {
-    console.log(
-      `[DISPATCHER] ${provider}: startup reconcile stale=${reconciled} skipped_fresh=${skippedFresh} (fresh < ${RECONCILE_STALE_AFTER_MS}ms kept alive)`,
-    );
-  }
-  return reconciled;
-}
-
 async function runWatchdogSweep(provider, entry) {
   if (watchdogSweepInFlightByProvider.get(provider)) return;
   watchdogSweepInFlightByProvider.set(provider, true);
@@ -228,6 +126,10 @@ export function getProviderDispatcher(provider) {
     throw new Error(`No text dispatcher for provider: ${provider}`);
   }
 
+  // Once per Node process: free pure-LEASED / stuck rows from a previous run
+  // so occupancy is not full of ghosts (connect_timeout=5, zero FORMAT).
+  clearZombieAttemptsOnProcessBoot();
+
   if (dispatcherByProvider.has(provider)) {
     return dispatcherByProvider.get(provider);
   }
@@ -260,9 +162,6 @@ export function getProviderDispatcher(provider) {
     },
   };
 
-  // Do NOT reconcile open attempts here. Multi-instance Next route loads were
-  // cancelling live work as "orphans" (5 admissions → reconcile 5 → nothing runs).
-  // Stale zombies are left to the watchdog timeouts.
   dispatcherByProvider.set(provider, entry);
   ensureSharedWatchdogInterval();
   return entry;

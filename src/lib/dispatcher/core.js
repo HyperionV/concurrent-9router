@@ -800,13 +800,34 @@ export function createDispatcherCore({
       },
     });
 
+    // Close pure-LEASED window immediately: connect_timeout is 30s and was
+    // killing rows that never reached execute markConnect under concurrency.
+    const connecting =
+      transitionDispatchAttempt(
+        leased.id,
+        DISPATCH_ATTEMPT_STATE.LEASED,
+        DISPATCH_ATTEMPT_STATE.CONNECTING,
+        {
+          connectStartedAt: nowIso(),
+          pathMode,
+        },
+      ) || leased;
+    if (connecting.state === DISPATCH_ATTEMPT_STATE.CONNECTING) {
+      insertDispatchAttemptEvent({
+        id: randomUUID(),
+        attemptId: leased.id,
+        eventType: DISPATCH_EVENT_TYPE.CONNECT_STARTED,
+        payload: { at: connecting.connectStartedAt, source: "try_lease" },
+      });
+    }
+
     return {
       requestId,
       attemptId: leased.id,
       connectionId: connection.id,
       connection,
       request: targetRequest,
-      attempt: leased,
+      attempt: connecting,
       pathMode,
     };
   }
@@ -858,6 +879,13 @@ export function createDispatcherCore({
   }
 
   async function markAttemptConnecting(attemptId, updates = {}) {
+    const existing = getDispatchAttempt(attemptId);
+    if (
+      existing?.state === DISPATCH_ATTEMPT_STATE.CONNECTING &&
+      existing.connectStartedAt
+    ) {
+      return existing;
+    }
     return markAttemptState(
       attemptId,
       DISPATCH_ATTEMPT_STATE.LEASED,
