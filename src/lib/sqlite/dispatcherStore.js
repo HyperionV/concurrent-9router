@@ -260,16 +260,23 @@ export function listDispatchAttemptsByState(
   return rows.map(normalizeAttempt);
 }
 
+/**
+ * Admit an attempt onto a connection. Goes straight to `connecting` with both
+ * leased_at and connect_started_at set — pure `leased` without connect was
+ * causing 30s connect_timeout kills while the execute path was still racing.
+ */
 export function leaseDispatchAttempt(attemptId, lease) {
   const db = getSqlite();
+  const leasedAt = lease.leasedAt || nowIso();
   const result = db
     .prepare(
       `
       UPDATE dispatch_attempts
-      SET state = 'leased',
+      SET state = 'connecting',
           connection_id = @connectionId,
           lease_key = @leaseKey,
           leased_at = @leasedAt,
+          connect_started_at = @connectStartedAt,
           path_mode = @pathMode
       WHERE id = @attemptId
         AND state = 'queued'
@@ -279,7 +286,8 @@ export function leaseDispatchAttempt(attemptId, lease) {
       attemptId,
       connectionId: lease.connectionId,
       leaseKey: lease.leaseKey,
-      leasedAt: lease.leasedAt || nowIso(),
+      leasedAt,
+      connectStartedAt: lease.connectStartedAt || leasedAt,
       pathMode: lease.pathMode || null,
     });
   return result.changes === 1 ? getDispatchAttempt(attemptId) : null;
