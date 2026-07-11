@@ -121,20 +121,48 @@ export function createDispatcherCore({
   }
 
   /**
-   * OPT-001: wait only for this request's lease. Central refill drives tryLeaseAvailableWork.
-   * Does not call tryLeaseRequest in a poll loop.
+   * OPT-001: wait for this request's lease.
+   * 1) Immediate tryLeaseRequest when a slot is free (no wait).
+   * 2) Otherwise register a waiter; complete/fail/refill assigns via tryLeaseAvailableWork.
+   * Never busy-polls.
    */
-  function waitForAssignedLease(requestId, timeoutMs) {
+  async function waitForAssignedLease(requestId, timeoutMs) {
+    const effectiveTimeout =
+      Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+        ? Number(timeoutMs)
+        : policy.queueTtlMs;
+
+    // Fail fast when the pool has zero eligible connections
+    try {
+      const connections = await getConnections();
+      if (!Array.isArray(connections) || connections.length === 0) {
+        console.warn(
+          `[DISPATCHER] ${provider}: no active connections available for lease (check collection filter / isActive)`,
+        );
+        return null;
+      }
+    } catch (error) {
+      console.error(`[DISPATCHER] ${provider}: getConnections failed:`, error);
+      return null;
+    }
+
+    // Free-slot fast path — one attempt, not a poll loop
+    try {
+      const immediate = await tryLeaseRequest(requestId);
+      if (immediate) return immediate;
+    } catch (error) {
+      console.error(`[DISPATCHER] ${provider}: immediate lease failed:`, error);
+    }
+
     return new Promise((resolve) => {
       if (leaseWaiters.has(requestId)) {
-        // Replace existing waiter
         const prev = leaseWaiters.get(requestId);
         if (prev?.timer) clearTimeout(prev.timer);
       }
       const timer = setTimeout(() => {
         leaseWaiters.delete(requestId);
         resolve(null);
-      }, Math.max(0, Number(timeoutMs) || 0));
+      }, effectiveTimeout);
       timer.unref?.();
       leaseWaiters.set(requestId, { resolve, timer, mode: "lease" });
       scheduleRefill();

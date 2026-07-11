@@ -5,8 +5,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev --webpack --port 20128",
-    "build": "NODE_ENV=production next build --webpack",
-    "start": "NODE_ENV=production next start",
+    "build": "next build --webpack",
+    "start": "next start --port 20128",
+    "start:standalone": "node .next/standalone/server.js",
     "test:dispatcher": "node --loader ./tests/dispatcher/alias-loader.mjs --test tests/dispatcher/*.test.mjs"
   },
   "dependencies": {

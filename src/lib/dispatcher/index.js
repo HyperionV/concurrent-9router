@@ -55,7 +55,22 @@ async function loadProviderConnections(provider, { force = false } = {}) {
     query.collectionId = settings.textDispatcherCollectionId;
   }
 
-  const rawConnections = await getProviderConnections(query);
+  let rawConnections = await getProviderConnections(query);
+  // If collection filter yields zero accounts, fall back to all active provider
+  // connections so managed traffic does not hang with a valid login outside the collection.
+  if (
+    rawConnections.length === 0 &&
+    provider === "codex" &&
+    settings.textDispatcherCollectionId
+  ) {
+    console.warn(
+      `[DISPATCHER] codex: collection ${settings.textDispatcherCollectionId} has no active connections; falling back to all active Codex accounts`,
+    );
+    rawConnections = await getProviderConnections({
+      provider: "codex",
+      isActive: true,
+    });
+  }
   const connections = await Promise.all(
     rawConnections.map((connection) => buildDispatchConnectionView(connection)),
   );

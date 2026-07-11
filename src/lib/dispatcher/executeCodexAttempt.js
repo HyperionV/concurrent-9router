@@ -90,6 +90,11 @@ export async function maybeHandleManagedCodexRequest({
     return null;
   }
 
+  log.info(
+    "DISPATCHER",
+    `managed admission for ${provider}/${model} (policy=${decision.requestedPolicy})`,
+  );
+
   return executeManagedProviderRequest({
     body,
     provider,
@@ -175,9 +180,13 @@ async function executeManagedProviderRequest({
       timeoutKind: "queue_expired",
       error: { code: "dispatcher_queue_expired" },
     });
+    log.warn(
+      "DISPATCHER",
+      `${provider}/${model}: no lease (empty connection pool, collection filter, or queue TTL). Falling back is not available on managed path.`,
+    );
     return createErrorResult(
       HTTP_STATUS.SERVICE_UNAVAILABLE,
-      `${provider} dispatcher queue expired before a slot became available`,
+      `${provider} dispatcher could not assign a connection for ${model}. Check: active ${provider} accounts, text dispatcher collection membership, and that accounts are not rate-limited.`,
     ).response;
   }
 
