@@ -8,7 +8,9 @@ import {
 // Default token expiry buffer (refresh if expires within 5 minutes)
 export const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000;
 const REFRESH_RESULT_TTL_MS = 10_000;
-const refreshDedupCache = new Map();
+// Process-global: concurrent admits across webpack module copies must share
+// one in-flight refresh or Codex can hit refresh_token_reused.
+const refreshDedupCache = (globalThis.__tokenRefreshDedupCache ||= new Map());
 const UNRECOVERABLE_REFRESH_CODES = new Set([
   "unrecoverable_refresh_error",
   "refresh_token_reused",

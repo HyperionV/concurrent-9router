@@ -618,8 +618,9 @@ test("unrecoverable Codex refresh failure deactivates the connection", async () 
         { status: 400, headers: { "Content-Type": "application/json" } },
       );
 
+    let refreshResult;
     try {
-      await checkAndRefreshToken("codex", {
+      refreshResult = await checkAndRefreshToken("codex", {
         connectionId: "conn_reused",
         refreshToken: "refresh_reused",
         expiresAt: new Date(Date.now() - 1000).toISOString(),
@@ -627,6 +628,13 @@ test("unrecoverable Codex refresh failure deactivates the connection", async () 
     } finally {
       globalThis.fetch = originalFetch;
     }
+
+    assert.equal(
+      refreshResult.refreshUnrecoverable,
+      true,
+      "callers must see refreshUnrecoverable and abort before upstream",
+    );
+    assert.ok(refreshResult.refreshErrorCode);
 
     const connection = getProviderConnection("conn_reused");
     assert.equal(connection.testStatus, "unavailable");

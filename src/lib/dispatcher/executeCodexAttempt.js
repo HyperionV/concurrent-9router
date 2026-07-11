@@ -256,10 +256,44 @@ async function executeManagedProviderRequest({
     `${provider}/${model}: credentials loaded, refreshing token if needed`,
   );
   credentials = await checkAndRefreshToken(provider, credentials);
+  if (credentials?.refreshUnrecoverable) {
+    await dispatcher.failAttempt(attemptId, {
+      nextState: "failed",
+      terminalReason: "auth_refresh_unrecoverable",
+      error: {
+        connectionId: lease.connectionId,
+        code: credentials.refreshErrorCode || "unrecoverable_refresh_error",
+      },
+    });
+    log.warn(
+      "DISPATCHER",
+      `${provider}/${model}: abort after unrecoverable token refresh (no upstream)`,
+    );
+    return createErrorResult(
+      HTTP_STATUS.SERVICE_UNAVAILABLE,
+      `Managed ${provider} connection requires re-authentication`,
+    ).response;
+  }
   log.info(
     "DISPATCHER",
     `${provider}/${model}: token ready, entering handleChatCore`,
   );
+
+  let finalized = false;
+  const finalizeSuccess = async (terminalReason = "success") => {
+    if (finalized) return;
+    finalized = true;
+    await dispatcher.completeAttempt(attemptId, { terminalReason });
+  };
+  const finalizeFailure = async (terminalReason, errorPayload = {}) => {
+    if (finalized) return;
+    finalized = true;
+    await dispatcher.failAttempt(attemptId, {
+      nextState: "failed",
+      terminalReason,
+      error: errorPayload,
+    });
+  };
 
   let persistedContinuationKey = null;
   const dispatcherHooks = {
@@ -296,22 +330,17 @@ async function executeManagedProviderRequest({
     onCompleted: async () => {
       await finalizeSuccess("success");
     },
-  };
-
-  let finalized = false;
-  const finalizeSuccess = async (terminalReason = "success") => {
-    if (finalized) return;
-    finalized = true;
-    await dispatcher.completeAttempt(attemptId, { terminalReason });
-  };
-  const finalizeFailure = async (terminalReason, errorPayload = {}) => {
-    if (finalized) return;
-    finalized = true;
-    await dispatcher.failAttempt(attemptId, {
-      nextState: "failed",
-      terminalReason,
-      error: errorPayload,
-    });
+    // Streaming non-SSE / pipe failures — release the slot even if the outer
+    // result path is slow or missed.
+    onFailed: async ({ status = null, error = null } = {}) => {
+      await finalizeFailure("upstream_error", {
+        status,
+        message:
+          typeof error === "string"
+            ? error
+            : error?.message || error?.code || "upstream_failed",
+      });
+    },
   };
 
   const result = await handleChatCore({

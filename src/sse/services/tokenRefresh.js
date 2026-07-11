@@ -224,12 +224,13 @@ export async function checkAndRefreshToken(provider, credentials) {
 
       const newCreds = await getAccessToken(provider, creds);
       if (_isUnrecoverableRefreshError(newCreds)) {
+        const code = newCreds.code || newCreds.error;
         await updateProviderConnection(creds.connectionId, {
           isActive: false,
           testStatus: "unavailable",
           lastError:
             "Refresh token is invalid or reused; re-authentication required",
-          errorCode: newCreds.code || newCreds.error,
+          errorCode: code,
           lastErrorAt: new Date().toISOString(),
         });
         log.warn(
@@ -238,10 +239,15 @@ export async function checkAndRefreshToken(provider, credentials) {
           {
             provider,
             connectionId: creds.connectionId,
-            code: newCreds.code || newCreds.error,
+            code,
           },
         );
-        return creds;
+        // Signal callers to abort — do not continue upstream with stale tokens.
+        return {
+          ...creds,
+          refreshUnrecoverable: true,
+          refreshErrorCode: code,
+        };
       }
       if (newCreds?.accessToken) {
         const mergedCreds = {

@@ -37,8 +37,10 @@ function buildModelLockKey(modelId) {
 export function createDispatcherQuotaHealth({
   now = Date.now,
   updateConnection = updateProviderConnection,
+  /** Injected map for tests; production singleton uses process-global memory. */
+  memory: memoryOverride = null,
 } = {}) {
-  const memory = new Map();
+  const memory = memoryOverride || new Map();
 
   function cacheKey(connectionId, modelId) {
     return `${connectionId}:${normalizeModelId(modelId)}`;
@@ -177,4 +179,7 @@ export function createDispatcherQuotaHealth({
   };
 }
 
-export const dispatcherQuotaHealth = createDispatcherQuotaHealth();
+// Process-global memory so multi-module Next copies share 429/limit state.
+export const dispatcherQuotaHealth = createDispatcherQuotaHealth({
+  memory: (globalThis.__dispatcherQuotaMemory ||= new Map()),
+});
