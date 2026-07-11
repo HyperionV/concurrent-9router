@@ -2,12 +2,18 @@ import { convertResponsesStreamToJson } from "../../transformer/streamToJsonConv
 import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { FORMATS } from "../../translator/formats.js";
+import { PROVIDERS } from "../../config/providers.js";
 import {
   buildRequestDetail,
   extractRequestConfig,
   saveUsageStats,
 } from "./requestDetail.js";
 import { saveRequestDetail, appendRequestLog } from "@/lib/usageDb.js";
+
+/** Providers that speak OpenAI Responses SSE (codex, grok-cli, …). */
+export function isResponsesProvider(provider) {
+  return PROVIDERS[provider]?.format === FORMATS.OPENAI_RESPONSES;
+}
 
 function textFromResponsesMessageItem(item) {
   if (!item?.content || !Array.isArray(item.content)) return "";
@@ -144,7 +150,7 @@ export async function handleForcedSSEToJson({
   const contentType = providerResponse.headers.get("content-type") || "";
   const isSSE =
     contentType.includes("text/event-stream") ||
-    (contentType === "" && provider === "codex");
+    (contentType === "" && isResponsesProvider(provider));
   if (!isSSE) return null; // not handled here
 
   trackDone();
@@ -158,9 +164,9 @@ export async function handleForcedSSEToJson({
     providerRequest: finalBody || translatedBody || null,
   };
 
-  // Codex/Responses API SSE path
+  // Responses API SSE path (codex, grok-cli, and any openai-responses provider)
   const isCodexResponsesApi =
-    provider === "codex" || sourceFormat === FORMATS.OPENAI_RESPONSES;
+    isResponsesProvider(provider) || sourceFormat === FORMATS.OPENAI_RESPONSES;
   if (isCodexResponsesApi) {
     try {
       if (dispatcherHooks?.onStreamStarted) {

@@ -105,6 +105,6 @@ test("policy override normalization accepts only supported values", () => {
   assert.equal(normalizeCodexAdmissionPolicyOverride("managed"), "managed");
   assert.throws(
     () => normalizeCodexAdmissionPolicyOverride("shadow"),
-    /unsupported codex admission policy/i,
+    /unsupported admission policy/i,
   );
 });

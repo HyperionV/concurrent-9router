@@ -10,6 +10,7 @@ import {
   getModelStrip,
   PROVIDER_ID_TO_ALIAS,
 } from "../config/providerModels.js";
+import { PROVIDERS } from "../config/providers.js";
 import {
   createErrorResult,
   parseUpstreamError,
@@ -101,16 +102,23 @@ export async function handleChatCore({
     sourceFormat === FORMATS.ANTIGRAVITY ||
     sourceFormat === FORMATS.GEMINI ||
     sourceFormat === FORMATS.GEMINI_CLI;
-  const providerRequiresStreaming =
-    provider === "openai" || provider === "codex";
+  // forceStream is set on codex/grok-cli (Responses API always SSE). Do not hardcode
+  // provider names — Grok was missing and fell into Chat Completions SSE→JSON, dropping usage.
+  const providerRequiresStreaming = PROVIDERS[provider]?.forceStream === true;
   let stream = providerRequiresStreaming ? true : body.stream !== false;
 
   // Check client Accept header preference for non-streaming requests
   // This fixes AI SDK compatibility where clients send Accept: application/json
+  // Never override forceStream providers — they only return SSE.
   const acceptHeader = clientRawRequest?.headers?.accept || "";
   const clientPrefersJson = acceptHeader.includes("application/json");
   const clientPrefersSSE = acceptHeader.includes("text/event-stream");
-  if (clientPrefersJson && !clientPrefersSSE && body.stream !== true) {
+  if (
+    clientPrefersJson &&
+    !clientPrefersSSE &&
+    body.stream !== true &&
+    !providerRequiresStreaming
+  ) {
     stream = false;
   }
 
