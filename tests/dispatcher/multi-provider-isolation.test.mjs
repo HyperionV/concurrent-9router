@@ -169,8 +169,16 @@ test("5 concurrent tryLeaseRequest all admit under slots=15", async () => {
     const active = listActiveDispatchAttempts("codex");
     assert.equal(active.length, 5);
     for (const attempt of active) {
-      assert.equal(attempt.state, "leased");
+      assert.equal(
+        attempt.state,
+        "connecting",
+        "lease must set connecting+connect_started_at atomically",
+      );
       assert.ok(attempt.leasedAt);
+      assert.ok(
+        attempt.connectStartedAt,
+        "connect_started_at required to avoid 30s connect_timeout ghosts",
+      );
       assert.equal(attempt.connectionId, "conn-1");
     }
   } finally {

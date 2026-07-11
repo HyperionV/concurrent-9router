@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  getDispatchAttempt,
   getDispatchConversationAffinity,
   getDispatchRequest,
   getLatestDispatchAttemptForRequest,
@@ -340,6 +341,15 @@ export function createDispatcherCore({
           leaseKey,
         },
       });
+      insertDispatchAttemptEvent({
+        id: randomUUID(),
+        attemptId: leased.id,
+        eventType: DISPATCH_EVENT_TYPE.CONNECT_STARTED,
+        payload: {
+          at: leased.connectStartedAt || leasedAt,
+          source: "try_lease_available",
+        },
+      });
 
       leases.push({
         requestId: request.id,
@@ -418,6 +428,16 @@ export function createDispatcherCore({
         leaseKey,
       },
     });
+    // leaseDispatchAttempt already sets connecting + connect_started_at
+    insertDispatchAttemptEvent({
+      id: randomUUID(),
+      attemptId: leased.id,
+      eventType: DISPATCH_EVENT_TYPE.CONNECT_STARTED,
+      payload: {
+        at: leased.connectStartedAt || leasedAt,
+        source: "try_lease_request",
+      },
+    });
 
     return {
       requestId,
@@ -426,6 +446,7 @@ export function createDispatcherCore({
       connection,
       request: targetRequest,
       attempt: leased,
+      pathMode: leased.pathMode || null,
     };
   }
 
@@ -476,9 +497,16 @@ export function createDispatcherCore({
   }
 
   async function markAttemptConnecting(attemptId, updates = {}) {
+    const existing = getDispatchAttempt(attemptId);
+    if (
+      existing?.state === DISPATCH_ATTEMPT_STATE.CONNECTING &&
+      existing.connectStartedAt
+    ) {
+      return existing;
+    }
     return markAttemptState(
       attemptId,
-      DISPATCH_ATTEMPT_STATE.LEASED,
+      [DISPATCH_ATTEMPT_STATE.LEASED, DISPATCH_ATTEMPT_STATE.CONNECTING],
       DISPATCH_ATTEMPT_STATE.CONNECTING,
       DISPATCH_EVENT_TYPE.CONNECT_STARTED,
       {

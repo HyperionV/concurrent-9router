@@ -260,17 +260,25 @@ export function listDispatchAttemptsByState(
   return rows.map(normalizeAttempt);
 }
 
-/** Admit attempt onto a connection (origin/main: state = leased). */
+/**
+ * Admit attempt onto a connection.
+ * IMPORTANT: set connecting + connect_started_at in the same write.
+ * Live DB showed bursts of pure-leased rows (connect_started_at NULL) that
+ * never received connect_started events — watchdog killed them at 30s while
+ * HTTP handlers were still stuck before FORMAT.
+ */
 export function leaseDispatchAttempt(attemptId, lease) {
   const db = getSqlite();
+  const leasedAt = lease.leasedAt || nowIso();
   const result = db
     .prepare(
       `
       UPDATE dispatch_attempts
-      SET state = 'leased',
+      SET state = 'connecting',
           connection_id = @connectionId,
           lease_key = @leaseKey,
           leased_at = @leasedAt,
+          connect_started_at = @connectStartedAt,
           path_mode = @pathMode
       WHERE id = @attemptId
         AND state = 'queued'
@@ -280,7 +288,8 @@ export function leaseDispatchAttempt(attemptId, lease) {
       attemptId,
       connectionId: lease.connectionId,
       leaseKey: lease.leaseKey,
-      leasedAt: lease.leasedAt || nowIso(),
+      leasedAt,
+      connectStartedAt: lease.connectStartedAt || leasedAt,
       pathMode: lease.pathMode || null,
     });
   return result.changes === 1 ? getDispatchAttempt(attemptId) : null;

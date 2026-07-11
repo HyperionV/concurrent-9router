@@ -197,15 +197,37 @@ async function executeManagedProviderRequest({
     ).response;
   }
 
-  // origin/main marks connect in chatCore hooks; we mark immediately so the
-  // 30s connect_timeout cannot fire during token refresh / credential build.
-  await dispatcher.markAttemptConnecting(lease.attemptId, {
+  const attemptId = lease.attemptId || lease.attempt?.id;
+  if (!attemptId) {
+    log.error(
+      "DISPATCHER",
+      `${provider}/${model}: lease missing attemptId after tryLeaseRequest`,
+    );
+    return createErrorResult(
+      HTTP_STATUS.INTERNAL_ERROR || 500,
+      `${provider} dispatcher lease missing attempt id`,
+    ).response;
+  }
+
+  // Lease SQL already sets connecting; this is idempotent + logs failure.
+  const marked = await dispatcher.markAttemptConnecting(attemptId, {
     pathMode: lease.pathMode || null,
   });
+  if (!marked) {
+    log.error(
+      "DISPATCHER",
+      `${provider}/${model}: markAttemptConnecting failed for ${attemptId} (state may be wrong)`,
+    );
+  } else {
+    log.info(
+      "DISPATCHER",
+      `${provider}/${model}: leased ${attemptId.slice(0, 8)}… conn=${String(lease.connectionId).slice(0, 8)}…`,
+    );
+  }
 
   const rawConnection = await getProviderConnectionById(lease.connectionId);
   if (!rawConnection || rawConnection.isActive !== true) {
-    await dispatcher.failAttempt(lease.attemptId, {
+    await dispatcher.failAttempt(attemptId, {
       nextState: "failed",
       terminalReason: "connection_missing",
       error: { connectionId: lease.connectionId },
@@ -231,16 +253,16 @@ async function executeManagedProviderRequest({
   let persistedContinuationKey = null;
   const dispatcherHooks = {
     onConnectStarted: async ({ pathMode = null } = {}) => {
-      await dispatcher.markAttemptConnecting(lease.attemptId, { pathMode });
+      await dispatcher.markAttemptConnecting(attemptId, { pathMode });
     },
     onStreamStarted: async () => {
-      await dispatcher.markAttemptStreamStarted(lease.attemptId);
+      await dispatcher.markAttemptStreamStarted(attemptId);
     },
     onFirstProgress: async () => {
-      await dispatcher.markAttemptProgress(lease.attemptId);
+      await dispatcher.markAttemptProgress(attemptId);
     },
     onProgress: async () => {
-      await dispatcher.markAttemptProgress(lease.attemptId);
+      await dispatcher.markAttemptProgress(attemptId);
     },
     onResponseIdentity: async (responseId) => {
       if (typeof responseId !== "string" || responseId.trim() === "") {
@@ -269,12 +291,12 @@ async function executeManagedProviderRequest({
   const finalizeSuccess = async (terminalReason = "success") => {
     if (finalized) return;
     finalized = true;
-    await dispatcher.completeAttempt(lease.attemptId, { terminalReason });
+    await dispatcher.completeAttempt(attemptId, { terminalReason });
   };
   const finalizeFailure = async (terminalReason, errorPayload = {}) => {
     if (finalized) return;
     finalized = true;
-    await dispatcher.failAttempt(lease.attemptId, {
+    await dispatcher.failAttempt(attemptId, {
       nextState: "failed",
       terminalReason,
       error: errorPayload,
