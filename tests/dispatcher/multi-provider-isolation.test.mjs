@@ -193,3 +193,47 @@ test("evented lease waiters wake after completeAttempt", async () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("pending lease is claimed if refill assigns before waiter registers", async () => {
+  const tempDir = makeTempDataDir();
+
+  try {
+    await resetDispatcherTables(tempDir);
+    const { createDispatcherCore } = await import("@/lib/dispatcher/core.js");
+
+    const dispatcher = createDispatcherCore({
+      provider: "grok-cli",
+      getConnections: async () => [
+        { id: "g-conn-1", priority: 1, providerSpecificData: {} },
+      ],
+      getSlotsPerConnection: () => 1,
+    });
+
+    const first = await dispatcher.enqueueRequest({
+      provider: "grok-cli",
+      modelId: "grok-4.5",
+    });
+    const second = await dispatcher.enqueueRequest({
+      provider: "grok-cli",
+      modelId: "grok-4.5",
+    });
+
+    const lease1 = await dispatcher.waitForAssignedLease(
+      first.request.id,
+      2000,
+    );
+    assert.ok(lease1);
+
+    // Simulate a waiter for second so refill runs, then complete first.
+    // deliverLease must park the lease if we claim it without a waiter briefly.
+    const waiterReady = dispatcher.waitForAssignedLease(second.request.id, 2000);
+    await dispatcher.completeAttempt(lease1.attemptId);
+    const lease2 = await waiterReady;
+    assert.ok(lease2, "queued request must receive lease after slot frees");
+    assert.equal(lease2.connectionId, "g-conn-1");
+  } finally {
+    const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
+    closeSqlite();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});

@@ -300,11 +300,13 @@ async function executeManagedProviderRequest({
   });
 
   if (result.success) {
-    if (
-      result.response?.headers
-        ?.get?.("Content-Type")
-        ?.includes("application/json")
-    ) {
+    // Non-stream JSON: finalize here (forced SSE→JSON paths never call onCompleted).
+    // Streaming: do NOT finalize yet — slot stays held until stream onCompleted
+    // after the body is fully consumed. Completing early would free the slot
+    // while Grok is still streaming and break queueing.
+    const contentType =
+      result.response?.headers?.get?.("Content-Type") || "";
+    if (contentType.includes("application/json")) {
       await finalizeSuccess("success");
     }
     return result.response;

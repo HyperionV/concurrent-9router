@@ -58,6 +58,8 @@ export function createDispatcherCore({
   const leaseCountByConnection = {};
   // OPT-001: waiters resolve with a lease object when central refill assigns them
   const leaseWaiters = new Map(); // requestId -> { resolve, timer }
+  // Leases assigned by refill before the request registered a waiter
+  const pendingLeases = new Map(); // requestId -> lease
   let refillScheduled = false;
   let refillInFlight = false;
   let tryLeaseRequestCount = 0;
@@ -70,6 +72,20 @@ export function createDispatcherCore({
     if (waiter.timer) clearTimeout(waiter.timer);
     waiter.resolve(lease);
     return true;
+  }
+
+  function claimPendingLease(requestId) {
+    const lease = pendingLeases.get(requestId);
+    if (!lease) return null;
+    pendingLeases.delete(requestId);
+    return lease;
+  }
+
+  /** Deliver lease to waiter, or park it if the waiter has not registered yet. */
+  function deliverLease(requestId, lease) {
+    if (!lease) return;
+    if (resolveWaiter(requestId, lease)) return;
+    pendingLeases.set(requestId, lease);
   }
 
   function notifyLeaseWaiters(requestId = null) {
@@ -111,7 +127,7 @@ export function createDispatcherCore({
     try {
       const leases = await tryLeaseAvailableWork();
       for (const lease of leases) {
-        resolveWaiter(lease.requestId, lease);
+        deliverLease(lease.requestId, lease);
       }
     } finally {
       refillInFlight = false;
@@ -122,8 +138,9 @@ export function createDispatcherCore({
 
   /**
    * OPT-001: wait for this request's lease.
-   * 1) Immediate tryLeaseRequest when a slot is free (no wait).
-   * 2) Otherwise register a waiter; complete/fail/refill assigns via tryLeaseAvailableWork.
+   * 1) Claim a lease parked by refill (race: assigned before waiter registered).
+   * 2) Immediate tryLeaseRequest when a slot is free (no wait).
+   * 3) Otherwise register a waiter; complete/fail/refill assigns via tryLeaseAvailableWork.
    * Never busy-polls.
    */
   async function waitForAssignedLease(requestId, timeoutMs) {
@@ -146,6 +163,9 @@ export function createDispatcherCore({
       return null;
     }
 
+    const parked = claimPendingLease(requestId);
+    if (parked) return parked;
+
     // Free-slot fast path — one attempt, not a poll loop
     try {
       const immediate = await tryLeaseRequest(requestId);
@@ -154,6 +174,10 @@ export function createDispatcherCore({
       console.error(`[DISPATCHER] ${provider}: immediate lease failed:`, error);
     }
 
+    // Refill may have parked a lease between tryLease and waiter registration
+    const parkedAfterTry = claimPendingLease(requestId);
+    if (parkedAfterTry) return parkedAfterTry;
+
     return new Promise((resolve) => {
       if (leaseWaiters.has(requestId)) {
         const prev = leaseWaiters.get(requestId);
@@ -161,10 +185,19 @@ export function createDispatcherCore({
       }
       const timer = setTimeout(() => {
         leaseWaiters.delete(requestId);
+        // Do not leave a parked lease stranded forever after timeout
+        pendingLeases.delete(requestId);
         resolve(null);
       }, effectiveTimeout);
       timer.unref?.();
       leaseWaiters.set(requestId, { resolve, timer, mode: "lease" });
+
+      // Race: lease parked after we decided to wait but before map insert
+      const raced = claimPendingLease(requestId);
+      if (raced) {
+        resolveWaiter(requestId, raced);
+        return;
+      }
       scheduleRefill();
     });
   }

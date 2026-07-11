@@ -260,6 +260,14 @@ export async function handleChatCore({
   }
 
   // Execute request
+  // Mark connecting BEFORE the upstream round-trip. Grok/Codex often take >30s
+  // to return headers; if we only mark after execute(), the dispatcher watchdog
+  // treat the attempt as connect_timeout, releases the lease, and queued work
+  // fails while the original request is still in flight.
+  if (dispatcherHooks?.onConnectStarted) {
+    await dispatcherHooks.onConnectStarted({ pathMode: null });
+  }
+
   let providerResponse, providerUrl, providerHeaders, finalBody;
   try {
     const result = await executor.execute({
@@ -275,13 +283,6 @@ export async function handleChatCore({
     providerUrl = result.url;
     providerHeaders = result.headers;
     finalBody = result.transformedBody;
-    const providerPathMode =
-      result.pathMode || providerResponse?.pathMode || null;
-    if (dispatcherHooks?.onConnectStarted) {
-      await dispatcherHooks.onConnectStarted({
-        pathMode: providerPathMode,
-      });
-    }
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false, true);
