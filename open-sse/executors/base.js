@@ -157,9 +157,11 @@ export class BaseExecutor {
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 
       const connectCtrl = new AbortController();
+      const connectTimeoutMs =
+        this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
       const timeoutId = setTimeout(() => {
         connectCtrl.abort(new Error("fetch connect timeout"));
-      }, FETCH_CONNECT_TIMEOUT_MS);
+      }, connectTimeoutMs);
 
       try {
         const fetchSignal = signal

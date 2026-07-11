@@ -6,6 +6,7 @@ import { normalizeResponsesInput } from "../translator/helpers/responsesApiHelpe
 import { fetchImageAsBase64 } from "../translator/helpers/imageHelper.js";
 import {
   DEFAULT_RETRY_CONFIG,
+  HTTP_STATUS,
   resolveRetryEntry,
 } from "../config/runtimeConfig.js";
 import { getConsistentMachineId } from "../../src/shared/utils/machineId.js";
@@ -14,11 +15,26 @@ import {
   shouldRefreshCredentials,
 } from "../services/oauthCredentialManager.js";
 
-const CODEX_SSE_OVERLOADED_PATTERNS = [
+// SSE error patterns inside 200-OK bodies. Some retry same account first; capacity rotates accounts.
+const CODEX_SSE_RETRY_PATTERNS = [
   "server_is_overloaded",
   "service_unavailable_error",
 ];
-const CODEX_SSE_PEEK_BYTES = 4096;
+const CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS = [
+  "selected model is at capacity",
+  "model_at_capacity",
+];
+const CODEX_SSE_USER_OUTPUT_PATTERNS = [
+  "event: response.output_text.delta",
+  "event: response.function_call_arguments.delta",
+  '"type":"response.output_text.delta"',
+  '"type":"response.function_call_arguments.delta"',
+];
+const CODEX_SSE_PEEK_BYTES = 256 * 1024;
+const CODEX_MODEL_CAPACITY_MESSAGE =
+  "Selected model is at capacity. Please try a different model.";
+// Keep legacy name for any external references
+const CODEX_SSE_OVERLOADED_PATTERNS = CODEX_SSE_RETRY_PATTERNS;
 const SESSION_TTL_MS = 60 * 60 * 1000;
 const SERVER_ID_PATTERN = /^(rs|fc|resp|msg)_/;
 const CODEX_HOSTED_TOOL_TYPES = new Set([
@@ -120,6 +136,81 @@ function convertSystemToDeveloperRole(body) {
       item.role = "developer";
     }
   }
+}
+
+function normalizeReasoningEffort(value) {
+  return value === "max" ? "xhigh" : value;
+}
+
+function findNestedMessage(value, depth = 0) {
+  if (!value || depth > 6 || typeof value === "string") return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findNestedMessage(item, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof value !== "object") return null;
+  if (typeof value.message === "string" && value.message.trim())
+    return value.message;
+  if (
+    typeof value.error?.message === "string" &&
+    value.error.message.trim()
+  ) {
+    return value.error.message;
+  }
+  if (
+    typeof value.response?.error?.message === "string" &&
+    value.response.error.message.trim()
+  ) {
+    return value.response.error.message;
+  }
+  for (const child of Object.values(value)) {
+    const found = findNestedMessage(child, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+function extractSseErrorMessage(text, fallback) {
+  const exact = text?.match(
+    /Selected model is at capacity\. Please try a different model\./i,
+  )?.[0];
+  if (exact) return exact;
+
+  for (const line of String(text || "").split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trim();
+    if (!data || data === "[DONE]") continue;
+    try {
+      const message = findNestedMessage(JSON.parse(data));
+      if (message) return message;
+    } catch {
+      // Ignore non-JSON SSE data lines.
+    }
+  }
+
+  return fallback || CODEX_MODEL_CAPACITY_MESSAGE;
+}
+
+function codexSseErrorResponse(status, message) {
+  return new Response(
+    JSON.stringify({
+      error: {
+        message,
+        type: status >= 500 ? "server_error" : "invalid_request_error",
+        code:
+          status === HTTP_STATUS.SERVICE_UNAVAILABLE
+            ? "service_unavailable"
+            : "upstream_error",
+      },
+    }),
+    {
+      status,
+      headers: { "Content-Type": "application/json" },
+    },
+  );
 }
 
 function stripStoredItemReferences(body) {
@@ -353,12 +444,19 @@ export class CodexExecutor extends BaseExecutor {
     }
     workingBody.model = requestModel;
 
-    // Priority: explicit reasoning.effort > reasoning_effort param > model suffix > default (medium)
+    // Priority: explicit reasoning.effort > reasoning_effort param > model suffix > default
     if (!workingBody.reasoning) {
-      const effort = workingBody.reasoning_effort || modelEffort || "low";
+      const effort = normalizeReasoningEffort(
+        workingBody.reasoning_effort || modelEffort || "low",
+      );
       workingBody.reasoning = { effort, summary: "auto" };
-    } else if (!workingBody.reasoning.summary) {
-      workingBody.reasoning.summary = "auto";
+    } else {
+      workingBody.reasoning.effort = normalizeReasoningEffort(
+        workingBody.reasoning.effort,
+      );
+      if (!workingBody.reasoning.summary) {
+        workingBody.reasoning.summary = "auto";
+      }
     }
     delete workingBody.reasoning_effort;
 
@@ -389,6 +487,17 @@ export class CodexExecutor extends BaseExecutor {
     delete workingBody.stream_options; // Cursor sends this but Codex doesn't support it
     delete workingBody.safety_identifier; // Droid CLI sends this but Codex doesn't support it
     delete workingBody.previous_response_id;
+
+    // Fast tier maps to Codex priority; unknown tiers are stripped
+    if (workingBody.service_tier === "fast") {
+      workingBody.service_tier = "priority";
+    }
+    if (
+      workingBody.service_tier &&
+      workingBody.service_tier !== "priority"
+    ) {
+      delete workingBody.service_tier;
+    }
 
     if (!workingBody.prompt_cache_key && resolvedSessionId) {
       workingBody.prompt_cache_key = resolvedSessionId;
@@ -426,12 +535,29 @@ export class CodexExecutor extends BaseExecutor {
     });
   }
 
+  /**
+   * Peek first N bytes of SSE body to detect upstream transient errors / capacity.
+   * Returns { matched, message, accountFallback, replacementBody, cancel }.
+   */
   async _peekSseOverloaded(response, { buildReplacement = true } = {}) {
-    if (!response || !response.ok || !response.body)
-      return { matched: null, replacementBody: null, cancel: null };
+    if (!response || !response.ok || !response.body) {
+      return {
+        matched: null,
+        message: null,
+        accountFallback: false,
+        replacementBody: null,
+        cancel: null,
+      };
+    }
     const contentType = response.headers?.get?.("content-type") || "";
     if (contentType && !contentType.includes("text/event-stream")) {
-      return { matched: null, replacementBody: null, cancel: null };
+      return {
+        matched: null,
+        message: null,
+        accountFallback: false,
+        replacementBody: null,
+        cancel: null,
+      };
     }
 
     const reader = response.body.getReader();
@@ -439,33 +565,71 @@ export class CodexExecutor extends BaseExecutor {
     const chunks = [];
     let text = "";
     let matched = null;
+    let accountFallback = false;
     try {
       while (text.length < CODEX_SSE_PEEK_BYTES) {
         const { done, value } = await reader.read();
         if (done) break;
         chunks.push(value);
         text += decoder.decode(value, { stream: true });
-        matched =
-          CODEX_SSE_OVERLOADED_PATTERNS.find((pattern) =>
-            text.includes(pattern),
-          ) || null;
-        if (matched) break;
+        const lowerText = text.toLowerCase();
+        const accountHit = CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS.find((p) =>
+          lowerText.includes(p),
+        );
+        if (accountHit) {
+          matched = accountHit;
+          accountFallback = true;
+          break;
+        }
+        const retryHit = CODEX_SSE_RETRY_PATTERNS.find((p) =>
+          lowerText.includes(p),
+        );
+        if (retryHit) {
+          matched = retryHit;
+          break;
+        }
+        if (CODEX_SSE_USER_OUTPUT_PATTERNS.some((p) => lowerText.includes(p))) {
+          break;
+        }
       }
     } catch {
-      return { matched: null, replacementBody: null, cancel: null };
+      return {
+        matched: null,
+        message: null,
+        accountFallback: false,
+        replacementBody: null,
+        cancel: null,
+      };
     }
 
-    if (matched && !buildReplacement) {
+    if (matched) {
       return {
         matched,
+        message: extractSseErrorMessage(text, matched),
+        accountFallback,
         replacementBody: null,
         cancel: async (reason) => {
           try {
             await reader.cancel(reason);
           } finally {
-            reader.releaseLock();
+            try {
+              reader.releaseLock();
+            } catch {
+              /* noop */
+            }
           }
         },
+      };
+    }
+
+    if (!buildReplacement) {
+      reader.releaseLock();
+      return {
+        matched: null,
+        message: null,
+        accountFallback: false,
+        replacementBody: null,
+        cancel: null,
       };
     }
 
@@ -493,11 +657,15 @@ export class CodexExecutor extends BaseExecutor {
       cancel(reason) {
         try {
           upstreamReader?.cancel(reason);
-        } catch {}
+        } catch {
+          /* noop */
+        }
       },
     });
     return {
-      matched,
+      matched: null,
+      message: null,
+      accountFallback: false,
       replacementBody,
       cancel: (reason) => replacementBody.cancel(reason),
     };
@@ -556,24 +724,53 @@ export class CodexExecutor extends BaseExecutor {
         },
       });
       const peek = await this._peekSseOverloaded(response.response, {
-        buildReplacement: attempt >= retryEntry.attempts,
+        buildReplacement: true,
       });
       if (!peek.matched) {
-        if (peek.replacementBody)
+        if (peek.replacementBody) {
           response.response = this._replaceResponseBody(
             response.response,
             peek.replacementBody,
           );
+        }
         break;
       }
+
+      // Capacity: surface as 503 so account fallback can rotate connections
+      if (peek.accountFallback) {
+        args.log?.warn?.(
+          "RETRY",
+          `CODEX | SSE account fallback "${peek.message || peek.matched}"`,
+        );
+        try {
+          await peek.cancel?.("codex_sse_capacity_fallback");
+        } catch {
+          /* noop */
+        }
+        response.response = codexSseErrorResponse(
+          HTTP_STATUS.SERVICE_UNAVAILABLE,
+          peek.message || CODEX_MODEL_CAPACITY_MESSAGE,
+        );
+        break;
+      }
+
       if (attempt >= retryEntry.attempts) {
-        if (peek.replacementBody)
-          response.response = this._replaceResponseBody(
-            response.response,
-            peek.replacementBody,
-          );
+        args.log?.warn?.(
+          "RETRY",
+          `CODEX | SSE overloaded "${peek.matched}" — retries exhausted (${attempt}/${retryEntry.attempts})`,
+        );
+        try {
+          await peek.cancel?.("codex_sse_overloaded_exhausted");
+        } catch {
+          /* noop */
+        }
+        response.response = codexSseErrorResponse(
+          HTTP_STATUS.SERVICE_UNAVAILABLE,
+          peek.message || peek.matched,
+        );
         break;
       }
+
       attempt++;
       args.log?.debug?.(
         "RETRY",
@@ -581,7 +778,9 @@ export class CodexExecutor extends BaseExecutor {
       );
       try {
         await peek.cancel?.("codex_sse_overloaded_retry");
-      } catch {}
+      } catch {
+        /* noop */
+      }
       await new Promise((resolve) => setTimeout(resolve, retryEntry.delayMs));
     }
     return {

@@ -37,8 +37,28 @@ export const MEMORY_CONFIG = {
   proxyDispatchersMaxSize: 20,
 };
 
-// Fetch connect timeout: fail over if upstream does not return headers quickly.
-export const FETCH_CONNECT_TIMEOUT_MS = 20 * 1000;
+// Parse a positive integer env override, falling back to a default.
+function envMs(name, def) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return def;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : def;
+}
+
+// Inter-chunk stall timeout (once tokens are flowing). Generous headroom so
+// slow reasoning models aren't aborted mid-stream. Env: STREAM_STALL_TIMEOUT_MS.
+export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 1000);
+
+// Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
+export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs(
+  "STREAM_FIRST_CHUNK_TIMEOUT_MS",
+  200 * 1000,
+);
+
+// Fetch connect timeout: abort if upstream doesn't return response headers.
+// Default 20s preserves concurrent failover intent; override via env when needed.
+// Env: FETCH_CONNECT_TIMEOUT_MS.
+export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 20 * 1000);
 
 // Default token limits
 export const DEFAULT_MAX_TOKENS = 64000;
@@ -50,12 +70,14 @@ export const RETRY_CONFIG = {
   delayMs: 2000,
 };
 
-// Default retry config by status code. Values may be numbers or { attempts, delayMs }.
+// Default retry config by status code for executor-level retries (legacy path).
+// Managed dispatcher owns its own attempt lifecycle — do not also double-retry
+// at the admission layer when a request is already dispatcher-owned.
 export const DEFAULT_RETRY_CONFIG = {
   429: { attempts: 0, delayMs: 0 },
-  502: { attempts: 1, delayMs: 2000 },
-  503: { attempts: 1, delayMs: 2000 },
-  504: { attempts: 1, delayMs: 2000 },
+  502: { attempts: 3, delayMs: 3000 },
+  503: { attempts: 3, delayMs: 2000 },
+  504: { attempts: 2, delayMs: 3000 },
 };
 
 export function resolveRetryEntry(entry) {

@@ -5,6 +5,9 @@ import {
   createPassthroughStreamWithLogger,
 } from "../../utils/stream.js";
 import { pipeWithDisconnect } from "../../utils/streamHandler.js";
+import { PROVIDERS } from "../../config/providers.js";
+import { STREAM_STALL_TIMEOUT_MS } from "../../config/runtimeConfig.js";
+import { buildAbortedResponsesTerminalBytes } from "../../utils/responsesStreamHelpers.js";
 import {
   buildRequestDetail,
   extractRequestConfig,
@@ -17,6 +20,15 @@ const SSE_HEADERS = {
   "Cache-Control": "no-cache",
   Connection: "keep-alive",
   "Access-Control-Allow-Origin": "*",
+};
+
+// Responses-API providers emit Responses SSE → translate into client format
+const RESPONSES_SOURCE_TO_TARGET = {
+  [FORMATS.OPENAI_RESPONSES]: FORMATS.OPENAI_RESPONSES,
+  [FORMATS.CLAUDE]: FORMATS.CLAUDE,
+  [FORMATS.ANTIGRAVITY]: FORMATS.ANTIGRAVITY,
+  [FORMATS.GEMINI]: FORMATS.ANTIGRAVITY,
+  [FORMATS.GEMINI_CLI]: FORMATS.ANTIGRAVITY,
 };
 
 /**
@@ -40,27 +52,21 @@ function buildTransformStream({
   const isDroidCLI =
     userAgent?.toLowerCase().includes("droid") ||
     userAgent?.toLowerCase().includes("codex-cli");
-  const needsCodexTranslation =
-    provider === "codex" &&
+  const isResponsesProvider =
+    PROVIDERS[provider]?.format === FORMATS.OPENAI_RESPONSES ||
+    provider === "codex" ||
+    provider === "grok-cli";
+  const needsResponsesTranslation =
+    isResponsesProvider &&
     targetFormat === FORMATS.OPENAI_RESPONSES &&
     !isDroidCLI;
 
-  if (needsCodexTranslation) {
-    // Codex returns Responses API SSE → translate to client format
-    let codexTarget;
-    if (sourceFormat === FORMATS.OPENAI_RESPONSES)
-      codexTarget = FORMATS.OPENAI_RESPONSES;
-    else if (sourceFormat === FORMATS.CLAUDE) codexTarget = FORMATS.CLAUDE;
-    else if (
-      sourceFormat === FORMATS.ANTIGRAVITY ||
-      sourceFormat === FORMATS.GEMINI ||
-      sourceFormat === FORMATS.GEMINI_CLI
-    )
-      codexTarget = FORMATS.ANTIGRAVITY;
-    else codexTarget = FORMATS.OPENAI;
+  if (needsResponsesTranslation) {
+    const responsesTarget =
+      RESPONSES_SOURCE_TO_TARGET[sourceFormat] || FORMATS.OPENAI;
     return createSSETransformStreamWithLogger(
       FORMATS.OPENAI_RESPONSES,
-      codexTarget,
+      responsesTarget,
       provider,
       reqLogger,
       toolNameMap,
@@ -107,7 +113,7 @@ function buildTransformStream({
 /**
  * Handle streaming response — pipe provider SSE through transform stream to client.
  */
-export function handleStreamingResponse({
+export async function handleStreamingResponse({
   providerResponse,
   provider,
   model,
@@ -129,9 +135,62 @@ export function handleStreamingResponse({
   streamController,
   onStreamComplete,
   dispatcherHooks = null,
+  streamDetailId = null,
 }) {
   if (dispatcherHooks?.onStreamStarted) {
     dispatcherHooks.onStreamStarted().catch(() => {});
+  }
+
+  // When upstream returns HTML/text instead of SSE (e.g. Cloudflare 5xx page),
+  // piping through the SSE transform crashes the router. Return clean JSON.
+  const upstreamContentType = (
+    providerResponse.headers.get("content-type") || ""
+  ).toLowerCase();
+  if (
+    upstreamContentType &&
+    !upstreamContentType.includes("text/event-stream") &&
+    !upstreamContentType.includes("application/json")
+  ) {
+    const bodyText = await providerResponse.text().catch(() => "");
+    const titleMatch = bodyText.match(/<title>([^<]+)<\/title>/i);
+    const sanitizedTitle = (titleMatch?.[1] || "")
+      .replace(/<[^>]*>/g, "")
+      .replace(/[\r\n]+/g, " ")
+      .trim()
+      .slice(0, 160);
+    const shortMsg =
+      sanitizedTitle ||
+      (bodyText.length < 200
+        ? bodyText.replace(/<[^>]*>/g, "").trim().slice(0, 160)
+        : `Upstream returned non-SSE response (${upstreamContentType})`);
+    const status = providerResponse.status || 502;
+    console.warn(
+      `[STREAM] ${provider} | ${model} | blocked pipe: ${shortMsg} [${status}]`,
+    );
+    streamController?.handleError?.(new Error(`upstream non-SSE: ${status}`));
+    if (dispatcherHooks?.onFailed) {
+      dispatcherHooks
+        .onFailed({
+          status,
+          error: { message: shortMsg, code: "upstream_non_sse" },
+        })
+        .catch(() => {});
+    }
+    return {
+      success: false,
+      response: new Response(
+        JSON.stringify({
+          error: { message: `[${status}]: ${shortMsg}` },
+        }),
+        {
+          status,
+          headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+          },
+        },
+      ),
+    };
   }
 
   let successMarked = false;
@@ -171,13 +230,29 @@ export function handleStreamingResponse({
     onFirstProgress,
     onResponseIdentity: dispatcherHooks?.onResponseIdentity,
   });
+
+  // Responses passthrough: synthesize response.failed + [DONE] on abort/stall
+  const isResponsesPassthrough =
+    sourceFormat === FORMATS.OPENAI_RESPONSES &&
+    targetFormat === FORMATS.OPENAI_RESPONSES;
+  const onAbortTerminal = isResponsesPassthrough
+    ? buildAbortedResponsesTerminalBytes
+    : null;
+  const stallTimeoutMs =
+    PROVIDERS[provider]?.stallTimeoutMs || STREAM_STALL_TIMEOUT_MS;
+
   const transformedBody = pipeWithDisconnect(
     providerResponse,
     transformStream,
     streamController,
+    onAbortTerminal,
+    stallTimeoutMs,
   );
 
-  const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+  // Prefer stable detail id from buildOnStreamComplete when provided (OPT-008)
+  const detailId =
+    streamDetailId ||
+    `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
   saveRequestDetail(
     buildRequestDetail(
       {
@@ -197,7 +272,7 @@ export function handleStreamingResponse({
         },
         status: "success",
       },
-      { id: streamDetailId },
+      { id: detailId },
     ),
   ).catch((err) => {
     console.error(
@@ -227,8 +302,11 @@ export function buildOnStreamComplete({
   translatedBody,
   clientRawRequest,
   routingDecision = null,
+  streamDetailId = null,
 }) {
-  const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+  const detailId =
+    streamDetailId ||
+    `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
   const onStreamComplete = (contentObj, usage, ttftAt) => {
     const latency = {
@@ -257,7 +335,7 @@ export function buildOnStreamComplete({
           },
           status: "success",
         },
-        { id: streamDetailId },
+        { id: detailId },
       ),
     ).catch((err) => {
       console.error(
@@ -277,5 +355,5 @@ export function buildOnStreamComplete({
     });
   };
 
-  return { onStreamComplete, streamDetailId };
+  return { onStreamComplete, streamDetailId: detailId };
 }
