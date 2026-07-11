@@ -84,9 +84,12 @@ const PROVIDER_MODELS_CONFIG = {
     parseResponse: (data) => data.data || []
   },
   antigravity: {
-    url: "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:models",
+    url: "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": "antigravity/ide/2.1.1 darwin/arm64",
+    },
     authHeader: "Authorization",
     authPrefix: "Bearer ",
     body: {},

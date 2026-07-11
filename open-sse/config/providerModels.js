@@ -8,7 +8,10 @@ import { buildTtsProviderModels } from "./ttsModels.js";
 export const PROVIDER_MODELS = {
   // OAuth Providers (using alias)
   cc: [
-    // Claude Code
+    // Claude Code — aligned with upstream 9router registry (2026-07)
+    { id: "claude-fable-5", name: "Claude Fable 5" },
+    { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
+    { id: "claude-opus-4-8", name: "Claude Opus 4.8" },
     { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
     { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
     { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
@@ -162,9 +165,14 @@ export const PROVIDER_MODELS = {
     },
   ],
   gc: [
-    // Gemini CLI
-    { id: "gemini-3-flash-preview", name: "Gemini 3 Flash Preview" },
+    // Gemini CLI — aligned with upstream 9router registry (2026-07)
+    { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro Preview" },
     { id: "gemini-3-pro-preview", name: "Gemini 3 Pro Preview" },
+    { id: "gemini-3-flash-preview", name: "Gemini 3 Flash Preview" },
+    { id: "gemini-3.1-flash-lite-preview", name: "Gemini 3.1 Flash Lite Preview" },
+    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+    { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite" },
   ],
   qw: [
     // Qwen Code
@@ -193,13 +201,33 @@ export const PROVIDER_MODELS = {
     { id: "iflow-rome-30ba3b", name: "iFlow ROME" },
   ],
   ag: [
-    // Antigravity - special case: models call different backends
-    { id: "gemini-3.1-pro-high", name: "Gemini 3 Pro High" },
-    { id: "gemini-3.1-pro-low", name: "Gemini 3 Pro Low" },
-    { id: "gemini-3-flash", name: "Gemini 3 Flash", thinking: false }, // AG strips thinking for this model
-    { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-    { id: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 Thinking" },
-    { id: "gpt-oss-120b-medium", name: "GPT OSS 120B Medium" },
+    // Antigravity — aligned with upstream IDE / 9router registry (2026-07)
+    // Current Gemini agent models (official IDs from cloudcode-pa)
+    { id: "gemini-3-flash-agent", name: "Gemini 3.5 Flash (High)" },
+    { id: "gemini-3.5-flash-low", name: "Gemini 3.5 Flash (Medium)" },
+    { id: "gemini-3.5-flash-extra-low", name: "Gemini 3.5 Flash (Low)" },
+    { id: "gemini-pro-agent", name: "Gemini 3.1 Pro (High)" },
+    { id: "gemini-3.1-pro-low", name: "Gemini 3.1 Pro (Low)" },
+    // Claude / OSS via AG
+    { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)" },
+    { id: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 (Thinking)" },
+    { id: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+    // Non-thinking flash (AG strips thinking for this id)
+    { id: "gemini-3-flash", name: "Gemini 3 Flash", thinking: false },
+    // Image generation via generateContent (not Codex image dispatcher)
+    {
+      id: "gemini-3.1-flash-image",
+      name: "Gemini 3.1 Flash (Image)",
+      type: "image",
+      kind: "image",
+      capabilities: ["textToImage"],
+    },
+    // Legacy aliases (old list IDs → current upstream model ids)
+    {
+      id: "gemini-3.1-pro-high",
+      name: "Gemini 3.1 Pro High (legacy)",
+      upstreamModelId: "gemini-pro-agent",
+    },
   ],
   gh: [
     // GitHub Copilot - OpenAI models

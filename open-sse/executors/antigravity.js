@@ -1,13 +1,23 @@
 import crypto from "crypto";
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
-import { OAUTH_ENDPOINTS, ANTIGRAVITY_HEADERS, INTERNAL_REQUEST_HEADER, AG_DEFAULT_TOOLS, AG_TOOL_SUFFIX } from "../config/appConstants.js";
+import {
+  OAUTH_ENDPOINTS,
+  ANTIGRAVITY_HEADERS,
+  AG_DEFAULT_TOOLS,
+  AG_TOOL_SUFFIX,
+} from "../config/appConstants.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { deriveSessionId } from "../utils/sessionManager.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { DEFAULT_THINKING_AG_SIGNATURE } from "../config/defaultThinkingSignature.js";
+import { getModelUpstreamId } from "../config/providerModels.js";
 
 const MAX_RETRY_AFTER_MS = 10000;
 const ANTIGRAVITY_TRANSIENT_RETRY_MAX_MS = 15000;
+const ANTIGRAVITY_IDE_REQUEST_ID_RE = /^agent\/[^/]+\/\d+\/[^/]+\/\d+$/;
+const IMAGE_MODEL_PATTERNS = [/image/i, /imagen/i, /image-generation/i];
+
 const ANTIGRAVITY_TRANSIENT_ERROR_PATTERNS = [
   /high\s+traffic/i,
   /agent\s+(execution\s+)?terminated\s+due\s+to\s+error/i,
@@ -24,6 +34,68 @@ const ANTIGRAVITY_TRANSIENT_STATUSES = new Set([
   HTTP_STATUS.GATEWAY_TIMEOUT,
 ]);
 
+function isImageModel(model) {
+  if (!model) return false;
+  return IMAGE_MODEL_PATTERNS.some((p) => p.test(model));
+}
+
+function parseImageConfig(model) {
+  const config = { aspectRatio: "1:1" };
+  const resMatch = String(model || "").match(/(\d+)x(\d+)$/);
+  if (!resMatch) return config;
+  const w = parseInt(resMatch[1], 10);
+  const h = parseInt(resMatch[2], 10);
+  if (w <= 16 && h <= 16) {
+    config.aspectRatio = `${w}:${h}`;
+    return config;
+  }
+  const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+  const d = gcd(w, h);
+  config.aspectRatio = `${w / d}:${h / d}`;
+  return config;
+}
+
+function uuidFromSeed(seed) {
+  const bytes = crypto
+    .createHash("sha256")
+    .update(String(seed || "antigravity"))
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function buildIdeRequestId({ body, request, credentials, model, requestType }) {
+  if (ANTIGRAVITY_IDE_REQUEST_ID_RE.test(body?.requestId || "")) {
+    return body.requestId;
+  }
+  const sessionId =
+    request?.sessionId ||
+    body?.request?.sessionId ||
+    credentials?.connectionId ||
+    credentials?.email ||
+    "anonymous";
+  const conversationId = uuidFromSeed(`antigravity:conversation:${sessionId}`);
+  const trajectoryId = uuidFromSeed(
+    `antigravity:trajectory:${sessionId}:${model}:${requestType}`,
+  );
+  const contentCount = Array.isArray(request?.contents)
+    ? request.contents.length
+    : 1;
+  const step = Math.max(1, contentCount * 2 - 1);
+  return `agent/${conversationId}/${Date.now()}/${trajectoryId}/${step}`;
+}
+
+function resolveAgUpstreamModel(model) {
+  return (
+    getModelUpstreamId("ag", model) ||
+    getModelUpstreamId("antigravity", model) ||
+    model
+  );
+}
+
 export class AntigravityExecutor extends BaseExecutor {
   constructor() {
     super("antigravity", PROVIDERS.antigravity);
@@ -32,39 +104,109 @@ export class AntigravityExecutor extends BaseExecutor {
   buildUrl(model, stream, urlIndex = 0) {
     const baseUrls = this.getBaseUrls();
     const baseUrl = baseUrls[urlIndex] || baseUrls[0];
-    const action = stream ? "streamGenerateContent?alt=sse" : "generateContent";
+    // Image generation must use non-streaming generateContent
+    const forceNonStream = isImageModel(model);
+    const action =
+      stream && !forceNonStream
+        ? "streamGenerateContent?alt=sse"
+        : "generateContent";
     return `${baseUrl}/v1internal:${action}`;
   }
 
+  // Match official IDE: Authorization + User-Agent only (no router-only headers).
   buildHeaders(credentials, stream = true, sessionId = null) {
+    void stream;
+    void sessionId;
     return {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${credentials.accessToken}`,
-      "User-Agent": this.config.headers?.["User-Agent"] || ANTIGRAVITY_HEADERS["User-Agent"],
-      [INTERNAL_REQUEST_HEADER.name]: INTERNAL_REQUEST_HEADER.value,
-      ...(sessionId && { "X-Machine-Session-Id": sessionId }),
-      "Accept": stream ? "text/event-stream" : "application/json"
+      Authorization: `Bearer ${credentials.accessToken}`,
+      "User-Agent":
+        this.config.headers?.["User-Agent"] ||
+        ANTIGRAVITY_HEADERS["User-Agent"],
     };
   }
 
   transformRequest(model, body, stream, credentials) {
+    void stream;
     const projectId = credentials?.projectId || this.generateProjectId();
+    const resolvedModel = resolveAgUpstreamModel(model);
+
+    // ─── Image generation: simplified generateContent payload ───
+    if (isImageModel(resolvedModel)) {
+      const imageConfig = parseImageConfig(resolvedModel);
+      const cleanModel = String(resolvedModel).replace(/-(\d+)x(\d+)$/, "");
+      const contents = [];
+      const srcContents = body.request?.contents || body.contents || [];
+      for (const c of srcContents) {
+        const textParts = (c.parts || [])
+          .filter((p) => p.text !== undefined)
+          .map((p) => ({ text: p.text }));
+        if (textParts.length > 0) {
+          contents.push({ role: c.role || "user", parts: textParts });
+        }
+      }
+      const sessionId = deriveSessionId(
+        credentials?.email || credentials?.connectionId,
+      );
+      const request = {
+        contents,
+        generationConfig: {
+          temperature: 1.0,
+          topP: 0.95,
+          topK: 40,
+          maxOutputTokens: 8192,
+          imageConfig,
+        },
+        sessionId,
+      };
+      return {
+        project: projectId,
+        model: cleanModel,
+        userAgent: "antigravity",
+        requestType: "image_gen",
+        requestId: buildIdeRequestId({
+          body,
+          request,
+          credentials,
+          model: cleanModel,
+          requestType: "image_gen",
+        }),
+        request,
+      };
+    }
 
     // Fix contents for Claude models via Antigravity
-    const contents = body.request?.contents?.map(c => {
+    const contents = body.request?.contents?.map((c) => {
       let role = c.role;
       // functionResponse must be role "user" for Claude models
-      if (c.parts?.some(p => p.functionResponse)) {
+      if (c.parts?.some((p) => p.functionResponse)) {
         role = "user";
       }
       // Strip thought-only parts, keep thoughtSignature on functionCall parts (Gemini 3+ requires it)
-      const parts = c.parts?.filter(p => {
+      const parts = c.parts?.filter((p) => {
         if (p.thought && !p.functionCall) return false;
         if (p.thoughtSignature && !p.functionCall && !p.text) return false;
         return true;
       });
-      if (role !== c.role || parts?.length !== c.parts?.length) {
-        return { ...c, role, parts };
+      // Backfill thoughtSignature on functionCall parts (Gemini 3+ rejects missing signatures)
+      const needsBackfill =
+        parts?.some((p) => p.functionCall && !p.thoughtSignature) ?? false;
+      if (
+        role !== c.role ||
+        parts?.length !== c.parts?.length ||
+        needsBackfill
+      ) {
+        return {
+          ...c,
+          role,
+          parts: needsBackfill
+            ? parts.map((p) =>
+                p.functionCall && !p.thoughtSignature
+                  ? { ...p, thoughtSignature: DEFAULT_THINKING_AG_SIGNATURE }
+                  : p,
+              )
+            : parts,
+        };
       }
       return c;
     });
@@ -72,21 +214,30 @@ export class AntigravityExecutor extends BaseExecutor {
     const transformedRequest = {
       ...body.request,
       ...(contents && { contents }),
-      sessionId: body.request?.sessionId || deriveSessionId(credentials?.email || credentials?.connectionId),
+      sessionId:
+        body.request?.sessionId ||
+        deriveSessionId(credentials?.email || credentials?.connectionId),
       safetySettings: undefined,
-      toolConfig: body.request?.tools?.length > 0
-        ? { functionCallingConfig: { mode: "VALIDATED" } }
-        : body.request?.toolConfig
+      toolConfig:
+        body.request?.tools?.length > 0
+          ? { functionCallingConfig: { mode: "VALIDATED" } }
+          : body.request?.toolConfig,
     };
 
     return {
       ...body,
       project: projectId,
-      model: model,
+      model: resolvedModel,
       userAgent: "antigravity",
       requestType: "agent",
-      requestId: `agent-${crypto.randomUUID()}`,
-      request: transformedRequest
+      requestId: buildIdeRequestId({
+        body,
+        request: transformedRequest,
+        credentials,
+        model: resolvedModel,
+        requestType: "agent",
+      }),
+      request: transformedRequest,
     };
   }
 

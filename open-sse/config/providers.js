@@ -102,12 +102,13 @@ export const PROVIDERS = {
     authUrl: "https://qoder.com/oauth/authorize"
   },
   antigravity: {
-    baseUrls: [
-      "https://daily-cloudcode-pa.googleapis.com",
-      "https://daily-cloudcode-pa.sandbox.googleapis.com",
-    ],
+    // Official Antigravity IDE Desktop 2.1.1 fingerprint (upstream #2389).
+    // Use production cloudcode-pa host + static IDE UA — not host OS platform.
+    baseUrls: ["https://cloudcode-pa.googleapis.com"],
     format: "antigravity",
-    headers: { "User-Agent": `antigravity/1.107.0 ${platform()}/${arch()}` },
+    headers: {
+      "User-Agent": "antigravity/ide/2.1.1 darwin/arm64",
+    },
     clientId: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
     clientSecret: "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",
     retry: {

@@ -50,7 +50,8 @@ export function getPlatformEnum() {
 }
 
 export function getPlatformUserAgent() {
-  return `antigravity/1.104.0 ${platform()}/${arch()}`;
+  // Same static IDE fingerprint as ANTIGRAVITY_HEADERS / PROVIDERS.antigravity
+  return "antigravity/ide/2.1.1 darwin/arm64";
 }
 
 export const CLIENT_METADATA = {
@@ -119,8 +120,9 @@ export const AG_DEFAULT_TOOLS = new Set([
 ]);
 
 // Antigravity chat/stream headers
+// Match official Antigravity IDE Desktop 2.1.1 (static fingerprint, not host OS)
 export const ANTIGRAVITY_HEADERS = {
-  "User-Agent": `antigravity/1.107.0 ${platform()}/${arch()}`
+  "User-Agent": "antigravity/ide/2.1.1 darwin/arm64",
 };
 
 // Cloud Code Assist API
