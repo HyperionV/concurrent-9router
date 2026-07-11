@@ -65,12 +65,17 @@ export function extractUsageFromResponse(responseBody) {
     };
   }
 
-  // Gemini format
-  if (responseBody.usageMetadata) {
+  // Gemini / Antigravity format (may nest under response)
+  const usageMeta =
+    responseBody.usageMetadata || responseBody.response?.usageMetadata;
+  if (usageMeta) {
+    const thoughts = usageMeta.thoughtsTokenCount || 0;
+    const candidates = usageMeta.candidatesTokenCount || 0;
+    const prompt = usageMeta.promptTokenCount || 0;
     return {
-      prompt_tokens: responseBody.usageMetadata.promptTokenCount || 0,
-      completion_tokens: responseBody.usageMetadata.candidatesTokenCount || 0,
-      reasoning_tokens: responseBody.usageMetadata.thoughtsTokenCount,
+      prompt_tokens: prompt,
+      completion_tokens: candidates + thoughts,
+      reasoning_tokens: thoughts || undefined,
     };
   }
 
@@ -106,8 +111,26 @@ export function saveUsageStats({
 }) {
   if (!tokens || typeof tokens !== "object") return;
 
-  const inTokens = tokens.input_tokens ?? tokens.prompt_tokens ?? 0;
-  const outTokens = tokens.output_tokens ?? tokens.completion_tokens ?? 0;
+  const thoughts =
+    tokens.reasoning_tokens ??
+    tokens.thoughtsTokenCount ??
+    tokens.completion_tokens_details?.reasoning_tokens ??
+    0;
+  const inTokens =
+    tokens.input_tokens ??
+    tokens.prompt_tokens ??
+    tokens.promptTokenCount ??
+    0;
+  let outTokens =
+    tokens.output_tokens ??
+    tokens.completion_tokens ??
+    tokens.candidatesTokenCount ??
+    0;
+  // AG/Gemini thinking models often report only thoughtsTokenCount
+  if (outTokens === 0 && thoughts > 0) outTokens = thoughts;
+  else if (thoughts > 0 && !tokens.completion_tokens && tokens.candidatesTokenCount != null) {
+    outTokens = (tokens.candidatesTokenCount || 0) + thoughts;
+  }
 
   if (inTokens === 0 && outTokens === 0) return;
 
@@ -126,8 +149,9 @@ export function saveUsageStats({
 
   // Normalize to OpenAI token shape for storage
   const normalized = {
-    prompt_tokens: tokens.prompt_tokens ?? tokens.input_tokens ?? 0,
-    completion_tokens: tokens.completion_tokens ?? tokens.output_tokens ?? 0,
+    prompt_tokens: inTokens,
+    completion_tokens: outTokens,
+    ...(thoughts > 0 ? { reasoning_tokens: thoughts } : {}),
   };
 
   saveRequestUsage({

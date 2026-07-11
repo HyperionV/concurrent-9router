@@ -296,9 +296,11 @@ export function createSSEStream(options = {}) {
           await emitFirstProgressOnce();
         }
 
-        // Gemini format
-        if (parsed.candidates?.[0]?.content?.parts) {
-          for (const part of parsed.candidates[0].content.parts) {
+        // Gemini / Antigravity format (AG nests under response.candidates)
+        const geminiCandidate =
+          parsed.candidates?.[0] || parsed.response?.candidates?.[0];
+        if (geminiCandidate?.content?.parts) {
+          for (const part of geminiCandidate.content.parts) {
             if (part.text && typeof part.text === "string") {
               totalContentLength += part.text.length;
               // Check if this is thinking content
@@ -507,8 +509,9 @@ export function createSSEStream(options = {}) {
         }
 
         if (hasValidUsage(state?.usage)) {
+          // Always log under real provider id (antigravity/codex/…), not format name
           logUsage(
-            state.provider || targetFormat,
+            provider || state.provider || targetFormat,
             state.usage,
             model,
             connectionId,

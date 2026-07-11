@@ -154,7 +154,8 @@ export function hasValidUsage(usage) {
   const tokenFields = [
     "prompt_tokens", "completion_tokens", "total_tokens",  // OpenAI
     "input_tokens", "output_tokens",                        // Claude
-    "promptTokenCount", "candidatesTokenCount"              // Gemini
+    "promptTokenCount", "candidatesTokenCount", "thoughtsTokenCount", // Gemini / AG
+    "reasoning_tokens",
   ];
 
   for (const field of tokenFields) {
@@ -211,12 +212,32 @@ export function extractUsage(chunk) {
   // Antigravity wraps usageMetadata inside response: { response: { usageMetadata: {...} } }
   const usageMeta = chunk.usageMetadata || chunk.response?.usageMetadata;
   if (usageMeta && typeof usageMeta === "object") {
+    const thoughts =
+      typeof usageMeta.thoughtsTokenCount === "number"
+        ? usageMeta.thoughtsTokenCount
+        : 0;
+    let candidates =
+      typeof usageMeta.candidatesTokenCount === "number"
+        ? usageMeta.candidatesTokenCount
+        : 0;
+    const prompt =
+      typeof usageMeta.promptTokenCount === "number"
+        ? usageMeta.promptTokenCount
+        : 0;
+    const total =
+      typeof usageMeta.totalTokenCount === "number"
+        ? usageMeta.totalTokenCount
+        : 0;
+    // Match gemini-to-openai: completion includes thinking tokens
+    if (candidates === 0 && total > 0) {
+      candidates = Math.max(0, total - prompt - thoughts);
+    }
     return normalizeUsage({
-      prompt_tokens: usageMeta.promptTokenCount || 0,
-      completion_tokens: usageMeta.candidatesTokenCount || 0,
-      total_tokens: usageMeta.totalTokenCount,
+      prompt_tokens: prompt,
+      completion_tokens: candidates + thoughts,
+      total_tokens: total || prompt + candidates + thoughts,
       cached_tokens: usageMeta.cachedContentTokenCount,
-      reasoning_tokens: usageMeta.thoughtsTokenCount
+      reasoning_tokens: thoughts || undefined,
     });
   }
 
@@ -298,11 +319,17 @@ export function logUsage(provider, usage, model = null, connectionId = null, api
 
   const p = provider?.toUpperCase() || "UNKNOWN";
 
-  // Support both formats:
-  // - OpenAI: prompt_tokens, completion_tokens
-  // - Claude: input_tokens, output_tokens
-  const inTokens = usage?.prompt_tokens || usage?.input_tokens || 0;
-  const outTokens = usage?.completion_tokens || usage?.output_tokens || 0;
+  // Support OpenAI, Claude, and Gemini/AG shapes
+  const inTokens =
+    usage?.prompt_tokens ||
+    usage?.input_tokens ||
+    usage?.promptTokenCount ||
+    0;
+  const outTokens =
+    usage?.completion_tokens ||
+    usage?.output_tokens ||
+    (usage?.candidatesTokenCount || 0) + (usage?.thoughtsTokenCount || 0) ||
+    0;
   const accountPrefix = connectionId ? connectionId.slice(0, 8) + "..." : "unknown";
 
   let msg = `[${getTimeString()}] 📊 ${COLORS.green}[USAGE] ${p} | in=${inTokens} | out=${outTokens} | account=${accountPrefix}${COLORS.reset}`;
