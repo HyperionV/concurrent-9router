@@ -220,11 +220,25 @@ export function listActiveDispatchAttempts(provider = null) {
   return rows.map(normalizeAttempt);
 }
 
-export function listDispatchAttemptsByState(states) {
+export function listDispatchAttemptsByState(states, provider = null) {
   if (!Array.isArray(states) || states.length === 0) {
     return [];
   }
   const placeholders = states.map(() => "?").join(", ");
+  if (provider) {
+    const rows = getSqlite()
+      .prepare(
+        `
+          SELECT *
+          FROM dispatch_attempts
+          WHERE state IN (${placeholders})
+            AND provider = ?
+          ORDER BY queue_entered_at ASC
+        `,
+      )
+      .all(...states, provider);
+    return rows.map(normalizeAttempt);
+  }
   const rows = getSqlite()
     .prepare(
       `

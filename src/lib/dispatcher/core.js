@@ -218,20 +218,26 @@ export function createDispatcherCore({
     return { request, attempt };
   }
 
+  /**
+   * OPT-002: eligibility uses precomputed affinity + request maps when provided.
+   * Falls back to store lookups only when maps are omitted (tryLeaseRequest hot path).
+   */
   function requestIsEligibleForConnection(
     request,
     connectionId,
     activeAttempts,
+    affinityByKey = null,
+    requestById = null,
   ) {
     const conversationKey = request?.conversationKey;
     if (!conversationKey) return true;
     const apiKeyScope =
       request?.metadata?.admission?.apiKeyScope || "__no_key__";
+    const affinityKey = `${conversationKey}::${apiKeyScope}`;
 
-    const affinity = getDispatchConversationAffinity(
-      conversationKey,
-      apiKeyScope,
-    );
+    const affinity = affinityByKey
+      ? affinityByKey.get(affinityKey)
+      : getDispatchConversationAffinity(conversationKey, apiKeyScope);
     if (
       affinity &&
       affinity.connectionId &&
@@ -240,16 +246,45 @@ export function createDispatcherCore({
       return false;
     }
 
-    return !activeAttempts.some(
-      (attempt) =>
-        attempt.requestId === request.id ||
-        (request.conversationKey &&
-          getDispatchRequest(attempt.requestId)?.conversationKey ===
-            request.conversationKey &&
-          (getDispatchRequest(attempt.requestId)?.metadata?.admission
-            ?.apiKeyScope || "__no_key__") === apiKeyScope &&
-          attempt.connectionId !== connectionId),
-    );
+    return !activeAttempts.some((attempt) => {
+      if (attempt.requestId === request.id) return true;
+      if (!request.conversationKey || attempt.connectionId === connectionId) {
+        return false;
+      }
+      const other =
+        requestById?.get(attempt.requestId) ||
+        getDispatchRequest(attempt.requestId);
+      if (!other) return false;
+      if (other.conversationKey !== request.conversationKey) return false;
+      const otherScope =
+        other?.metadata?.admission?.apiKeyScope || "__no_key__";
+      return otherScope === apiKeyScope;
+    });
+  }
+
+  function buildPlanningContext(queuedRequests, activeAttempts) {
+    const requestById = new Map();
+    const affinityByKey = new Map();
+    for (const req of queuedRequests) {
+      requestById.set(req.id, req);
+      const conversationKey = req?.conversationKey;
+      if (!conversationKey) continue;
+      const apiKeyScope =
+        req?.metadata?.admission?.apiKeyScope || "__no_key__";
+      const affinityKey = `${conversationKey}::${apiKeyScope}`;
+      if (!affinityByKey.has(affinityKey)) {
+        affinityByKey.set(
+          affinityKey,
+          getDispatchConversationAffinity(conversationKey, apiKeyScope),
+        );
+      }
+    }
+    for (const attempt of activeAttempts) {
+      if (requestById.has(attempt.requestId)) continue;
+      const req = getDispatchRequest(attempt.requestId);
+      if (req) requestById.set(attempt.requestId, req);
+    }
+    return { requestById, affinityByKey };
   }
 
   function connectionCanServeRequest(connection, request) {
@@ -291,6 +326,12 @@ export function createDispatcherCore({
   function planLeases(queuedRequests, connections, activeAttempts) {
     const leasePlan = [];
     const leasedRequestIds = new Set();
+    const plannedOccupancy = {};
+    const slots = resolveSlotsPerConnection();
+    const { requestById, affinityByKey } = buildPlanningContext(
+      queuedRequests,
+      activeAttempts,
+    );
 
     for (const queuedRequest of queuedRequests) {
       if (leasedRequestIds.has(queuedRequest.id)) continue;
@@ -301,24 +342,29 @@ export function createDispatcherCore({
       ).find((candidateConnection) => {
         const currentOccupancy =
           (occupancyByConnection[candidateConnection.id] || 0) +
-          leasePlan.filter(
-            (plannedLease) =>
-              plannedLease.connection.id === candidateConnection.id,
-          ).length;
-        if (currentOccupancy >= resolveSlotsPerConnection()) return false;
+          (plannedOccupancy[candidateConnection.id] || 0);
+        if (currentOccupancy >= slots) return false;
         return (
           connectionCanServeRequest(candidateConnection, queuedRequest) &&
           requestIsEligibleForConnection(
             queuedRequest,
             candidateConnection.id,
             activeAttempts,
+            affinityByKey,
+            requestById,
           )
         );
       });
       if (!connection) continue;
 
       leasedRequestIds.add(queuedRequest.id);
-      leasePlan.push({ requestId: queuedRequest.id, connection });
+      plannedOccupancy[connection.id] =
+        (plannedOccupancy[connection.id] || 0) + 1;
+      leasePlan.push({
+        requestId: queuedRequest.id,
+        connection,
+        attempt: getLatestDispatchAttemptForRequest(queuedRequest.id),
+      });
     }
 
     return leasePlan;
@@ -343,7 +389,10 @@ export function createDispatcherCore({
         (candidate) => candidate.id === plannedLease.requestId,
       );
       const connection = plannedLease.connection;
-      const attempt = getLatestDispatchAttemptForRequest(request.id);
+      const attempt =
+        plannedLease.attempt?.state === DISPATCH_ATTEMPT_STATE.QUEUED
+          ? plannedLease.attempt
+          : getLatestDispatchAttemptForRequest(request.id);
       if (!attempt || attempt.state !== DISPATCH_ATTEMPT_STATE.QUEUED) {
         continue;
       }

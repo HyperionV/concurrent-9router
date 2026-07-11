@@ -2,6 +2,8 @@ import { getSqlite } from "@/lib/sqlite/runtime.js";
 import {
   insertOrReplaceRequestDetail,
   listRequestDetails,
+  queryRequestDetails,
+  listRequestDetailProviders,
   getRequestDetailRecord,
 } from "@/lib/sqlite/store.js";
 
@@ -192,33 +194,9 @@ export async function saveRequestDetail(detail) {
 }
 
 export async function getRequestDetails(filter = {}) {
-  let records = listRequestDetails();
-
-  // Apply filters
-  if (filter.provider)
-    records = records.filter((r) => r.provider === filter.provider);
-  if (filter.model) records = records.filter((r) => r.model === filter.model);
-  if (filter.connectionId)
-    records = records.filter((r) => r.connectionId === filter.connectionId);
-  if (filter.status)
-    records = records.filter((r) => r.status === filter.status);
-  if (filter.startDate)
-    records = records.filter(
-      (r) => new Date(r.timestamp) >= new Date(filter.startDate),
-    );
-  if (filter.endDate)
-    records = records.filter(
-      (r) => new Date(r.timestamp) <= new Date(filter.endDate),
-    );
-
-  // Sort desc
-  records.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-  const totalItems = records.length;
-  const page = filter.page || 1;
-  const pageSize = filter.pageSize || 50;
-  const totalPages = Math.ceil(totalItems / pageSize);
-  const details = records.slice((page - 1) * pageSize, page * pageSize);
+  // OPT-009: filter/sort/paginate in SQLite
+  const { details, totalItems, page, pageSize } = queryRequestDetails(filter);
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
 
   return {
     details,
@@ -231,6 +209,10 @@ export async function getRequestDetails(filter = {}) {
       hasPrev: page > 1,
     },
   };
+}
+
+export async function getRequestDetailProviders() {
+  return listRequestDetailProviders();
 }
 
 export async function getRequestDetailById(id) {

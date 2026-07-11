@@ -420,12 +420,32 @@ export async function getRecentLogs(limit = 200) {
  * @param {object} tokens - Token counts
  * @returns {number} Cost in dollars
  */
+// OPT-011: short-lived pricing cache on the usage write path
+const pricingCache = new Map();
+const PRICING_CACHE_TTL_MS = 30_000;
+const accountLabelCache = new Map();
+const ACCOUNT_LABEL_CACHE_TTL_MS = 30_000;
+
+export function invalidateUsageWriteCaches() {
+  pricingCache.clear();
+  accountLabelCache.clear();
+}
+
+async function getCachedPricing(provider, model) {
+  const key = `${provider}::${model}`;
+  const hit = pricingCache.get(key);
+  if (hit && Date.now() - hit.at < PRICING_CACHE_TTL_MS) return hit.pricing;
+  const { getPricingForModel } = await import("@/lib/localDb.js");
+  const pricing = await getPricingForModel(provider, model);
+  pricingCache.set(key, { at: Date.now(), pricing });
+  return pricing;
+}
+
 async function calculateCost(provider, model, tokens) {
   if (!tokens || !provider || !model) return 0;
 
   try {
-    const { getPricingForModel } = await import("@/lib/localDb.js");
-    const pricing = await getPricingForModel(provider, model);
+    const pricing = await getCachedPricing(provider, model);
 
     if (!pricing) return 0;
 

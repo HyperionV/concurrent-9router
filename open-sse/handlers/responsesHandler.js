@@ -5,7 +5,6 @@
 
 import { handleChatCore } from "./chatCore.js";
 import { convertResponsesApiFormat } from "../translator/helpers/responsesApiHelper.js";
-import { createResponsesApiTransformStream } from "../transformer/responsesTransformer.js";
 import { convertResponsesStreamToJson } from "../transformer/streamToJsonConverter.js";
 
 /**
@@ -78,22 +77,20 @@ export async function handleResponsesCore({ body, modelInfo, credentials, log, o
     }
   }
 
-  // Case 2: Client wants streaming, got SSE - transform it
+  // Case 2: Client wants streaming. ChatCore with sourceFormatOverride
+  // openai-responses already emits Responses SSE — pass through (OPT-005).
   if (clientRequestedStreaming && contentType.includes("text/event-stream")) {
-    const transformStream = createResponsesApiTransformStream(null);
-    const transformedBody = response.body.pipeThrough(transformStream);
-
     return {
       success: true,
-      response: new Response(transformedBody, {
+      response: new Response(response.body, {
         status: 200,
         headers: {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
-          "Connection": "keep-alive",
-          "Access-Control-Allow-Origin": "*"
-        }
-      })
+          Connection: "keep-alive",
+          "Access-Control-Allow-Origin": "*",
+        },
+      }),
     };
   }
 

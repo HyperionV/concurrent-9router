@@ -27,6 +27,8 @@ export async function getUsageForProvider(connection) {
       return await getQwenUsage(accessToken, providerSpecificData);
     case "iflow":
       return await getIflowUsage(accessToken);
+    case "grok-cli":
+      return await getGrokCliUsage(accessToken, providerSpecificData);
     default:
       return { message: `Usage API not implemented for ${provider}` };
   }
@@ -203,6 +205,142 @@ async function getIflowUsage(accessToken) {
     return { message: "iFlow connected. Usage tracked per request." };
   } catch (error) {
     return { message: "Unable to fetch iFlow usage." };
+  }
+}
+
+/**
+ * Grok CLI / Grok Build billing + subscription snapshot
+ * GET /v1/billing?format=credits + /v1/user?include=subscription
+ */
+async function getGrokCliUsage(accessToken, providerSpecificData = {}) {
+  if (!accessToken) {
+    return { message: "Grok CLI access token not available." };
+  }
+
+  const psd = providerSpecificData || {};
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    Accept: "application/json",
+    "User-Agent": "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)",
+    "x-xai-token-auth": "xai-grok-cli",
+    "x-grok-client-identifier": "grok-pager",
+    "x-grok-client-version": "0.2.93",
+  };
+  if (psd.email) headers["x-email"] = psd.email;
+  if (psd.userId || psd.principalId) {
+    headers["x-userid"] = psd.userId || psd.principalId;
+  }
+
+  const unwrapVal = (value, fallback = 0) => {
+    if (value == null) return fallback;
+    if (typeof value === "object" && !Array.isArray(value) && "val" in value) {
+      const n = Number(value.val);
+      return Number.isFinite(n) ? n : fallback;
+    }
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  try {
+    const [billingRes, userRes] = await Promise.all([
+      fetch("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
+        headers,
+      }),
+      fetch("https://cli-chat-proxy.grok.com/v1/user?include=subscription", {
+        headers,
+      }).catch(() => null),
+    ]);
+
+    if (billingRes.status === 401 || billingRes.status === 403) {
+      return {
+        message: "Grok CLI authentication expired. Please re-authorize.",
+      };
+    }
+    if (!billingRes.ok) {
+      return {
+        message: `Grok CLI billing API error (${billingRes.status})`,
+      };
+    }
+
+    const billing = await billingRes.json().catch(() => null);
+    if (!billing || typeof billing !== "object") {
+      return { message: "Grok CLI billing response was not JSON." };
+    }
+
+    let user = null;
+    if (userRes?.ok) {
+      user = await userRes.json().catch(() => null);
+    }
+
+    const root = billing;
+    const config =
+      root.config && typeof root.config === "object" ? root.config : root;
+    const periodEnd =
+      config.billingPeriodEnd || config.currentPeriod?.end || null;
+    const quotas = {};
+
+    const onDemandCap = unwrapVal(config.onDemandCap ?? root.onDemandCap, NaN);
+    const onDemandUsed = unwrapVal(
+      config.onDemandUsed ?? root.onDemandUsed,
+      NaN,
+    );
+    if (Number.isFinite(onDemandCap) && onDemandCap > 0) {
+      const used = Number.isFinite(onDemandUsed) ? Math.max(0, onDemandUsed) : 0;
+      const remaining = Math.max(0, onDemandCap - used);
+      quotas["On-demand"] = {
+        used,
+        total: onDemandCap,
+        remainingPercentage: (remaining / onDemandCap) * 100,
+        resetAt: periodEnd,
+        unlimited: false,
+      };
+    } else if (
+      Number.isFinite(onDemandCap) &&
+      onDemandCap === 0 &&
+      Number.isFinite(onDemandUsed)
+    ) {
+      quotas["On-demand"] = {
+        used: 1,
+        total: 1,
+        remainingPercentage: 0,
+        resetAt: periodEnd,
+        unlimited: false,
+      };
+    }
+
+    const prepaid = unwrapVal(
+      config.prepaidBalance ?? root.prepaidBalance,
+      NaN,
+    );
+    if (Number.isFinite(prepaid) && prepaid > 0) {
+      quotas.Prepaid = {
+        used: 0,
+        total: prepaid,
+        remainingPercentage: 100,
+        resetAt: null,
+        unlimited: false,
+      };
+    }
+
+    const tier =
+      typeof user?.subscriptionTier === "string"
+        ? user.subscriptionTier.trim()
+        : "";
+    const plan = tier
+      ? tier.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+      : user?.hasGrokCodeAccess
+        ? "Grok Code"
+        : "Grok Build";
+
+    return {
+      plan,
+      quotas,
+      resetDate: periodEnd,
+    };
+  } catch (error) {
+    return {
+      message: `Unable to fetch Grok CLI usage: ${error?.message || error}`,
+    };
   }
 }
 

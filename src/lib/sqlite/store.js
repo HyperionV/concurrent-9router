@@ -1749,21 +1749,88 @@ export function listRequestDetails() {
   return db()
     .prepare("SELECT * FROM request_details ORDER BY timestamp DESC")
     .all()
-    .map((row) => ({
-      id: row.id,
-      provider: row.provider,
-      model: row.model_id,
-      connectionId: row.connection_id,
-      timestamp: row.timestamp,
-      status: row.status,
-      latency: parseJson(row.latency_json, {}),
-      tokens: parseJson(row.tokens_json, {}),
-      request: parseJson(row.request_json, {}),
-      routing: parseJson(row.routing_json, {}),
-      providerRequest: parseJson(row.provider_request_json, {}),
-      providerResponse: parseJson(row.provider_response_json, {}),
-      response: parseJson(row.response_json, {}),
-    }));
+    .map(mapRequestDetailRow);
+}
+
+/**
+ * OPT-009: filtered + paginated request details in SQL.
+ * Returns { details, totalItems } without loading the full table into JS.
+ */
+export function queryRequestDetails(filter = {}) {
+  const where = [];
+  const params = [];
+
+  if (filter.provider) {
+    where.push("provider = ?");
+    params.push(filter.provider);
+  }
+  if (filter.model) {
+    where.push("model_id = ?");
+    params.push(filter.model);
+  }
+  if (filter.connectionId) {
+    where.push("connection_id = ?");
+    params.push(filter.connectionId);
+  }
+  if (filter.status) {
+    where.push("status = ?");
+    params.push(filter.status);
+  }
+  if (filter.startDate) {
+    where.push("timestamp >= ?");
+    params.push(
+      filter.startDate instanceof Date
+        ? filter.startDate.toISOString()
+        : String(filter.startDate),
+    );
+  }
+  if (filter.endDate) {
+    where.push("timestamp <= ?");
+    params.push(
+      filter.endDate instanceof Date
+        ? filter.endDate.toISOString()
+        : String(filter.endDate),
+    );
+  }
+
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const page = Math.max(1, Number(filter.page) || 1);
+  const pageSize = Math.max(1, Math.min(500, Number(filter.pageSize) || 50));
+  const offset = (page - 1) * pageSize;
+
+  const totalItems = db()
+    .prepare(`SELECT COUNT(*) AS c FROM request_details ${whereSql}`)
+    .get(...params)?.c || 0;
+
+  const details = db()
+    .prepare(
+      `
+        SELECT * FROM request_details
+        ${whereSql}
+        ORDER BY timestamp DESC
+        LIMIT ? OFFSET ?
+      `,
+    )
+    .all(...params, pageSize, offset)
+    .map(mapRequestDetailRow);
+
+  return { details, totalItems, page, pageSize };
+}
+
+/** Distinct providers present in request_details (OPT-009). */
+export function listRequestDetailProviders() {
+  return db()
+    .prepare(
+      `
+        SELECT DISTINCT provider
+        FROM request_details
+        WHERE provider IS NOT NULL AND provider != ''
+        ORDER BY provider ASC
+      `,
+    )
+    .all()
+    .map((row) => row.provider)
+    .filter(Boolean);
 }
 
 export function importRequestDetails(records = []) {

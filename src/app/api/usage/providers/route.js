@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRequestDetails } from "@/lib/requestDetailsDb";
+import { getRequestDetailProviders } from "@/lib/requestDetailsDb";
 import { getProviderNodes } from "@/lib/localDb";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
 
@@ -9,10 +9,8 @@ import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
  */
 export async function GET() {
   try {
-    const { details } = await getRequestDetails({ pageSize: 9999 });
-
-    // Extract unique providers
-    const providerIds = [...new Set(details.map(r => r.provider).filter(Boolean))].sort();
+    // OPT-009: distinct providers via SQL, not full-table scan
+    const providerIds = await getRequestDetailProviders();
 
     const providerNodes = await getProviderNodes();
     const nodeMap = {};

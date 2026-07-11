@@ -11,14 +11,41 @@ const lastKnownSlotsByProvider = new Map();
 const watchdogSweepInFlightByProvider = new Map();
 let sharedWatchdogInterval = null;
 
+// OPT-003: short-lived connection view cache per provider
+const connectionCacheByProvider = new Map();
+const CONNECTION_CACHE_TTL_MS = 1000;
+
 const WATCHDOG_SWEEP_INTERVAL_MS = 5000;
+
+export function invalidateDispatcherConnectionCache(provider = null) {
+  if (provider) {
+    connectionCacheByProvider.delete(provider);
+    return;
+  }
+  connectionCacheByProvider.clear();
+}
 
 function slotsSettingKey(provider) {
   if (provider === "codex") return "dispatcherSlotsPerConnection";
   return `dispatcherSlotsPerConnection_${provider}`;
 }
 
-async function loadProviderConnections(provider) {
+async function loadProviderConnections(provider, { force = false } = {}) {
+  const now = Date.now();
+  const cached = connectionCacheByProvider.get(provider);
+  if (
+    !force &&
+    cached &&
+    now - cached.at < CONNECTION_CACHE_TTL_MS &&
+    Array.isArray(cached.connections)
+  ) {
+    lastKnownSlotsByProvider.set(provider, cached.slotsPerConnection);
+    return {
+      connections: cached.connections,
+      slotsPerConnection: cached.slotsPerConnection,
+    };
+  }
+
   const settings = await getSettings();
   const slotsKey = slotsSettingKey(provider);
   const slotsPerConnection =
@@ -38,6 +65,11 @@ async function loadProviderConnections(provider) {
   const connections = await Promise.all(
     rawConnections.map((connection) => buildDispatchConnectionView(connection)),
   );
+  connectionCacheByProvider.set(provider, {
+    at: now,
+    connections,
+    slotsPerConnection,
+  });
   return { connections, slotsPerConnection };
 }
 

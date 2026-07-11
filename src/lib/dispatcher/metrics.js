@@ -296,14 +296,13 @@ export function getDispatcherStatusSnapshot({
 } = {}) {
   const queuedRequests = listQueuedDispatchRequests(provider, 500);
   const activeAttempts = listActiveDispatchAttempts(provider);
-  const terminalAttempts = listDispatchAttemptsByState([
-    "completed",
-    "failed",
-    "timed_out",
-    "cancelled",
-    "reconciled",
-  ]).filter((attempt) => attempt.provider === provider);
+  // OPT-004: filter terminal attempts in SQL by provider
+  const terminalAttempts = listDispatchAttemptsByState(
+    ["completed", "failed", "timed_out", "cancelled", "reconciled"],
+    provider,
+  );
 
+  const providerPolicies = settings.providerAdmissionPolicies || {};
   return {
     provider,
     mode: deriveDispatcherMode(settings),
@@ -314,14 +313,22 @@ export function getDispatcherStatusSnapshot({
       dispatcherCodexOnly: settings.dispatcherCodexOnly !== false,
       codexDefaultAdmissionPolicy:
         settings.codexDefaultAdmissionPolicy || "legacy",
+      providerAdmissionPolicy:
+        provider === "codex"
+          ? settings.codexDefaultAdmissionPolicy || "legacy"
+          : providerPolicies[provider] || "legacy",
       dispatcherSlotsPerConnection:
-        Number(settings.dispatcherSlotsPerConnection) || 1,
+        Number(
+          settings[`dispatcherSlotsPerConnection_${provider}`] ??
+            settings.dispatcherSlotsPerConnection,
+        ) || 1,
     },
     coverage: {
       summary:
-        "These metrics cover dispatcher-managed traffic and shadow-tracked Codex traffic, not all Codex requests.",
+        "These metrics cover dispatcher-managed and shadow-tracked traffic for this provider pool only.",
       managedOnly: true,
       mixedModeAware: true,
+      isolatedPools: true,
     },
     capacity: buildCapacitySummary({
       connectionViews,

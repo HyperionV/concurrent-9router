@@ -7,6 +7,22 @@ import { deriveSessionId } from "../utils/sessionManager.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 
 const MAX_RETRY_AFTER_MS = 10000;
+const ANTIGRAVITY_TRANSIENT_RETRY_MAX_MS = 15000;
+const ANTIGRAVITY_TRANSIENT_ERROR_PATTERNS = [
+  /high\s+traffic/i,
+  /agent\s+(execution\s+)?terminated\s+due\s+to\s+error/i,
+  /capacity/i,
+  /temporarily\s+unavailable/i,
+  /timeout/i,
+  /stream\s+(ended|closed|terminated|interrupted)/i,
+  /empty\s+response/i,
+];
+const ANTIGRAVITY_TRANSIENT_STATUSES = new Set([
+  HTTP_STATUS.SERVER_ERROR,
+  HTTP_STATUS.BAD_GATEWAY,
+  HTTP_STATUS.SERVICE_UNAVAILABLE,
+  HTTP_STATUS.GATEWAY_TIMEOUT,
+]);
 
 export class AntigravityExecutor extends BaseExecutor {
   constructor() {
@@ -163,6 +179,14 @@ export class AntigravityExecutor extends BaseExecutor {
     return totalMs > 0 ? totalMs : null;
   }
 
+  isTransientAntigravityError(status, message) {
+    if (status === HTTP_STATUS.RATE_LIMITED) return true;
+    if (ANTIGRAVITY_TRANSIENT_STATUSES.has(status)) return true;
+    return ANTIGRAVITY_TRANSIENT_ERROR_PATTERNS.some((pattern) =>
+      pattern.test(message || ""),
+    );
+  }
+
   async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
     const fallbackCount = this.getFallbackCount();
     let lastError = null;
@@ -171,6 +195,7 @@ export class AntigravityExecutor extends BaseExecutor {
     const MAX_RETRY_AFTER_RETRIES = 3;
     const retryAttemptsByUrl = {}; // Track retry attempts per URL
     const retryAfterAttemptsByUrl = {}; // Track Retry-After retries per URL
+    const transientAttemptsByUrl = {};
 
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
       const url = this.buildUrl(model, stream, urlIndex);
@@ -185,6 +210,9 @@ export class AntigravityExecutor extends BaseExecutor {
       if (!retryAfterAttemptsByUrl[urlIndex]) {
         retryAfterAttemptsByUrl[urlIndex] = 0;
       }
+      if (!transientAttemptsByUrl[urlIndex]) {
+        transientAttemptsByUrl[urlIndex] = 0;
+      }
 
       try {
         const response = await proxyAwareFetch(url, {
@@ -194,16 +222,22 @@ export class AntigravityExecutor extends BaseExecutor {
           signal
         }, proxyOptions);
 
-        if (response.status === HTTP_STATUS.RATE_LIMITED || response.status === HTTP_STATUS.SERVICE_UNAVAILABLE) {
+        if (
+          response.status === HTTP_STATUS.RATE_LIMITED ||
+          response.status === HTTP_STATUS.SERVICE_UNAVAILABLE ||
+          ANTIGRAVITY_TRANSIENT_STATUSES.has(response.status)
+        ) {
           // Try to get retry time from headers first
           let retryMs = this.parseRetryHeaders(response.headers);
+          let errorMessage = "";
 
           // If no retry time in headers, try to parse from error message body
           if (!retryMs) {
             try {
               const errorBody = await response.clone().text();
               const errorJson = JSON.parse(errorBody);
-              const errorMessage = errorJson?.error?.message || errorJson?.message || "";
+              errorMessage =
+                errorJson?.error?.message || errorJson?.message || "";
               retryMs = this.parseRetryFromErrorMessage(errorMessage);
             } catch (e) {
               // Ignore parse errors, will fall back to exponential backoff
@@ -225,6 +259,25 @@ export class AntigravityExecutor extends BaseExecutor {
             const backoffMs = Math.min(1000 * (2 ** retryAttemptsByUrl[urlIndex]), MAX_RETRY_AFTER_MS);
             log?.debug?.("RETRY", `429 auto retry ${retryAttemptsByUrl[urlIndex]}/${MAX_AUTO_RETRIES} after ${backoffMs / 1000}s`);
             await new Promise(resolve => setTimeout(resolve, backoffMs));
+            urlIndex--;
+            continue;
+          }
+
+          // Transient 5xx / capacity-style failures (upstream port)
+          if (
+            this.isTransientAntigravityError(response.status, errorMessage) &&
+            transientAttemptsByUrl[urlIndex] < MAX_AUTO_RETRIES
+          ) {
+            transientAttemptsByUrl[urlIndex]++;
+            const backoffMs = Math.min(
+              1000 * 2 ** transientAttemptsByUrl[urlIndex],
+              ANTIGRAVITY_TRANSIENT_RETRY_MAX_MS,
+            );
+            log?.debug?.(
+              "RETRY",
+              `AG transient ${response.status} retry ${transientAttemptsByUrl[urlIndex]}/${MAX_AUTO_RETRIES} after ${backoffMs / 1000}s`,
+            );
+            await new Promise((resolve) => setTimeout(resolve, backoffMs));
             urlIndex--;
             continue;
           }
