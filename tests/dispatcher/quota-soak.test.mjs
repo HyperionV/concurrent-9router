@@ -380,12 +380,17 @@ test("one minute stream hang times out and releases capacity", async () => {
       await import("@/lib/dispatcher/watchdog.js");
     const { listDispatchAttemptsByState } =
       await import("@/lib/sqlite/dispatcherStore.js");
+    const idlePolicy = { idleTimeoutMs: 35_000 };
     const dispatcher = createDispatcherCore({
       getConnections: async () => makeConnections(1),
       getSlotsPerConnection: () => 1,
-      timeoutPolicy: { idleTimeoutMs: 35_000 },
+      timeoutPolicy: idlePolicy,
     });
-    const watchdog = createDispatcherWatchdog({ dispatcher });
+    // Watchdog has its own policy object — must match the idle under test.
+    const watchdog = createDispatcherWatchdog({
+      dispatcher,
+      timeoutPolicy: idlePolicy,
+    });
 
     const first = await dispatcher.enqueueRequest({ modelId: "gpt-5-codex" });
     const second = await dispatcher.enqueueRequest({ modelId: "gpt-5-codex" });

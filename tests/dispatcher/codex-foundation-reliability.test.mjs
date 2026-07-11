@@ -516,25 +516,41 @@ test("OpenAI-compatible json_schema falls back to json_object with schema guidan
   assert.match(transformed.messages[0].content, /"status"/);
 });
 
-test("managed dispatcher treats 35s without stream progress as idle timeout", () => {
+test("managed dispatcher treats 3 minutes without stream progress as idle timeout", () => {
   const now = Date.now();
-  const lastProgressAt = new Date(now - 35_000).toISOString();
+  const lastProgressAt = new Date(now - 3 * 60_000).toISOString();
 
-  assert.equal(DEFAULT_TIMEOUT_POLICY.idleTimeoutMs, 35_000);
+  assert.equal(DEFAULT_TIMEOUT_POLICY.idleTimeoutMs, 3 * 60_000);
   assert.equal(
     classifyAttemptTimeout(
       {
-        queueEnteredAt: new Date(now - 40_000).toISOString(),
-        leasedAt: new Date(now - 40_000).toISOString(),
-        connectStartedAt: new Date(now - 38_000).toISOString(),
-        streamStartedAt: new Date(now - 37_000).toISOString(),
-        firstProgressAt: new Date(now - 36_000).toISOString(),
+        queueEnteredAt: new Date(now - 4 * 60_000).toISOString(),
+        leasedAt: new Date(now - 4 * 60_000).toISOString(),
+        connectStartedAt: new Date(now - 4 * 60_000).toISOString(),
+        streamStartedAt: new Date(now - 4 * 60_000).toISOString(),
+        firstProgressAt: new Date(now - 4 * 60_000).toISOString(),
         lastProgressAt,
       },
       undefined,
       now,
     ),
     DISPATCH_TIMEOUT_KIND.IDLE_TIMEOUT,
+  );
+  // Still streaming with recent progress must not idle-timeout at ~1 minute
+  assert.equal(
+    classifyAttemptTimeout(
+      {
+        queueEnteredAt: new Date(now - 70_000).toISOString(),
+        leasedAt: new Date(now - 70_000).toISOString(),
+        connectStartedAt: new Date(now - 70_000).toISOString(),
+        streamStartedAt: new Date(now - 70_000).toISOString(),
+        firstProgressAt: new Date(now - 65_000).toISOString(),
+        lastProgressAt: new Date(now - 10_000).toISOString(),
+      },
+      undefined,
+      now,
+    ),
+    null,
   );
 });
 

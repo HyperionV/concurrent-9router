@@ -166,6 +166,15 @@ export function beginShadowCodexAttempt({
             lastProgressAt: nowIso(),
           },
         ),
+      onProgress: async () =>
+        markAttemptState(
+          ["connecting", "streaming"],
+          "streaming",
+          "last_progress",
+          {
+            lastProgressAt: nowIso(),
+          },
+        ),
       onResponseIdentity: async () => null,
     },
     finalizeSuccess: async (terminalReason = "success") =>

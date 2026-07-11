@@ -15,7 +15,12 @@ export const DEFAULT_TIMEOUT_POLICY = Object.freeze({
   waitingLimitMs: QUEUE_WAITING_LIMIT_MS,
   connectTimeoutMs: 30 * 1000,
   ttftTimeoutMs: 3 * 60 * 1000,
-  idleTimeoutMs: 35 * 1000,
+  /**
+   * No stream activity (lastProgress / streamStarted) for this long → idle_timeout.
+   * Must stay below STREAM_STALL_TIMEOUT (6m) but above normal reasoning gaps.
+   * Live streams also refresh lastProgress via upstream-byte heartbeats.
+   */
+  idleTimeoutMs: 3 * 60 * 1000,
   attemptDeadlineMs: 6 * 60 * 1000,
 });
 

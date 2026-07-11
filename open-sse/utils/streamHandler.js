@@ -187,6 +187,8 @@ export function createDisconnectAwareStream(
 /**
  * Pipe provider response through transform with disconnect detection.
  * Stall watchdog tracks raw upstream byte activity, not transform output.
+ * @param {function} [onUpstreamActivity] - fire-and-forget when upstream bytes arrive
+ *   (used by dispatcher idle heartbeats; must not throw or block the pipe).
  */
 export function pipeWithDisconnect(
   providerResponse,
@@ -194,6 +196,7 @@ export function pipeWithDisconnect(
   streamController,
   onAbortTerminal = null,
   stallTimeoutMs = STREAM_STALL_TIMEOUT_MS,
+  onUpstreamActivity = null,
 ) {
   let stallTimer = null;
   let chunkCount = 0;
@@ -275,6 +278,12 @@ export function pipeWithDisconnect(
         );
       }
       armStall();
+      // Dispatcher idle watchdog must see live upstream bytes, not only first token.
+      try {
+        onUpstreamActivity?.();
+      } catch {
+        // never block the pipe
+      }
       controller.enqueue(chunk);
     },
     flush() {

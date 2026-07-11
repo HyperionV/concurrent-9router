@@ -193,16 +193,41 @@ export async function handleStreamingResponse({
     };
   }
 
+  // Keep dispatcher lastProgressAt fresh while the stream is alive.
+  // Codex Responses often never hits chat-style content detectors, so relying
+  // only on onFirstProgress left lastProgress frozen → idle_timeout at 35s.
+  const PROGRESS_THROTTLE_MS = 5_000;
   let successMarked = false;
+  let lastProgressEmitMs = 0;
+
+  const touchDispatcherProgress = async () => {
+    const now = Date.now();
+    if (!successMarked) {
+      successMarked = true;
+      lastProgressEmitMs = now;
+      if (dispatcherHooks?.onFirstProgress) {
+        await dispatcherHooks.onFirstProgress();
+      } else if (dispatcherHooks?.onProgress) {
+        await dispatcherHooks.onProgress();
+      }
+      if (onRequestSuccess) {
+        await onRequestSuccess();
+      }
+      return;
+    }
+    if (!dispatcherHooks?.onProgress) return;
+    if (now - lastProgressEmitMs < PROGRESS_THROTTLE_MS) return;
+    lastProgressEmitMs = now;
+    await dispatcherHooks.onProgress();
+  };
+
   const onFirstProgress = async () => {
-    if (successMarked) return;
-    successMarked = true;
-    if (dispatcherHooks?.onFirstProgress) {
-      await dispatcherHooks.onFirstProgress();
-    }
-    if (onRequestSuccess) {
-      await onRequestSuccess();
-    }
+    await touchDispatcherProgress();
+  };
+
+  const onUpstreamActivity = () => {
+    // Fire-and-forget: never block the upstream pipe on SQLite progress writes.
+    touchDispatcherProgress().catch(() => {});
   };
 
   const wrappedStreamComplete = async (contentObj, usage, ttftAt) => {
@@ -247,6 +272,7 @@ export async function handleStreamingResponse({
     streamController,
     onAbortTerminal,
     stallTimeoutMs,
+    onUpstreamActivity,
   );
 
   // Prefer stable detail id from buildOnStreamComplete when provided (OPT-008)

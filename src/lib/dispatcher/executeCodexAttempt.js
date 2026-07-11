@@ -233,6 +233,11 @@ async function executeManagedProviderRequest({
     onFirstProgress: async () => {
       await dispatcher.markAttemptProgress(lease.attemptId);
     },
+    // Ongoing stream heartbeats — refresh lastProgressAt so idle_timeout
+    // does not kill live multi-minute Codex / AG / Grok streams.
+    onProgress: async () => {
+      await dispatcher.markAttemptProgress(lease.attemptId);
+    },
     onResponseIdentity: async (responseId) => {
       if (typeof responseId !== "string" || responseId.trim() === "") {
         return;
