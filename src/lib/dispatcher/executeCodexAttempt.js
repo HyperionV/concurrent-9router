@@ -197,6 +197,14 @@ async function executeManagedProviderRequest({
     ).response;
   }
 
+  // Connecting is marked at lease handoff inside the dispatcher core. Keep a
+  // best-effort mark here for older cores / tests that return bare leases.
+  if (typeof dispatcher.markAttemptConnecting === "function") {
+    await dispatcher.markAttemptConnecting(lease.attemptId, {
+      pathMode: lease.pathMode || null,
+    });
+  }
+
   const rawConnection = await getProviderConnectionById(lease.connectionId);
   if (!rawConnection || rawConnection.isActive !== true) {
     await dispatcher.failAttempt(lease.attemptId, {
@@ -209,13 +217,6 @@ async function executeManagedProviderRequest({
       `Managed ${provider} connection unavailable`,
     ).response;
   }
-
-  // Mark connecting as soon as the lease is real work — before token refresh /
-  // credential build — so the 30s connect_timeout does not fire while we are
-  // still preparing the upstream request.
-  await dispatcher.markAttemptConnecting(lease.attemptId, {
-    pathMode: lease.pathMode || null,
-  });
 
   let credentials = await buildManagedCredentials(rawConnection);
   if (affinity?.state === "active" && affinity?.sessionId) {

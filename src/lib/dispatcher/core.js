@@ -25,6 +25,7 @@ import {
   DISPATCH_ATTEMPT_STATE,
   DISPATCH_EVENT_TYPE,
   DISPATCH_REQUEST_STATUS,
+  DISPATCH_TIMEOUT_KIND,
 } from "@/lib/dispatcher/types.js";
 import { isModelLockActive } from "open-sse/services/accountFallback.js";
 
@@ -78,18 +79,118 @@ export function createDispatcherCore({
     return true;
   }
 
+  /**
+   * Hand a lease to a consumer (waiter / tryLease caller). Mark connecting in
+   * the same tick so connect_timeout cannot fire while the caller awaits
+   * credential load / token refresh / chatCore setup.
+   */
+  function handOffLease(lease) {
+    if (!lease?.attemptId) return lease;
+    const pathMode = lease.pathMode || lease.attempt?.pathMode || null;
+    const updated = transitionDispatchAttempt(
+      lease.attemptId,
+      DISPATCH_ATTEMPT_STATE.LEASED,
+      DISPATCH_ATTEMPT_STATE.CONNECTING,
+      {
+        connectStartedAt: nowIso(),
+        pathMode,
+      },
+    );
+    if (updated) {
+      insertDispatchAttemptEvent({
+        id: randomUUID(),
+        attemptId: lease.attemptId,
+        eventType: DISPATCH_EVENT_TYPE.CONNECT_STARTED,
+        payload: { at: updated.connectStartedAt, source: "lease_handoff" },
+      });
+      return {
+        ...lease,
+        attempt: updated,
+        pathMode: updated.pathMode || pathMode,
+      };
+    }
+    return lease;
+  }
+
   function claimPendingLease(requestId) {
     const lease = pendingLeases.get(requestId);
     if (!lease) return null;
     pendingLeases.delete(requestId);
-    return lease;
+    return handOffLease(lease);
   }
 
-  /** Deliver lease to waiter, or park it if the waiter has not registered yet. */
+  /** Fail a LEASED/CONNECTING attempt that has no live consumer. */
+  function abandonLeaseAttempt(attempt, reason = "lease_abandoned") {
+    if (!attempt?.id) return false;
+    if (
+      attempt.state !== DISPATCH_ATTEMPT_STATE.LEASED &&
+      attempt.state !== DISPATCH_ATTEMPT_STATE.CONNECTING
+    ) {
+      return false;
+    }
+    const failed = transitionDispatchAttempt(
+      attempt.id,
+      [
+        DISPATCH_ATTEMPT_STATE.LEASED,
+        DISPATCH_ATTEMPT_STATE.CONNECTING,
+      ],
+      DISPATCH_ATTEMPT_STATE.TIMED_OUT,
+      {
+        finishedAt: nowIso(),
+        terminalReason: DEFAULT_TERMINAL_REASON.TIMEOUT,
+        timeoutKind: DISPATCH_TIMEOUT_KIND.QUEUE_EXPIRED,
+        error: {
+          code: reason,
+          message: "Lease had no live waiter/execute path",
+        },
+      },
+    );
+    if (!failed) return false;
+    releaseConnectionOccupancy(attempt.connectionId);
+    finalizeRequestForAttempt(failed, DISPATCH_ATTEMPT_STATE.TIMED_OUT);
+    insertDispatchAttemptEvent({
+      id: randomUUID(),
+      attemptId: attempt.id,
+      eventType: DISPATCH_EVENT_TYPE.TIMED_OUT,
+      payload: {
+        timeoutKind: DISPATCH_TIMEOUT_KIND.QUEUE_EXPIRED,
+        reason,
+      },
+    });
+    return true;
+  }
+
+  /**
+   * Deliver lease to waiter. If nobody is waiting, do NOT park a LEASED ghost
+   * (that was the connect_timeout source under concurrent load).
+   */
   function deliverLease(requestId, lease) {
     if (!lease) return;
-    if (resolveWaiter(requestId, lease)) return;
-    pendingLeases.set(requestId, lease);
+    if (leaseWaiters.has(requestId)) {
+      resolveWaiter(requestId, handOffLease(lease));
+      return;
+    }
+    // Race: waiter registered after plan but left before deliver — free slot.
+    const attempt =
+      (lease.attemptId && getDispatchAttempt(lease.attemptId)) ||
+      lease.attempt ||
+      null;
+    if (attempt) {
+      console.warn(
+        `[DISPATCHER] ${provider}: dropping lease for ${requestId} — no waiter`,
+      );
+      abandonLeaseAttempt(attempt, "lease_no_waiter");
+    }
+  }
+
+  /** Release a LEASED/CONNECTING attempt left without a consumer (wait timed out). */
+  function releaseAbandonedLease(requestId) {
+    const parked = pendingLeases.get(requestId);
+    if (parked) pendingLeases.delete(requestId);
+    const attempt =
+      (parked?.attemptId && getDispatchAttempt(parked.attemptId)) ||
+      getLatestDispatchAttemptForRequest(requestId);
+    abandonLeaseAttempt(attempt, "lease_abandoned");
   }
 
   function notifyLeaseWaiters(requestId = null) {
@@ -210,8 +311,8 @@ export function createDispatcherCore({
       }
       const timer = setTimeout(() => {
         leaseWaiters.delete(requestId);
-        // Do not leave a parked lease stranded forever after timeout
-        pendingLeases.delete(requestId);
+        // Free any LEASED attempt that was parked or assigned without a consumer
+        releaseAbandonedLease(requestId);
         console.warn(
           `[DISPATCHER] ${provider}: request ${requestId} waiting_limit elapsed (queue wait)`,
         );
@@ -548,9 +649,13 @@ export function createDispatcherCore({
       getConnections(),
       syncOccupancy(),
     ]);
+    // Only lease requests that have a live waiter. Leasing without a consumer
+    // leaves LEASED rows with no execute path → connect_timeout after 30s.
+    const waiterIds = new Set(leaseWaiters.keys());
+    if (waiterIds.size === 0) return [];
     const queuedRequests = sortRequestsByQueueTime(
       listQueuedDispatchRequests(provider, 500),
-    );
+    ).filter((request) => waiterIds.has(request.id));
     const leases = [];
 
     for (const plannedLease of planLeases(
@@ -609,6 +714,7 @@ export function createDispatcherCore({
         connection,
         request,
         attempt: leased,
+        pathMode: leased.pathMode || null,
       });
     }
 
@@ -681,14 +787,15 @@ export function createDispatcherCore({
       },
     });
 
-    return {
+    return handOffLease({
       requestId,
       attemptId: leased.id,
       connectionId: connection.id,
       connection,
       request: targetRequest,
       attempt: leased,
-    };
+      pathMode: leased.pathMode || null,
+    });
   }
 
   function finalizeRequestForAttempt(attempt, nextState) {
