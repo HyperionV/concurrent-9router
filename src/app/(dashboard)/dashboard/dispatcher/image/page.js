@@ -359,10 +359,10 @@ export default function ImageDispatcherPage() {
               label="Slots per connection"
               type="number"
               min="1"
-              max="20"
+              max="100"
               value={slotsPerConnection}
               onChange={(event) => setSlotsPerConnection(event.target.value)}
-              hint="Image-only capacity. Increase cautiously after validating account stability."
+              hint="Image-only concurrent leases per connection (1–100). Not a provider service cap — raise only as far as accounts stay stable."
             />
           </Card.Section>
         </div>

@@ -437,10 +437,10 @@ function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
             label="Slots per connection"
             type="number"
             min="1"
-            max="20"
+            max="100"
             value={slots}
             onChange={(event) => setSlots(event.target.value)}
-            hint="Applies to active Codex connections. Increase cautiously as you validate stability."
+            hint="Active concurrent leases per connection (1–100). Not a provider-imposed service cap — raise only as far as accounts stay stable."
           />
           <div className="flex items-center gap-2">
             <Button

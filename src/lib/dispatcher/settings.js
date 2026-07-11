@@ -44,7 +44,14 @@ export function buildDispatcherModePatch(mode) {
   };
 }
 
-function normalizeSlotsPerConnection(value, settingName, max = 20) {
+/** Soft UI/API clamp — not a provider-imposed service limit. */
+export const MAX_DISPATCHER_SLOTS_PER_CONNECTION = 100;
+
+function normalizeSlotsPerConnection(
+  value,
+  settingName,
+  max = MAX_DISPATCHER_SLOTS_PER_CONNECTION,
+) {
   const numeric = Number(value);
   if (!Number.isInteger(numeric) || numeric < 1 || numeric > max) {
     throw new Error(`${settingName} must be an integer between 1 and ${max}`);
@@ -52,7 +59,10 @@ function normalizeSlotsPerConnection(value, settingName, max = 20) {
   return numeric;
 }
 
-export function normalizeDispatcherSlotsPerConnection(value, max = 20) {
+export function normalizeDispatcherSlotsPerConnection(
+  value,
+  max = MAX_DISPATCHER_SLOTS_PER_CONNECTION,
+) {
   return normalizeSlotsPerConnection(
     value,
     "dispatcherSlotsPerConnection",
@@ -60,7 +70,10 @@ export function normalizeDispatcherSlotsPerConnection(value, max = 20) {
   );
 }
 
-export function normalizeImageDispatcherSlotsPerConnection(value, max = 20) {
+export function normalizeImageDispatcherSlotsPerConnection(
+  value,
+  max = MAX_DISPATCHER_SLOTS_PER_CONNECTION,
+) {
   return normalizeSlotsPerConnection(
     value,
     "imageDispatcherSlotsPerConnection",
