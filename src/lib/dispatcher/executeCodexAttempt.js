@@ -210,6 +210,13 @@ async function executeManagedProviderRequest({
     ).response;
   }
 
+  // Mark connecting as soon as the lease is real work — before token refresh /
+  // credential build — so the 30s connect_timeout does not fire while we are
+  // still preparing the upstream request.
+  await dispatcher.markAttemptConnecting(lease.attemptId, {
+    pathMode: lease.pathMode || null,
+  });
+
   let credentials = await buildManagedCredentials(rawConnection);
   if (affinity?.state === "active" && affinity?.sessionId) {
     credentials = {

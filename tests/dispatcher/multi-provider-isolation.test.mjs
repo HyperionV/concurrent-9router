@@ -129,6 +129,88 @@ test("TEXT_DISPATCH_PROVIDERS includes codex, antigravity, grok-cli", async () =
   );
 });
 
+test("zombie leased attempts from a dead process block capacity until reconciled", async () => {
+  const tempDir = makeTempDataDir();
+
+  try {
+    await resetDispatcherTables(tempDir);
+
+    const {
+      insertDispatchRequest,
+      insertDispatchAttempt,
+      listActiveDispatchAttempts,
+      transitionDispatchAttempt,
+      updateDispatchRequestStatus,
+    } = await import("@/lib/sqlite/dispatcherStore.js");
+    const { createDispatcherCore } = await import("@/lib/dispatcher/core.js");
+
+    // Crashed process left a leased row that still counts toward occupancy.
+    const request = insertDispatchRequest({
+      id: "req-zombie-1",
+      provider: "codex",
+      modelId: "gpt-zombie",
+      status: "running",
+      queuedAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    insertDispatchAttempt({
+      id: "att-zombie-1",
+      requestId: request.id,
+      attemptIndex: 0,
+      provider: "codex",
+      modelId: "gpt-zombie",
+      connectionId: "conn-1",
+      leaseKey: "conn-1:dead",
+      state: "leased",
+      queueEnteredAt: new Date(Date.now() - 60_000).toISOString(),
+      leasedAt: new Date(Date.now() - 55_000).toISOString(),
+    });
+    assert.equal(listActiveDispatchAttempts("codex").length, 1);
+
+    const dispatcher = createDispatcherCore({
+      provider: "codex",
+      getConnections: async () => [
+        { id: "conn-1", priority: 1, providerSpecificData: {} },
+      ],
+      getSlotsPerConnection: () => 1,
+    });
+
+    const queued = await dispatcher.enqueueRequest({
+      provider: "codex",
+      modelId: "gpt-live",
+    });
+    const blocked = await dispatcher.tryLeaseRequest(queued.request.id);
+    assert.equal(
+      blocked,
+      null,
+      "1-slot pool must stay full while zombie lease is active",
+    );
+
+    // Process-start reconcile closes zombies so capacity returns.
+    transitionDispatchAttempt(
+      "att-zombie-1",
+      ["queued", "leased", "connecting", "streaming"],
+      "reconciled",
+      {
+        finishedAt: new Date().toISOString(),
+        terminalReason: "reconciled",
+        error: { code: "process_restart" },
+      },
+    );
+    updateDispatchRequestStatus(request.id, "cancelled", {
+      completedAt: new Date().toISOString(),
+    });
+    assert.equal(listActiveDispatchAttempts("codex").length, 0);
+
+    const lease = await dispatcher.tryLeaseRequest(queued.request.id);
+    assert.ok(lease, "lease must succeed after zombie is reconciled");
+    assert.equal(lease.connectionId, "conn-1");
+  } finally {
+    const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
+    closeSqlite();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("slots per connection are isolated per provider (no shared fallback)", async () => {
   const {
     getDispatcherSlotsPerConnection,

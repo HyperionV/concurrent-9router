@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  getDispatchAttempt,
   getDispatchConversationAffinity,
   getDispatchRequest,
   getLatestDispatchAttemptForRequest,
@@ -764,12 +765,17 @@ export function createDispatcherCore({
 
   async function markAttemptProgress(attemptId, updates = {}) {
     const at = updates.at || nowIso();
+    // Only seed firstProgressAt when still empty — COALESCE overwrites if we
+    // keep passing a new firstProgressAt on every heartbeat.
+    const existing = getDispatchAttempt(attemptId);
+    if (!existing) return null;
+    const isFirst = !existing.firstProgressAt;
     const progress = transitionDispatchAttempt(
       attemptId,
       [DISPATCH_ATTEMPT_STATE.CONNECTING, DISPATCH_ATTEMPT_STATE.STREAMING],
       DISPATCH_ATTEMPT_STATE.STREAMING,
       {
-        firstProgressAt: updates.firstProgressAt || at,
+        firstProgressAt: isFirst ? updates.firstProgressAt || at : null,
         lastProgressAt: updates.lastProgressAt || at,
       },
     );
@@ -777,10 +783,9 @@ export function createDispatcherCore({
     insertDispatchAttemptEvent({
       id: randomUUID(),
       attemptId,
-      eventType:
-        progress.firstProgressAt === progress.lastProgressAt
-          ? DISPATCH_EVENT_TYPE.FIRST_PROGRESS
-          : DISPATCH_EVENT_TYPE.LAST_PROGRESS,
+      eventType: isFirst
+        ? DISPATCH_EVENT_TYPE.FIRST_PROGRESS
+        : DISPATCH_EVENT_TYPE.LAST_PROGRESS,
       payload: {
         at,
       },
@@ -857,7 +862,9 @@ export function createDispatcherCore({
           ? DISPATCH_EVENT_TYPE.TIMED_OUT
           : nextState === DISPATCH_ATTEMPT_STATE.CANCELLED
             ? DISPATCH_EVENT_TYPE.CANCELLED
-            : DISPATCH_EVENT_TYPE.FAILED,
+            : nextState === DISPATCH_ATTEMPT_STATE.RECONCILED
+              ? DISPATCH_EVENT_TYPE.RECONCILED
+              : DISPATCH_EVENT_TYPE.FAILED,
       payload: {
         terminalReason,
         timeoutKind,

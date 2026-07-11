@@ -12,6 +12,22 @@ import {
   setConnectionCacheEntry,
   invalidateDispatcherConnectionCache,
 } from "@/lib/dispatcher/connectionCache.js";
+import {
+  getLatestDispatchAttemptForRequest,
+  insertDispatchAttemptEvent,
+  listActiveDispatchAttempts,
+  listQueuedDispatchRequests,
+  transitionDispatchAttempt,
+  updateDispatchRequestStatus,
+} from "@/lib/sqlite/dispatcherStore.js";
+import { nowIso } from "@/lib/sqlite/helpers.js";
+import { randomUUID } from "node:crypto";
+import {
+  DEFAULT_TERMINAL_REASON,
+  DISPATCH_ATTEMPT_STATE,
+  DISPATCH_EVENT_TYPE,
+  DISPATCH_REQUEST_STATUS,
+} from "@/lib/dispatcher/types.js";
 
 export { TEXT_DISPATCH_PROVIDERS, invalidateDispatcherConnectionCache };
 
@@ -82,14 +98,89 @@ async function loadProviderConnections(provider, { force = false } = {}) {
   return { connections, slotsPerConnection };
 }
 
+/**
+ * After process restart, SQLite still holds leased/connecting/streaming rows
+ * from the previous process. Occupancy is rebuilt from those zombies, which
+ * blocks real traffic until the watchdog times them out (looks like "idle
+ * timeouts" right after start). Must run synchronously on pool create.
+ */
+function reconcileOrphanedRuntime(provider) {
+  const openAttempts = [
+    ...listActiveDispatchAttempts(provider),
+    ...listQueuedDispatchRequests(provider, 500)
+      .map((request) => getLatestDispatchAttemptForRequest(request.id))
+      .filter(
+        (attempt) =>
+          attempt && attempt.state === DISPATCH_ATTEMPT_STATE.QUEUED,
+      ),
+  ];
+
+  // Dedupe by attempt id
+  const seen = new Set();
+  let reconciled = 0;
+  for (const attempt of openAttempts) {
+    if (!attempt?.id || seen.has(attempt.id)) continue;
+    seen.add(attempt.id);
+    const updated = transitionDispatchAttempt(
+      attempt.id,
+      [
+        DISPATCH_ATTEMPT_STATE.QUEUED,
+        DISPATCH_ATTEMPT_STATE.LEASED,
+        DISPATCH_ATTEMPT_STATE.CONNECTING,
+        DISPATCH_ATTEMPT_STATE.STREAMING,
+      ],
+      DISPATCH_ATTEMPT_STATE.RECONCILED,
+      {
+        finishedAt: nowIso(),
+        terminalReason: DEFAULT_TERMINAL_REASON.RECONCILED,
+        error: {
+          code: "process_restart",
+          message:
+            "Open after process restart; reconciled so capacity is free",
+        },
+      },
+    );
+    if (!updated) continue;
+    reconciled += 1;
+    insertDispatchAttemptEvent({
+      id: randomUUID(),
+      attemptId: attempt.id,
+      eventType: DISPATCH_EVENT_TYPE.RECONCILED,
+      payload: { reason: "process_restart" },
+    });
+    if (attempt.requestId) {
+      updateDispatchRequestStatus(
+        attempt.requestId,
+        DISPATCH_REQUEST_STATUS.CANCELLED,
+        { completedAt: nowIso() },
+      );
+    }
+  }
+
+  if (reconciled > 0) {
+    console.log(
+      `[DISPATCHER] ${provider}: reconciled ${reconciled} orphaned attempt(s) after process start`,
+    );
+  }
+  return reconciled;
+}
+
 async function runWatchdogSweep(provider, entry) {
   if (watchdogSweepInFlightByProvider.get(provider)) return;
   watchdogSweepInFlightByProvider.set(provider, true);
   try {
     const result = await entry.watchdog.runSweep();
     if (result.timedOut.length > 0) {
+      const byKind = {};
+      for (const item of result.timedOut) {
+        const kind = item.timeoutKind || "unknown";
+        byKind[kind] = (byKind[kind] || 0) + 1;
+      }
+      const kindSummary = Object.entries(byKind)
+        .map(([kind, count]) => `${kind}=${count}`)
+        .join(" ");
       console.log(
-        `[DISPATCHER] watchdog timed out ${result.timedOut.length} ${provider} attempt(s)`,
+        `[DISPATCHER] watchdog timed out ${result.timedOut.length} ${provider} attempt(s) (${kindSummary})`,
       );
     }
   } catch (error) {
@@ -149,6 +240,8 @@ export function getProviderDispatcher(provider) {
     },
   };
 
+  // Close zombies BEFORE any lease plan reads occupancy from SQLite.
+  reconcileOrphanedRuntime(provider);
   dispatcherByProvider.set(provider, entry);
   ensureSharedWatchdogInterval();
   return entry;
