@@ -188,6 +188,102 @@ test("5 concurrent tryLeaseRequest all admit under slots=15", async () => {
   }
 });
 
+test("tryLeaseRequest reclaims pure-leased orphan so waiter is not stuck", async () => {
+  const tempDir = makeTempDataDir();
+
+  try {
+    await resetDispatcherTables(tempDir);
+    const {
+      insertDispatchRequest,
+      insertDispatchAttempt,
+      insertDispatchAttemptEvent,
+      updateDispatchRequestStatus,
+      getDispatchAttempt,
+    } = await import("@/lib/sqlite/dispatcherStore.js");
+    // Force pure-leased write (state=leased, no connect_started) to simulate
+    // the 01:08 production ledger before atomic admit / lost return value.
+    const { getSqlite } = await import("@/lib/sqlite/runtime.js");
+    const { createDispatcherCore } = await import("@/lib/dispatcher/core.js");
+    const { nowIso } = await import("@/lib/sqlite/helpers.js");
+    const { randomUUID } = await import("node:crypto");
+
+    const requestId = randomUUID();
+    const attemptId = randomUUID();
+    const queuedAt = nowIso();
+    insertDispatchRequest({
+      id: requestId,
+      provider: "codex",
+      modelId: "gpt-orphan",
+      status: "queued",
+      queuedAt,
+    });
+    insertDispatchAttempt({
+      id: attemptId,
+      requestId,
+      attemptIndex: 0,
+      provider: "codex",
+      modelId: "gpt-orphan",
+      state: "queued",
+      queueEnteredAt: queuedAt,
+    });
+
+    // Simulate pre-atomic pure lease that never returned to the waiter:
+    // request RUNNING + attempt LEASED + null connect_started_at.
+    const db = getSqlite();
+    const leasedAt = nowIso();
+    db.prepare(
+      `UPDATE dispatch_attempts
+       SET state = 'leased',
+           connection_id = @connectionId,
+           lease_key = @leaseKey,
+           leased_at = @leasedAt,
+           connect_started_at = NULL,
+           path_mode = 'direct'
+       WHERE id = @attemptId AND state = 'queued'`,
+    ).run({
+      attemptId,
+      connectionId: "conn-orphan",
+      leaseKey: "conn-orphan:orphan-key",
+      leasedAt,
+    });
+    updateDispatchRequestStatus(requestId, "running");
+    insertDispatchAttemptEvent({
+      id: randomUUID(),
+      attemptId,
+      eventType: "leased",
+      payload: { connectionId: "conn-orphan" },
+    });
+
+    const orphan = getDispatchAttempt(attemptId);
+    assert.equal(orphan.state, "leased");
+    assert.equal(orphan.connectStartedAt, null);
+
+    const dispatcher = createDispatcherCore({
+      provider: "codex",
+      getConnections: async () => [
+        { id: "conn-orphan", priority: 1, providerSpecificData: {} },
+      ],
+      getSlotsPerConnection: () => 8,
+    });
+
+    // listQueued no longer contains this request — old tryLease returned null.
+    const lease = await dispatcher.tryLeaseRequest(requestId);
+    assert.ok(lease, "must reclaim orphan leased attempt for the waiter");
+    assert.equal(lease.attemptId, attemptId);
+    assert.equal(lease.connectionId, "conn-orphan");
+    assert.equal(lease.reclaimed, true);
+    assert.equal(lease.attempt.state, "connecting");
+    assert.ok(
+      lease.attempt.connectStartedAt,
+      "reclaim must heal connect_started_at so connect_timeout cannot fire",
+    );
+  } finally {
+    const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
+    closeSqlite();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("zombie leased attempts from a dead process block capacity until reconciled", async () => {
   const tempDir = makeTempDataDir();
 

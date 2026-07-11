@@ -370,6 +370,80 @@ export function createDispatcherCore({
     return leases;
   }
 
+  /**
+   * If SQLite already admitted this request (leased/connecting) but the HTTP
+   * waiter never got the return value, hand the lease back. Without this,
+   * request status is RUNNING so listQueued misses it, polls return null, and
+   * the pure-leased row dies at connect_timeout (01:08 ledger: LEASED event,
+   * no connect_started, no LEASE_OK).
+   */
+  function buildLeaseResult(requestId, attempt, connection, extra = {}) {
+    const request = getDispatchRequest(requestId);
+    if (!request || !attempt?.connectionId) return null;
+    const resolvedConnection =
+      connection ||
+      (attempt.connectionId
+        ? { id: attempt.connectionId, providerSpecificData: {} }
+        : null);
+    if (!resolvedConnection) return null;
+    return {
+      requestId,
+      attemptId: attempt.id,
+      connectionId: attempt.connectionId,
+      connection: resolvedConnection,
+      request,
+      attempt,
+      pathMode: attempt.pathMode || extra.pathMode || null,
+      ...extra,
+    };
+  }
+
+  function reclaimActiveLease(requestId, connections) {
+    const existing = getLatestDispatchAttemptForRequest(requestId);
+    if (
+      !existing?.connectionId ||
+      (existing.state !== DISPATCH_ATTEMPT_STATE.LEASED &&
+        existing.state !== DISPATCH_ATTEMPT_STATE.CONNECTING)
+    ) {
+      return null;
+    }
+
+    let attempt = existing;
+    // Heal pure-leased ghosts so connect_timeout cannot fire while the
+    // waiter is still polling (origin/main advances via markConnecting).
+    if (
+      existing.state === DISPATCH_ATTEMPT_STATE.LEASED ||
+      !existing.connectStartedAt
+    ) {
+      const healed = transitionDispatchAttempt(
+        existing.id,
+        [DISPATCH_ATTEMPT_STATE.LEASED, DISPATCH_ATTEMPT_STATE.CONNECTING],
+        DISPATCH_ATTEMPT_STATE.CONNECTING,
+        {
+          connectStartedAt: existing.connectStartedAt || nowIso(),
+        },
+      );
+      if (healed) {
+        attempt = healed;
+        insertDispatchAttemptEvent({
+          id: randomUUID(),
+          attemptId: attempt.id,
+          eventType: DISPATCH_EVENT_TYPE.CONNECT_STARTED,
+          payload: {
+            at: attempt.connectStartedAt,
+            source: "try_lease_reclaim",
+          },
+        });
+      }
+    }
+
+    const connection =
+      (connections || []).find((c) => c.id === attempt.connectionId) || null;
+    return buildLeaseResult(requestId, attempt, connection, {
+      reclaimed: true,
+    });
+  }
+
   async function tryLeaseRequest(requestId) {
     // Occupancy is rebuilt from SQLite each call (source of truth across
     // webpack module copies). Do not use a process-global async lock here —
@@ -378,6 +452,11 @@ export function createDispatcherCore({
       getConnections(),
       syncOccupancy(),
     ]);
+
+    // Reclaim first: already-admitted attempts are not in the queued list.
+    const reclaimed = reclaimActiveLease(requestId, connections);
+    if (reclaimed) return reclaimed;
+
     const slots = resolveSlotsPerConnection();
     const queuedRequests = sortRequestsByQueueTime(
       listQueuedDispatchRequests(provider, 500),
@@ -414,7 +493,8 @@ export function createDispatcherCore({
 
     const attempt = getLatestDispatchAttemptForRequest(requestId);
     if (!attempt || attempt.state !== DISPATCH_ATTEMPT_STATE.QUEUED) {
-      return null;
+      // Race: another poll admitted between queue snapshot and lease write.
+      return reclaimActiveLease(requestId, connections);
     }
 
     const leasedAt = nowIso();
@@ -431,7 +511,10 @@ export function createDispatcherCore({
       connectStartedAt: leasedAt,
       pathMode,
     });
-    if (!leased) return null;
+    if (!leased) {
+      // Lost the atomic race — reclaim the winner's admission.
+      return reclaimActiveLease(requestId, connections);
+    }
 
     updateDispatchRequestStatus(requestId, DISPATCH_REQUEST_STATUS.RUNNING);
     occupancyByConnection[connection.id] =
@@ -458,15 +541,7 @@ export function createDispatcherCore({
       },
     });
 
-    return {
-      requestId,
-      attemptId: leased.id,
-      connectionId: connection.id,
-      connection,
-      request: targetRequest,
-      attempt: leased,
-      pathMode: leased.pathMode || pathMode,
-    };
+    return buildLeaseResult(requestId, leased, connection, { pathMode });
   }
 
   function finalizeRequestForAttempt(attempt, nextState) {

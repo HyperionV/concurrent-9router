@@ -16,10 +16,15 @@ import { clearZombieAttemptsOnProcessBoot } from "@/lib/dispatcher/processBootCl
 
 export { TEXT_DISPATCH_PROVIDERS, invalidateDispatcherConnectionCache };
 
-const dispatcherByProvider = new Map();
-const lastKnownSlotsByProvider = new Map();
-const watchdogSweepInFlightByProvider = new Map();
-let sharedWatchdogInterval = null;
+// Process-global maps: Next/webpack evaluates this module more than once
+// ("Translators initialized" ×N). Module-local Maps split the dispatcher
+// pool and occupancy view across copies — admit must share one registry.
+const dispatcherByProvider = (globalThis.__dispatcherByProvider ||= new Map());
+const lastKnownSlotsByProvider = (globalThis.__dispatcherLastKnownSlots ||=
+  new Map());
+const watchdogSweepInFlightByProvider =
+  (globalThis.__dispatcherWatchdogInFlight ||= new Map());
+let sharedWatchdogInterval = globalThis.__dispatcherWatchdogInterval || null;
 
 const WATCHDOG_SWEEP_INTERVAL_MS = 5000;
 
@@ -118,13 +123,17 @@ async function runWatchdogSweep(provider, entry) {
 }
 
 function ensureSharedWatchdogInterval() {
-  if (sharedWatchdogInterval) return;
+  if (globalThis.__dispatcherWatchdogInterval) {
+    sharedWatchdogInterval = globalThis.__dispatcherWatchdogInterval;
+    return;
+  }
   sharedWatchdogInterval = setInterval(() => {
     for (const [provider, entry] of dispatcherByProvider) {
       runWatchdogSweep(provider, entry).catch(() => {});
     }
   }, WATCHDOG_SWEEP_INTERVAL_MS);
   sharedWatchdogInterval.unref?.();
+  globalThis.__dispatcherWatchdogInterval = sharedWatchdogInterval;
 }
 
 /**
