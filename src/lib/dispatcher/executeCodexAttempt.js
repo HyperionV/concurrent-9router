@@ -169,6 +169,10 @@ async function executeManagedProviderRequest({
     ).response;
   }
 
+  log.info(
+    "DISPATCHER",
+    `${provider}/${model}: waiting for lease request=${queued.request.id.slice(0, 8)}…`,
+  );
   const lease = await waitForLease(
     dispatcher,
     queued.request.id,
@@ -209,21 +213,20 @@ async function executeManagedProviderRequest({
     ).response;
   }
 
-  // Lease SQL already sets connecting; this is idempotent + logs failure.
-  const marked = await dispatcher.markAttemptConnecting(attemptId, {
+  log.info(
+    "DISPATCHER",
+    `${provider}/${model}: LEASE_OK attempt=${attemptId.slice(0, 8)}… conn=${String(lease.connectionId || "").slice(0, 8)}… state=${lease.attempt?.state || "?"}`,
+  );
+
+  // Idempotent if lease SQL already set connecting.
+  await dispatcher.markAttemptConnecting(attemptId, {
     pathMode: lease.pathMode || null,
   });
-  if (!marked) {
-    log.error(
-      "DISPATCHER",
-      `${provider}/${model}: markAttemptConnecting failed for ${attemptId} (state may be wrong)`,
-    );
-  } else {
-    log.info(
-      "DISPATCHER",
-      `${provider}/${model}: leased ${attemptId.slice(0, 8)}… conn=${String(lease.connectionId).slice(0, 8)}…`,
-    );
-  }
+
+  log.info(
+    "DISPATCHER",
+    `${provider}/${model}: CONNECT_OK attempt=${attemptId.slice(0, 8)}… loading connection`,
+  );
 
   const rawConnection = await getProviderConnectionById(lease.connectionId);
   if (!rawConnection || rawConnection.isActive !== true) {
@@ -248,7 +251,15 @@ async function executeManagedProviderRequest({
       },
     };
   }
+  log.info(
+    "DISPATCHER",
+    `${provider}/${model}: credentials loaded, refreshing token if needed`,
+  );
   credentials = await checkAndRefreshToken(provider, credentials);
+  log.info(
+    "DISPATCHER",
+    `${provider}/${model}: token ready, entering handleChatCore`,
+  );
 
   let persistedContinuationKey = null;
   const dispatcherHooks = {

@@ -270,6 +270,7 @@ export function listDispatchAttemptsByState(
 export function leaseDispatchAttempt(attemptId, lease) {
   const db = getSqlite();
   const leasedAt = lease.leasedAt || nowIso();
+  const connectStartedAt = lease.connectStartedAt || leasedAt;
   const result = db
     .prepare(
       `
@@ -289,10 +290,21 @@ export function leaseDispatchAttempt(attemptId, lease) {
       connectionId: lease.connectionId,
       leaseKey: lease.leaseKey,
       leasedAt,
-      connectStartedAt: lease.connectStartedAt || leasedAt,
+      connectStartedAt,
       pathMode: lease.pathMode || null,
     });
-  return result.changes === 1 ? getDispatchAttempt(attemptId) : null;
+  if (result.changes !== 1) return null;
+  const row = getDispatchAttempt(attemptId);
+  // Hard assert: never admit without connect_started_at (prevents 30s ghosts).
+  if (!row?.connectStartedAt) {
+    db.prepare(
+      `UPDATE dispatch_attempts
+       SET connect_started_at = @connectStartedAt, state = 'connecting'
+       WHERE id = @attemptId`,
+    ).run({ attemptId, connectStartedAt });
+    return getDispatchAttempt(attemptId);
+  }
+  return row;
 }
 
 export function transitionDispatchAttempt(

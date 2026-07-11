@@ -100,7 +100,11 @@ export function classifyAttemptTimeout(attempt, policy, now = Date.now()) {
     return DISPATCH_TIMEOUT_KIND.ATTEMPT_DEADLINE;
   }
 
+  // Only pure LEASED rows (never marked connecting). Attempts that admitted as
+  // connecting use ttft/idle instead — connect_timeout must not kill live work
+  // that has connect_started_at or has left the leased state.
   if (
+    attempt?.state === "leased" &&
     !connectStartedAt &&
     leasedAt &&
     now - leasedAt >= effectivePolicy.connectTimeoutMs
