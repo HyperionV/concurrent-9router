@@ -56,6 +56,44 @@ export function createDispatcherCore({
   const policy = createTimeoutPolicy(timeoutPolicy);
   const occupancyByConnection = {};
   const leaseCountByConnection = {};
+  // OPT-001: evented waiters keyed by requestId → Set of resolve fns
+  const leaseWaiters = new Map();
+
+  function notifyLeaseWaiters(requestId = null) {
+    if (requestId) {
+      const waiters = leaseWaiters.get(requestId);
+      if (waiters) {
+        for (const resolve of waiters) resolve();
+        leaseWaiters.delete(requestId);
+      }
+      return;
+    }
+    for (const [, waiters] of leaseWaiters) {
+      for (const resolve of waiters) resolve();
+    }
+    leaseWaiters.clear();
+  }
+
+  function waitForLeaseSignal(requestId, timeoutMs) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        const waiters = leaseWaiters.get(requestId);
+        if (waiters) {
+          waiters.delete(done);
+          if (waiters.size === 0) leaseWaiters.delete(requestId);
+        }
+        clearTimeout(timer);
+        resolve();
+      };
+      if (!leaseWaiters.has(requestId)) leaseWaiters.set(requestId, new Set());
+      leaseWaiters.get(requestId).add(done);
+      const timer = setTimeout(done, Math.max(50, Math.min(Number(timeoutMs) || 500, 1000)));
+      timer.unref?.();
+    });
+  }
 
   function resolveSlotsPerConnection() {
     if (typeof getSlotsPerConnection === "function") {
@@ -137,6 +175,7 @@ export function createDispatcherCore({
       },
     });
 
+    notifyLeaseWaiters();
     return { request, attempt };
   }
 
@@ -554,6 +593,7 @@ export function createDispatcherCore({
       eventType: DISPATCH_EVENT_TYPE.COMPLETED,
       payload: { terminalReason },
     });
+    notifyLeaseWaiters();
     return attempt;
   }
 
@@ -601,6 +641,7 @@ export function createDispatcherCore({
         error,
       },
     });
+    notifyLeaseWaiters();
     return attempt;
   }
 
@@ -614,10 +655,13 @@ export function createDispatcherCore({
   }
 
   return {
+    provider,
     enqueueRequest,
     requeueRequest,
     tryLeaseAvailableWork,
     tryLeaseRequest,
+    waitForLeaseSignal,
+    notifyLeaseWaiters,
     markAttemptConnecting,
     markAttemptStreamStarted,
     markAttemptProgress,

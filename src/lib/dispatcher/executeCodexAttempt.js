@@ -1,13 +1,16 @@
 import { getProviderConnectionById } from "@/lib/localDb.js";
 import { buildManagedCredentials } from "@/lib/dispatcher/connectionState.js";
-import { getCodexDispatcher } from "@/lib/dispatcher/index.js";
+import { getProviderDispatcher } from "@/lib/dispatcher/index.js";
 import { dispatcherQuotaHealth } from "@/lib/dispatcher/quotaHealth.js";
 import {
   getConversationAffinity,
   persistConversationAffinity,
   resolveConversationKey,
 } from "@/lib/dispatcher/conversationAffinity.js";
-import { computeCodexAdmissionDecisionFromSettings } from "@/lib/dispatcher/admissionPolicy.js";
+import {
+  computeCodexAdmissionDecisionFromSettings,
+  isTextDispatchProvider,
+} from "@/lib/dispatcher/admissionPolicy.js";
 import {
   checkAndRefreshToken,
   updateProviderCredentials,
@@ -21,11 +24,10 @@ import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "@/sse/utils/logger.js";
 import { createErrorResult } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
+import { PROVIDERS } from "open-sse/config/providers.js";
 
-const LEASE_POLL_INTERVAL_MS = 100;
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function resolveTargetFormat(provider) {
+  return PROVIDERS[provider]?.format || "openai";
 }
 
 async function waitForLease(dispatcher, requestId, timeoutMs) {
@@ -36,12 +38,19 @@ async function waitForLease(dispatcher, requestId, timeoutMs) {
     if (lease) {
       return lease;
     }
-    await sleep(LEASE_POLL_INTERVAL_MS);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    // OPT-001: block on lease signal / short timeout instead of fixed 100ms busy poll
+    await dispatcher.waitForLeaseSignal?.(requestId, remaining);
   }
 
   return null;
 }
 
+/**
+ * Managed admission for Codex, Antigravity, and Grok CLI (isolated pools).
+ * Returns null when this request should use the legacy account-selection path.
+ */
 export async function maybeHandleManagedCodexRequest({
   body,
   provider,
@@ -55,7 +64,7 @@ export async function maybeHandleManagedCodexRequest({
   providerThinking,
   ccFilterNaming,
 }) {
-  if (provider !== "codex") {
+  if (!isTextDispatchProvider(provider)) {
     return null;
   }
 
@@ -71,12 +80,13 @@ export async function maybeHandleManagedCodexRequest({
     settings,
     apiKeyRecord,
     hasManagedAffinity: affinity?.state === "active",
+    provider,
   });
   if (decision.effectiveBehavior !== "managed") {
     return null;
   }
 
-  return executeManagedCodexRequest({
+  return executeManagedProviderRequest({
     body,
     provider,
     model,
@@ -93,7 +103,7 @@ export async function maybeHandleManagedCodexRequest({
   });
 }
 
-async function executeManagedCodexRequest({
+async function executeManagedProviderRequest({
   body,
   provider,
   model,
@@ -116,7 +126,8 @@ async function executeManagedCodexRequest({
     conversationKey,
     apiKeyRecord?.id || null,
   );
-  const { dispatcher } = getCodexDispatcher();
+  const { dispatcher } = getProviderDispatcher(provider);
+  const targetFormat = resolveTargetFormat(provider);
   const queued = requestId
     ? await dispatcher.requeueRequest(requestId, {
         metadataPatch: {
@@ -126,13 +137,13 @@ async function executeManagedCodexRequest({
         },
       })
     : await dispatcher.enqueueRequest({
-        provider: "codex",
+        provider,
         modelId: model,
         sourceEndpoint: clientRawRequest?.endpoint || null,
         sourceFormat: request?.url
           ? detectFormatByEndpoint(new URL(request.url).pathname, body)
           : null,
-        targetFormat: "openai-responses",
+        targetFormat,
         conversationKey,
         metadata: {
           routeModel: modelStr,
@@ -144,7 +155,7 @@ async function executeManagedCodexRequest({
   if (!queued) {
     return createErrorResult(
       HTTP_STATUS.SERVICE_UNAVAILABLE,
-      "Codex dispatcher could not queue request",
+      `${provider} dispatcher could not queue request`,
     ).response;
   }
 
@@ -162,7 +173,7 @@ async function executeManagedCodexRequest({
     });
     return createErrorResult(
       HTTP_STATUS.SERVICE_UNAVAILABLE,
-      "Codex dispatcher queue expired before a slot became available",
+      `${provider} dispatcher queue expired before a slot became available`,
     ).response;
   }
 
@@ -175,7 +186,7 @@ async function executeManagedCodexRequest({
     });
     return createErrorResult(
       HTTP_STATUS.SERVICE_UNAVAILABLE,
-      "Managed Codex connection unavailable",
+      `Managed ${provider} connection unavailable`,
     ).response;
   }
 
@@ -212,7 +223,7 @@ async function executeManagedCodexRequest({
       }
       persistConversationAffinity({
         conversationKey: continuationKey,
-        provider: "codex",
+        provider,
         modelId: model,
         connectionId: lease.connectionId,
         sessionId: credentials?.providerSpecificData?.dispatchSessionId || null,
@@ -314,7 +325,7 @@ async function executeManagedCodexRequest({
     });
 
     if (retryBudget > 0) {
-      return executeManagedCodexRequest({
+      return executeManagedProviderRequest({
         body,
         provider,
         model,
@@ -337,5 +348,11 @@ async function executeManagedCodexRequest({
     });
   }
 
-  return result.response;
+  return (
+    result.response ||
+    createErrorResult(
+      result.status || HTTP_STATUS.BAD_GATEWAY,
+      result.error || `${provider} managed request failed`,
+    ).response
+  );
 }

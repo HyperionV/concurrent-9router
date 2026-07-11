@@ -92,6 +92,20 @@ const PROVIDER_MODELS_CONFIG = {
     body: {},
     parseResponse: (data) => data.models || []
   },
+  "grok-cli": {
+    url: "https://cli-chat-proxy.grok.com/v1/models",
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)",
+      "x-xai-token-auth": "xai-grok-cli",
+      "x-grok-client-identifier": "grok-pager",
+      "x-grok-client-version": "0.2.93",
+    },
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    parseResponse: (data) => data.data || data.models || []
+  },
   github: {
     url: "https://api.githubcopilot.com/models",
     method: "GET",

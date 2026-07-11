@@ -360,6 +360,73 @@ export async function refreshCodexToken(refreshToken, log) {
 }
 
 /**
+ * Specialized refresh for Grok CLI (xAI device-code) tokens
+ */
+export async function refreshGrokCliToken(refreshToken, log) {
+  return dedupRefresh(
+    "grok-cli",
+    refreshToken,
+    async () => {
+      try {
+        const response = await fetch(
+          PROVIDERS["grok-cli"]?.tokenUrl || "https://auth.x.ai/oauth2/token",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              Accept: "application/json",
+              "User-Agent":
+                "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)",
+            },
+            body: new URLSearchParams({
+              grant_type: "refresh_token",
+              refresh_token: refreshToken,
+              client_id:
+                PROVIDERS["grok-cli"]?.clientId ||
+                "b1a00492-073a-47ea-816f-4c329264a828",
+            }),
+          },
+        );
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          const errorCode = parseRefreshErrorCode(errorText);
+          log?.error?.("TOKEN_REFRESH", "Failed to refresh Grok CLI token", {
+            status: response.status,
+            error: errorText,
+          });
+          if (UNRECOVERABLE_REFRESH_CODES.has(errorCode)) {
+            return { error: "unrecoverable_refresh_error", code: errorCode };
+          }
+          return null;
+        }
+
+        const tokens = await response.json();
+        log?.info?.("TOKEN_REFRESH", "Successfully refreshed Grok CLI token", {
+          hasNewAccessToken: !!tokens.access_token,
+          hasNewRefreshToken: !!tokens.refresh_token,
+          expiresIn: tokens.expires_in,
+        });
+
+        return {
+          accessToken: tokens.access_token,
+          refreshToken: tokens.refresh_token || refreshToken,
+          idToken: tokens.id_token,
+          expiresIn: tokens.expires_in,
+        };
+      } catch (error) {
+        log?.error?.(
+          "TOKEN_REFRESH",
+          `Network error refreshing Grok CLI token: ${error.message}`,
+        );
+        return null;
+      }
+    },
+    log,
+  );
+}
+
+/**
  * Specialized refresh for Kiro (AWS CodeWhisperer) tokens
  * Supports both AWS SSO OIDC (Builder ID/IDC) and Social Auth (Google/GitHub)
  */
@@ -624,6 +691,9 @@ export async function getAccessToken(provider, credentials, log) {
     case "codex":
       return await refreshCodexToken(credentials.refreshToken, log);
 
+    case "grok-cli":
+      return await refreshGrokCliToken(credentials.refreshToken, log);
+
     case "qwen":
       return await refreshQwenToken(credentials.refreshToken, log);
 
@@ -675,6 +745,8 @@ export async function refreshTokenByProvider(provider, credentials, log) {
       return refreshClaudeOAuthToken(credentials.refreshToken, log);
     case "codex":
       return refreshCodexToken(credentials.refreshToken, log);
+    case "grok-cli":
+      return refreshGrokCliToken(credentials.refreshToken, log);
     case "qwen":
       return refreshQwenToken(credentials.refreshToken, log);
     case "iflow":

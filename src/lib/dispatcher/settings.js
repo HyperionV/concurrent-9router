@@ -4,6 +4,9 @@ export const DISPATCHER_MODE = {
   MANAGED: "managed",
 };
 
+/** Providers with isolated text dispatcher pools */
+export const TEXT_DISPATCH_PROVIDERS = ["codex", "antigravity", "grok-cli"];
+
 const VALID_MODES = new Set(Object.values(DISPATCHER_MODE));
 
 export function deriveDispatcherMode(settings = {}) {

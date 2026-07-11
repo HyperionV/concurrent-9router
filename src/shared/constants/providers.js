@@ -43,6 +43,35 @@ export const OAUTH_PROVIDERS = {
         "Requires a ChatGPT Plus (or higher) account. Free accounts are not supported for image generation.",
     },
   },
+  antigravity: {
+    id: "antigravity",
+    alias: "ag",
+    name: "Antigravity",
+    icon: "rocket_launch",
+    color: "#F59E0B",
+    website: "https://antigravity.google",
+    notice: {
+      text: "Google Cloud Code / Antigravity OAuth. Upstream marks this provider as higher-risk; use with care.",
+      signupUrl: "https://antigravity.google",
+    },
+  },
+  "grok-cli": {
+    id: "grok-cli",
+    alias: "gcli",
+    name: "Grok CLI (Grok Build)",
+    icon: "auto_awesome",
+    color: "#1DA1F2",
+    textIcon: "GC",
+    website: "https://x.ai",
+    thinkingConfig: {
+      options: ["low", "medium", "high"],
+      defaultMode: "high",
+    },
+    notice: {
+      text: "Sign in with your xAI / Grok account via device code. Uses Grok Build subscription credits (cli-chat-proxy.grok.com).",
+      signupUrl: "https://grok.com/supergrok",
+    },
+  },
 };
 
 export const APIKEY_PROVIDERS = {
@@ -170,4 +199,5 @@ export const USAGE_SUPPORTED_PROVIDERS = [
   "github",
   "codex",
   "kimi-coding",
+  "grok-cli",
 ];

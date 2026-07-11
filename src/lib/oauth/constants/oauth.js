@@ -133,6 +133,18 @@ export const OPENAI_CONFIG = {
   },
 };
 
+// Grok CLI / Grok Build — device code on auth.x.ai, inference on cli-chat-proxy
+export const GROK_CLI_CONFIG = {
+  clientId: "b1a00492-073a-47ea-816f-4c329264a828",
+  deviceCodeUrl: "https://auth.x.ai/oauth2/device/code",
+  tokenUrl: "https://auth.x.ai/oauth2/token",
+  refreshUrl: "https://auth.x.ai/oauth2/token",
+  scope:
+    "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write",
+  referrer: "grok-build",
+  refreshLeadMs: 5 * 60 * 1000,
+};
+
 // GitHub Copilot OAuth Configuration (Device Code Flow)
 export const GITHUB_CONFIG = {
   clientId: "Iv1.b507a08c87ecfe98",

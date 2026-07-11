@@ -221,24 +221,27 @@ async function handleSingleModelChat(
   const chatSettings = await getSettings();
   const providerThinking =
     (chatSettings.providerThinking || {})[provider] || null;
-  const existingAffinity =
-    provider === "codex"
-      ? getConversationAffinity(
-          resolveConversationKey({
-            body,
-            clientRawRequest,
-          }),
-          activeApiKeyRecord?.id || null,
-        )
-      : null;
-  const codexRoutingDecision =
-    provider === "codex"
-      ? computeCodexAdmissionDecisionFromSettings({
-          settings: chatSettings,
-          apiKeyRecord: activeApiKeyRecord,
-          hasManagedAffinity: existingAffinity?.state === "active",
-        })
-      : null;
+  const isDispatchProvider =
+    provider === "codex" ||
+    provider === "antigravity" ||
+    provider === "grok-cli";
+  const existingAffinity = isDispatchProvider
+    ? getConversationAffinity(
+        resolveConversationKey({
+          body,
+          clientRawRequest,
+        }),
+        activeApiKeyRecord?.id || null,
+      )
+    : null;
+  const codexRoutingDecision = isDispatchProvider
+    ? computeCodexAdmissionDecisionFromSettings({
+        settings: chatSettings,
+        apiKeyRecord: activeApiKeyRecord,
+        hasManagedAffinity: existingAffinity?.state === "active",
+        provider,
+      })
+    : null;
   const managedCodexResponse = await maybeHandleManagedCodexRequest({
     body,
     provider,
@@ -332,16 +335,17 @@ async function handleSingleModelChat(
 
     // Use shared chatCore
     const shadowTracker =
-      provider === "codex" && codexRoutingDecision?.shadowTracked === true
+      isDispatchProvider && codexRoutingDecision?.shadowTracked === true
         ? beginShadowCodexAttempt({
-            provider: "codex",
+            provider,
             modelId: model,
             routeModel: modelStr,
             sourceEndpoint: clientRawRequest?.endpoint || null,
             sourceFormat: request?.url
               ? detectFormatByEndpoint(new URL(request.url).pathname, body)
               : null,
-            targetFormat: "openai-responses",
+            targetFormat:
+              provider === "antigravity" ? "antigravity" : "openai-responses",
             connectionId: credentials.connectionId,
             sessionId: credentials.connectionId,
             apiKeyId: activeApiKeyRecord?.id || null,

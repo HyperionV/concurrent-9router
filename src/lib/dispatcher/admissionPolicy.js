@@ -1,8 +1,29 @@
-import { deriveDispatcherMode } from "@/lib/dispatcher/settings.js";
+import {
+  deriveDispatcherMode,
+  TEXT_DISPATCH_PROVIDERS,
+} from "@/lib/dispatcher/settings.js";
 
 const LEGACY = "legacy";
 const MANAGED = "managed";
 const NO_KEY_SCOPE = "__no_key__";
+
+/** Providers that can enter managed text admission */
+export function isTextDispatchProvider(provider) {
+  return TEXT_DISPATCH_PROVIDERS.includes(provider);
+}
+
+/**
+ * Default admission policy for a provider.
+ * Codex uses codexDefaultAdmissionPolicy; AG/Grok default to legacy unless
+ * settings.providerAdmissionPolicies[provider] opts into managed.
+ */
+export function getDefaultAdmissionPolicyForProvider(settings = {}, provider = "codex") {
+  if (provider === "codex") {
+    return settings.codexDefaultAdmissionPolicy || LEGACY;
+  }
+  const map = settings.providerAdmissionPolicies || {};
+  return map[provider] || LEGACY;
+}
 
 function normalizePolicy(value, { allowInherit = false } = {}) {
   if (value == null || value === "") return allowInherit ? null : LEGACY;
@@ -73,11 +94,16 @@ export function computeCodexAdmissionDecisionFromSettings({
   settings = {},
   apiKeyRecord = null,
   hasManagedAffinity = false,
+  provider = "codex",
 } = {}) {
   return computeCodexAdmissionDecision({
     runtimeMode: deriveDispatcherMode(settings),
-    defaultPolicy: settings.codexDefaultAdmissionPolicy,
+    defaultPolicy: getDefaultAdmissionPolicyForProvider(settings, provider),
     apiKeyRecord,
     hasManagedAffinity,
   });
 }
+
+/** Alias for multi-provider call sites */
+export const computeAdmissionDecisionFromSettings =
+  computeCodexAdmissionDecisionFromSettings;

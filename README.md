@@ -59,10 +59,11 @@ Main sections include:
 
 The current custom provider surface is intentionally narrower than upstream marketing copy:
 
-- OAuth providers: Claude Code and OpenAI Codex
+- OAuth providers: Claude Code, OpenAI Codex, Antigravity (`ag`), Grok CLI / Grok Build (`gcli` / `gb` / `grok-build`)
 - API-key providers: OpenAI and Anthropic
 - OpenAI-compatible and Anthropic-compatible provider nodes
 - Codex supports both LLM and image service kinds
+- Text dispatcher managed admission is available for Codex, Antigravity, and Grok CLI (isolated pools). Antigravity and Grok CLI default to **legacy** admission unless `settings.providerAdmissionPolicies[provider]` is set to `managed`.
 
 Model and provider metadata live primarily in:
 
