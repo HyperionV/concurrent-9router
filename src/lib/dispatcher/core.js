@@ -58,38 +58,9 @@ export function createDispatcherCore({
   const occupancyByConnection = {};
   const leaseCountByConnection = {};
 
-  // Process-global lock: Next may evaluate this module more than once (you see
-  // "Translators initialized" ×5). Per-module occupancy alone is not enough —
-  // serialize admits across all copies so the 5th concurrent request is not
-  // starved or double-counted.
-  function withProcessLeaseLock(fn) {
-    const gates = (globalThis.__dispatcherLeaseGates ||= Object.create(null));
-    const prev = gates[provider] || Promise.resolve();
-    let unlock = () => {};
-    const held = new Promise((resolve) => {
-      unlock = resolve;
-    });
-    gates[provider] = prev.then(() => held, () => held);
-    return prev.then(
-      async () => {
-        try {
-          return await fn();
-        } finally {
-          unlock();
-        }
-      },
-      async () => {
-        try {
-          return await fn();
-        } finally {
-          unlock();
-        }
-      },
-    );
-  }
-
   function resolveSlotsPerConnection() {
-    // Prefer process-global slot map written by loadProviderConnections.
+    // Prefer process-global slot map written by loadProviderConnections so
+    // multiple webpack module copies see the same codex slot count (e.g. 8).
     const shared = globalThis.__dispatcherSlotsByProvider?.[provider];
     if (Number.isFinite(Number(shared)) && Number(shared) > 0) {
       return Number(shared);
@@ -400,104 +371,102 @@ export function createDispatcherCore({
   }
 
   async function tryLeaseRequest(requestId) {
-    return withProcessLeaseLock(async () => {
-      const [connections, activeAttempts] = await Promise.all([
-        getConnections(),
-        syncOccupancy(),
-      ]);
-      const slots = resolveSlotsPerConnection();
-      const queuedRequests = sortRequestsByQueueTime(
-        listQueuedDispatchRequests(provider, 500),
-      );
-      const targetRequest = queuedRequests.find(
-        (request) => request.id === requestId,
-      );
-      if (!targetRequest) {
-        // Already running/finished, or not visible in this snapshot.
-        return null;
-      }
+    // Occupancy is rebuilt from SQLite each call (source of truth across
+    // webpack module copies). Do not use a process-global async lock here —
+    // it deadlocked all concurrent admits (5× waiting, 0× LEASE_OK).
+    const [connections, activeAttempts] = await Promise.all([
+      getConnections(),
+      syncOccupancy(),
+    ]);
+    const slots = resolveSlotsPerConnection();
+    const queuedRequests = sortRequestsByQueueTime(
+      listQueuedDispatchRequests(provider, 500),
+    );
+    const targetRequest = queuedRequests.find(
+      (request) => request.id === requestId,
+    );
+    if (!targetRequest) return null;
 
-      const connection = getSortedConnectionsForRequest(
-        connections,
-        targetRequest,
-      ).find((candidateConnection) => {
-        const currentOccupancy =
-          occupancyByConnection[candidateConnection.id] || 0;
-        if (currentOccupancy >= slots) return false;
-        return (
-          connectionCanServeRequest(candidateConnection, targetRequest) &&
-          requestIsEligibleForConnection(
-            targetRequest,
-            candidateConnection.id,
-            activeAttempts,
-          )
+    const connection = getSortedConnectionsForRequest(
+      connections,
+      targetRequest,
+    ).find((candidateConnection) => {
+      const currentOccupancy =
+        occupancyByConnection[candidateConnection.id] || 0;
+      if (currentOccupancy >= slots) return false;
+      return (
+        connectionCanServeRequest(candidateConnection, targetRequest) &&
+        requestIsEligibleForConnection(
+          targetRequest,
+          candidateConnection.id,
+          activeAttempts,
+        )
+      );
+    });
+    if (!connection) {
+      if (connections.length === 0) {
+        console.warn(
+          `[DISPATCHER] ${provider}: tryLease null — zero connections (check collection filter / isActive)`,
         );
-      });
-      if (!connection) {
-        if (connections.length === 0) {
-          console.warn(
-            `[DISPATCHER] ${provider}: tryLease null — zero connections (check collection filter / isActive)`,
-          );
-        }
-        return null;
       }
+      return null;
+    }
 
-      const attempt = getLatestDispatchAttemptForRequest(requestId);
-      if (!attempt || attempt.state !== DISPATCH_ATTEMPT_STATE.QUEUED) {
-        return null;
-      }
+    const attempt = getLatestDispatchAttemptForRequest(requestId);
+    if (!attempt || attempt.state !== DISPATCH_ATTEMPT_STATE.QUEUED) {
+      return null;
+    }
 
-      const leasedAt = nowIso();
-      const leaseKey = buildLeaseKey(connection.id);
-      const pathMode = connection?.providerSpecificData?.vercelRelayUrl
-        ? "vercel-relay"
-        : connection?.providerSpecificData?.connectionProxyEnabled
-          ? "connection-proxy"
-          : "direct";
-      const leased = leaseDispatchAttempt(attempt.id, {
+    const leasedAt = nowIso();
+    const leaseKey = buildLeaseKey(connection.id);
+    const pathMode = connection?.providerSpecificData?.vercelRelayUrl
+      ? "vercel-relay"
+      : connection?.providerSpecificData?.connectionProxyEnabled
+        ? "connection-proxy"
+        : "direct";
+    const leased = leaseDispatchAttempt(attempt.id, {
+      connectionId: connection.id,
+      leaseKey,
+      leasedAt,
+      connectStartedAt: leasedAt,
+      pathMode,
+    });
+    if (!leased) return null;
+
+    updateDispatchRequestStatus(requestId, DISPATCH_REQUEST_STATUS.RUNNING);
+    occupancyByConnection[connection.id] =
+      (occupancyByConnection[connection.id] || 0) + 1;
+    leaseCountByConnection[connection.id] =
+      (leaseCountByConnection[connection.id] || 0) + 1;
+
+    insertDispatchAttemptEvent({
+      id: randomUUID(),
+      attemptId: leased.id,
+      eventType: DISPATCH_EVENT_TYPE.LEASED,
+      payload: {
         connectionId: connection.id,
         leaseKey,
-        leasedAt,
-        connectStartedAt: leasedAt,
-        pathMode,
-      });
-      if (!leased) return null;
-
-      updateDispatchRequestStatus(requestId, DISPATCH_REQUEST_STATUS.RUNNING);
-      occupancyByConnection[connection.id] =
-        (occupancyByConnection[connection.id] || 0) + 1;
-      leaseCountByConnection[connection.id] =
-        (leaseCountByConnection[connection.id] || 0) + 1;
-
-      insertDispatchAttemptEvent({
-        id: randomUUID(),
-        attemptId: leased.id,
-        eventType: DISPATCH_EVENT_TYPE.LEASED,
-        payload: {
-          connectionId: connection.id,
-          leaseKey,
-        },
-      });
-      insertDispatchAttemptEvent({
-        id: randomUUID(),
-        attemptId: leased.id,
-        eventType: DISPATCH_EVENT_TYPE.CONNECT_STARTED,
-        payload: {
-          at: leased.connectStartedAt || leasedAt,
-          source: "try_lease_request",
-        },
-      });
-
-      return {
-        requestId,
-        attemptId: leased.id,
-        connectionId: connection.id,
-        connection,
-        request: targetRequest,
-        attempt: leased,
-        pathMode: leased.pathMode || pathMode,
-      };
+      },
     });
+    insertDispatchAttemptEvent({
+      id: randomUUID(),
+      attemptId: leased.id,
+      eventType: DISPATCH_EVENT_TYPE.CONNECT_STARTED,
+      payload: {
+        at: leased.connectStartedAt || leasedAt,
+        source: "try_lease_request",
+      },
+    });
+
+    return {
+      requestId,
+      attemptId: leased.id,
+      connectionId: connection.id,
+      connection,
+      request: targetRequest,
+      attempt: leased,
+      pathMode: leased.pathMode || pathMode,
+    };
   }
 
   function finalizeRequestForAttempt(attempt, nextState) {
