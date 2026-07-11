@@ -1,7 +1,18 @@
 import { DISPATCH_TIMEOUT_KIND } from "@/lib/dispatcher/types.js";
 
+/**
+ * Max time a request may sit in the queue waiting for a free gate/slot,
+ * measured from queue arrival (queuedAt / queueEnteredAt) until lease.
+ * After this, the request is timed out (queue_expired) so the continuous
+ * gate loop can keep serving fresher work.
+ */
+export const QUEUE_WAITING_LIMIT_MS = 5 * 60 * 1000;
+
 export const DEFAULT_TIMEOUT_POLICY = Object.freeze({
-  queueTtlMs: 10 * 60 * 1000,
+  /** @deprecated use queueTtlMs — same as QUEUE_WAITING_LIMIT_MS (5 minutes) */
+  queueTtlMs: QUEUE_WAITING_LIMIT_MS,
+  /** Alias for docs / settings: waiting_limit from queue arrival */
+  waitingLimitMs: QUEUE_WAITING_LIMIT_MS,
   connectTimeoutMs: 30 * 1000,
   ttftTimeoutMs: 3 * 60 * 1000,
   idleTimeoutMs: 35 * 1000,
@@ -14,8 +25,13 @@ function toMs(value, fallback) {
 }
 
 export function createTimeoutPolicy(overrides = {}) {
+  const waitingLimitMs = toMs(
+    overrides.waitingLimitMs ?? overrides.queueTtlMs,
+    QUEUE_WAITING_LIMIT_MS,
+  );
   return {
-    queueTtlMs: toMs(overrides.queueTtlMs, DEFAULT_TIMEOUT_POLICY.queueTtlMs),
+    queueTtlMs: waitingLimitMs,
+    waitingLimitMs,
     connectTimeoutMs: toMs(
       overrides.connectTimeoutMs,
       DEFAULT_TIMEOUT_POLICY.connectTimeoutMs,
@@ -33,6 +49,22 @@ export function createTimeoutPolicy(overrides = {}) {
       DEFAULT_TIMEOUT_POLICY.attemptDeadlineMs,
     ),
   };
+}
+
+/**
+ * Remaining queue wait budget for a request that entered the queue at `queueEnteredAt`.
+ * Returns 0 if already expired (caller should timeout immediately).
+ */
+export function remainingQueueWaitMs(
+  queueEnteredAt,
+  policy = DEFAULT_TIMEOUT_POLICY,
+  now = Date.now(),
+) {
+  const limitMs = createTimeoutPolicy(policy).waitingLimitMs;
+  if (!queueEnteredAt) return limitMs;
+  const entered = new Date(queueEnteredAt).getTime();
+  if (!Number.isFinite(entered)) return limitMs;
+  return Math.max(0, limitMs - (now - entered));
 }
 
 function parseTime(value) {

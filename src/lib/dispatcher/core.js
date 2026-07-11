@@ -15,7 +15,10 @@ import {
 import { nowIso } from "@/lib/sqlite/helpers.js";
 import { createPathHealthTracker } from "@/lib/dispatcher/pathHealth.js";
 import { dispatcherQuotaHealth } from "@/lib/dispatcher/quotaHealth.js";
-import { createTimeoutPolicy } from "@/lib/dispatcher/timeoutPolicy.js";
+import {
+  createTimeoutPolicy,
+  remainingQueueWaitMs,
+} from "@/lib/dispatcher/timeoutPolicy.js";
 import {
   DEFAULT_TERMINAL_REASON,
   DISPATCH_ATTEMPT_STATE,
@@ -118,7 +121,7 @@ export function createDispatcherCore({
 
   async function runRefill() {
     if (refillInFlight) {
-      // Coalesce: try again after current pass if waiters remain
+      // Coalesce one more pass after the in-flight refill finishes
       queueMicrotask(() => scheduleRefill());
       return;
     }
@@ -129,25 +132,46 @@ export function createDispatcherCore({
       for (const lease of leases) {
         deliverLease(lease.requestId, lease);
       }
+      // Continuous gate: only re-enter when we actually filled a gate and more
+      // waiters remain. Re-scheduling when slots are full busy-loops microtasks
+      // and starves waiting_limit timers (queued work never times out / progresses).
+      if (leases.length > 0 && leaseWaiters.size > 0) {
+        scheduleRefill();
+      }
     } finally {
       refillInFlight = false;
-      // Another waiter may have arrived during this pass
-      if (leaseWaiters.size > 0) scheduleRefill();
     }
   }
 
   /**
-   * OPT-001: wait for this request's lease.
-   * 1) Claim a lease parked by refill (race: assigned before waiter registered).
-   * 2) Immediate tryLeaseRequest when a slot is free (no wait).
-   * 3) Otherwise register a waiter; complete/fail/refill assigns via tryLeaseAvailableWork.
-   * Never busy-polls.
+   * Continuous gate model:
+   * - Slots = gates. Vacant gate → next queued request immediately.
+   * - On finish → notify vacancy → refill assigns next waiter (not batch-oriented).
+   * - waiting_limit (queueTtlMs / 5 min) counted from queue arrival, not from wait() call.
    */
   async function waitForAssignedLease(requestId, timeoutMs) {
-    const effectiveTimeout =
-      Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
-        ? Number(timeoutMs)
-        : policy.queueTtlMs;
+    // waiting_limit from queue arrival (attempt.queueEnteredAt / request.queuedAt)
+    const attempt = getLatestDispatchAttemptForRequest(requestId);
+    const request = getDispatchRequest(requestId);
+    const queueEnteredAt =
+      attempt?.queueEnteredAt || request?.queuedAt || null;
+    const remainingMs = remainingQueueWaitMs(
+      queueEnteredAt,
+      {
+        waitingLimitMs:
+          Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+            ? Number(timeoutMs)
+            : policy.waitingLimitMs,
+      },
+      Date.now(),
+    );
+
+    if (remainingMs <= 0) {
+      console.warn(
+        `[DISPATCHER] ${provider}: request ${requestId} exceeded waiting_limit (${policy.waitingLimitMs}ms) while queued`,
+      );
+      return null;
+    }
 
     // Fail fast when the pool has zero eligible connections
     try {
@@ -187,9 +211,13 @@ export function createDispatcherCore({
         leaseWaiters.delete(requestId);
         // Do not leave a parked lease stranded forever after timeout
         pendingLeases.delete(requestId);
+        console.warn(
+          `[DISPATCHER] ${provider}: request ${requestId} waiting_limit elapsed (queue wait)`,
+        );
         resolve(null);
-      }, effectiveTimeout);
-      timer.unref?.();
+      }, remainingMs);
+      // Do NOT unref — waiting_limit must keep the event loop alive until timeout
+      // or lease delivery. unref caused queued waits to never fire under load.
       leaseWaiters.set(requestId, { resolve, timer, mode: "lease" });
 
       // Race: lease parked after we decided to wait but before map insert
@@ -198,6 +226,7 @@ export function createDispatcherCore({
         resolveWaiter(requestId, raced);
         return;
       }
+      // Continuous gate: try to fill this waiter from any vacant slot now
       scheduleRefill();
     });
   }
@@ -778,6 +807,7 @@ export function createDispatcherCore({
     );
     if (!attempt) return null;
 
+    // Gate vacated — immediately pull next queued task (continuous, not batch)
     releaseConnectionOccupancy(attempt.connectionId);
     finalizeRequestForAttempt(attempt, DISPATCH_ATTEMPT_STATE.COMPLETED);
     insertDispatchAttemptEvent({

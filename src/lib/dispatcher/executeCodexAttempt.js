@@ -168,25 +168,32 @@ async function executeManagedProviderRequest({
     ).response;
   }
 
+  // waiting_limit is measured from queue arrival inside waitForAssignedLease
   const lease = await waitForLease(
     dispatcher,
     queued.request.id,
-    dispatcher.timeoutPolicy?.queueTtlMs,
+    dispatcher.timeoutPolicy?.waitingLimitMs ??
+      dispatcher.timeoutPolicy?.queueTtlMs,
   );
   if (!lease) {
     await dispatcher.failAttempt(queued.attempt.id, {
       nextState: "timed_out",
       terminalReason: "queue_expired",
       timeoutKind: "queue_expired",
-      error: { code: "dispatcher_queue_expired" },
+      error: {
+        code: "dispatcher_queue_expired",
+        waitingLimitMs:
+          dispatcher.timeoutPolicy?.waitingLimitMs ??
+          dispatcher.timeoutPolicy?.queueTtlMs,
+      },
     });
     log.warn(
       "DISPATCHER",
-      `${provider}/${model}: no lease (empty connection pool, collection filter, or queue TTL). Falling back is not available on managed path.`,
+      `${provider}/${model}: no lease within waiting_limit (5m from queue arrival), empty pool, or collection filter. Managed path does not fall back to legacy.`,
     );
     return createErrorResult(
       HTTP_STATUS.SERVICE_UNAVAILABLE,
-      `${provider} dispatcher could not assign a connection for ${model}. Check: active ${provider} accounts, text dispatcher collection membership, and that accounts are not rate-limited.`,
+      `${provider} dispatcher could not assign a connection for ${model} within the 5-minute queue waiting limit. Check: active accounts, slots free enough for your concurrency, and dispatcher collection membership.`,
     ).response;
   }
 
