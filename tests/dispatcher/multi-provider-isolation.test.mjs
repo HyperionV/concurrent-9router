@@ -129,6 +129,63 @@ test("TEXT_DISPATCH_PROVIDERS includes codex, antigravity, grok-cli", async () =
   );
 });
 
+test("5 concurrent tryLeaseRequest all admit under slots=15 (no pure-LEASED ghosts)", async () => {
+  const tempDir = makeTempDataDir();
+
+  try {
+    await resetDispatcherTables(tempDir);
+    const { createDispatcherCore } = await import("@/lib/dispatcher/core.js");
+    const { listActiveDispatchAttempts } = await import(
+      "@/lib/sqlite/dispatcherStore.js"
+    );
+
+    const dispatcher = createDispatcherCore({
+      provider: "codex",
+      getConnections: async () => [
+        { id: "conn-1", priority: 1, providerSpecificData: {} },
+      ],
+      getSlotsPerConnection: () => 15,
+    });
+
+    const enqueued = await Promise.all(
+      Array.from({ length: 5 }, (_, i) =>
+        dispatcher.enqueueRequest({
+          provider: "codex",
+          modelId: `gpt-test-${i}`,
+        }),
+      ),
+    );
+
+    const leases = await Promise.all(
+      enqueued.map((q) => dispatcher.tryLeaseRequest(q.request.id)),
+    );
+
+    assert.equal(
+      leases.filter(Boolean).length,
+      5,
+      "all 5 concurrent polls must receive a lease",
+    );
+
+    const active = listActiveDispatchAttempts("codex");
+    assert.equal(active.length, 5);
+    for (const attempt of active) {
+      assert.equal(
+        attempt.state,
+        "connecting",
+        "lease must land in connecting, not pure leased",
+      );
+      assert.ok(
+        attempt.connectStartedAt,
+        "connect_started_at must be set at admit time",
+      );
+    }
+  } finally {
+    const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
+    closeSqlite();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("zombie leased attempts from a dead process block capacity until reconciled", async () => {
   const tempDir = makeTempDataDir();
 

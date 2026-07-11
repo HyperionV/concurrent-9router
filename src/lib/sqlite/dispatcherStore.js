@@ -261,19 +261,23 @@ export function listDispatchAttemptsByState(
 }
 
 /**
- * Admit an attempt onto a connection (origin/main contract: state = leased).
- * Caller marks connecting as soon as it starts real work.
+ * Admit an attempt onto a connection.
+ * Lands in `connecting` with connect_started_at set in the same write so the
+ * 30s connect_timeout cannot fire on pure-LEASED rows that never reached execute.
  */
 export function leaseDispatchAttempt(attemptId, lease) {
   const db = getSqlite();
+  const leasedAt = lease.leasedAt || nowIso();
+  const connectStartedAt = lease.connectStartedAt || leasedAt;
   const result = db
     .prepare(
       `
       UPDATE dispatch_attempts
-      SET state = 'leased',
+      SET state = 'connecting',
           connection_id = @connectionId,
           lease_key = @leaseKey,
           leased_at = @leasedAt,
+          connect_started_at = @connectStartedAt,
           path_mode = @pathMode
       WHERE id = @attemptId
         AND state = 'queued'
@@ -283,7 +287,8 @@ export function leaseDispatchAttempt(attemptId, lease) {
       attemptId,
       connectionId: lease.connectionId,
       leaseKey: lease.leaseKey,
-      leasedAt: lease.leasedAt || nowIso(),
+      leasedAt,
+      connectStartedAt,
       pathMode: lease.pathMode || null,
     });
   return result.changes === 1 ? getDispatchAttempt(attemptId) : null;
