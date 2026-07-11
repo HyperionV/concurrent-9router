@@ -524,6 +524,12 @@ function runMigrations(db) {
   ensureColumn(
     db,
     "app_settings",
+    "dispatcher_slots_by_provider_json",
+    "TEXT NOT NULL DEFAULT '{}'",
+  );
+  ensureColumn(
+    db,
+    "app_settings",
     "image_dispatcher_slots_per_connection",
     "INTEGER NOT NULL DEFAULT 1",
   );
@@ -587,6 +593,7 @@ function seedDefaults(db) {
       dispatcher_codex_only,
       codex_default_admission_policy,
       dispatcher_slots_per_connection,
+      dispatcher_slots_by_provider_json,
       image_dispatcher_slots_per_connection,
       text_dispatcher_collection_id,
       image_dispatcher_collection_id,
@@ -602,7 +609,7 @@ function seedDefaults(db) {
       @observabilityFlushIntervalMs, @observabilityMaxJsonSize,
       @outboundProxyEnabled, @outboundProxyUrl, @outboundNoProxy,
       @dispatcherEnabled, @dispatcherShadowMode, @dispatcherCodexOnly, @codexDefaultAdmissionPolicy,
-      @dispatcherSlotsPerConnection, @imageDispatcherSlotsPerConnection,
+      @dispatcherSlotsPerConnection, @dispatcherSlotsByProviderJson, @imageDispatcherSlotsPerConnection,
       @textDispatcherCollectionId, @imageDispatcherCollectionId,
       @mitmRouterBaseUrl, @password, @mitmEnabled
     )
@@ -637,6 +644,13 @@ function seedDefaults(db) {
     codexDefaultAdmissionPolicy:
       settings.codexDefaultAdmissionPolicy || "legacy",
     dispatcherSlotsPerConnection: settings.dispatcherSlotsPerConnection ?? 1,
+    dispatcherSlotsByProviderJson: JSON.stringify(
+      settings.dispatcherSlotsByProvider || {
+        codex: 1,
+        antigravity: 1,
+        "grok-cli": 1,
+      },
+    ),
     imageDispatcherSlotsPerConnection:
       settings.imageDispatcherSlotsPerConnection ?? 1,
     textDispatcherCollectionId: settings.textDispatcherCollectionId || null,

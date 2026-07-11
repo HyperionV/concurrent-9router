@@ -3,7 +3,11 @@ import {
   listDispatchAttemptsByState,
   listQueuedDispatchRequests,
 } from "@/lib/sqlite/dispatcherStore.js";
-import { deriveDispatcherMode } from "@/lib/dispatcher/settings.js";
+import {
+  deriveDispatcherMode,
+  getDispatcherSlotsPerConnection,
+  normalizeDispatcherSlotsByProvider,
+} from "@/lib/dispatcher/settings.js";
 
 function toIsoAgeMs(timestamp) {
   if (!timestamp) return null;
@@ -86,12 +90,13 @@ function summarizeTerminalAttempts(terminalAttempts) {
 function buildCapacitySummary({
   connectionViews,
   settings,
+  provider,
   inMemory,
   activeAttempts,
 }) {
-  const slotsPerConnection = Math.max(
-    1,
-    Number(settings?.dispatcherSlotsPerConnection) || 1,
+  const slotsPerConnection = getDispatcherSlotsPerConnection(
+    settings,
+    provider,
   );
   const activeConnections = connectionViews.length;
   const activeLeases = activeAttempts.length;
@@ -157,13 +162,14 @@ function summarizeConnectionHealth(
 function summarizeConnections({
   connectionViews,
   settings,
+  provider,
   inMemory,
   activeAttempts,
   terminalAttempts,
 }) {
-  const slotsPerConnection = Math.max(
-    1,
-    Number(settings?.dispatcherSlotsPerConnection) || 1,
+  const slotsPerConnection = getDispatcherSlotsPerConnection(
+    settings,
+    provider,
   );
   const occupancyByConnection = inMemory?.occupancyByConnection || {};
 
@@ -325,6 +331,11 @@ export function getDispatcherStatusSnapshot({
   const mode = deriveDispatcherMode(settings);
   const defaultAdmission =
     settings.codexDefaultAdmissionPolicy || "legacy";
+  const slotsByProvider = normalizeDispatcherSlotsByProvider(
+    settings.dispatcherSlotsByProvider,
+    settings.dispatcherSlotsPerConnection,
+  );
+  const providerSlots = getDispatcherSlotsPerConnection(settings, provider);
 
   const base = {
     provider,
@@ -339,11 +350,10 @@ export function getDispatcherStatusSnapshot({
       // Admission is API-key only: production=managed, coding=legacy
       admissionRule:
         "API key production → managed; coding → legacy. Same for Codex, Antigravity, Grok CLI.",
-      dispatcherSlotsPerConnection:
-        Number(
-          settings[`dispatcherSlotsPerConnection_${provider}`] ??
-            settings.dispatcherSlotsPerConnection,
-        ) || 1,
+      // Slots for the selected provider only (isolated; never shared).
+      dispatcherSlotsPerConnection: providerSlots,
+      dispatcherSlotsByProvider: slotsByProvider,
+      textDispatcherCollectionId: settings.textDispatcherCollectionId || null,
     },
     coverage: {
       summary:
@@ -360,6 +370,7 @@ export function getDispatcherStatusSnapshot({
     base.capacity = buildCapacitySummary({
       connectionViews,
       settings,
+      provider,
       inMemory,
       activeAttempts,
     });
@@ -368,6 +379,7 @@ export function getDispatcherStatusSnapshot({
     base.connections = summarizeConnections({
       connectionViews,
       settings,
+      provider,
       inMemory,
       activeAttempts,
       terminalAttempts: [],
@@ -393,6 +405,7 @@ export function getDispatcherStatusSnapshot({
     base.connections = summarizeConnections({
       connectionViews,
       settings,
+      provider,
       inMemory,
       activeAttempts,
       terminalAttempts,

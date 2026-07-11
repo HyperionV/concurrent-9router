@@ -328,14 +328,25 @@ function ConnectionsTable({ connections }) {
   );
 }
 
-function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
+const PROVIDER_LABELS = {
+  codex: "Codex",
+  antigravity: "Antigravity",
+  "grok-cli": "Grok CLI",
+};
+
+function DispatcherControlsCard({
+  snapshot,
+  provider,
+  onSettingsApplied,
+  onRefresh,
+}) {
+  const providerLabel = PROVIDER_LABELS[provider] || provider;
+  const savedSlots = Number(snapshot.settings.dispatcherSlotsPerConnection || 1);
   const [collections, setCollections] = useState([]);
   const [collectionId, setCollectionId] = useState(
     snapshot.settings.textDispatcherCollectionId || "",
   );
-  const [slots, setSlots] = useState(
-    String(snapshot.settings.dispatcherSlotsPerConnection || 1),
-  );
+  const [slots, setSlots] = useState(String(savedSlots));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -343,7 +354,10 @@ function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
   useEffect(() => {
     setCollectionId(snapshot.settings.textDispatcherCollectionId || "");
     setSlots(String(snapshot.settings.dispatcherSlotsPerConnection || 1));
+    setError("");
+    setMessage("");
   }, [
+    provider,
     snapshot.settings.textDispatcherCollectionId,
     snapshot.settings.dispatcherSlotsPerConnection,
   ]);
@@ -363,31 +377,37 @@ function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
     };
   }, []);
 
-  const hasChanges =
-    collectionId !== (snapshot.settings.textDispatcherCollectionId || "") ||
-    Number(slots) !==
-      Number(snapshot.settings.dispatcherSlotsPerConnection || 1);
+  const collectionChanged =
+    provider === "codex" &&
+    collectionId !== (snapshot.settings.textDispatcherCollectionId || "");
+  const slotsChanged = Number(slots) !== savedSlots;
+  const hasChanges = collectionChanged || slotsChanged;
 
   const handleSave = async () => {
     setSaving(true);
     setError("");
     setMessage("");
     try {
+      const body = {
+        provider,
+        dispatcherSlotsPerConnection: Number(slots),
+      };
+      // Collection scope is Codex-only today.
+      if (provider === "codex") {
+        body.textDispatcherCollectionId = collectionId;
+      }
       const response = await fetch("/api/dispatcher/text/settings", {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          textDispatcherCollectionId: collectionId,
-          dispatcherSlotsPerConnection: Number(slots),
-        }),
+        body: JSON.stringify(body),
       });
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data?.error || "Failed to update dispatcher settings");
       }
-      setMessage("Dispatcher settings updated.");
+      setMessage(`${providerLabel} slots updated (isolated from other providers).`);
       onSettingsApplied(data);
       await onRefresh();
     } catch (nextError) {
@@ -400,47 +420,71 @@ function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
   return (
     <Card
       title="Dispatcher controls"
-      subtitle="Managed-only dispatcher routing. Select which collection owns Codex text traffic."
+      subtitle={`${providerLabel} slots are independent — changing them does not affect other providers.`}
       icon="tune"
     >
       <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
         <Card.Section className="flex flex-col gap-3">
-          <Select
-            label="Connection collection"
-            value={collectionId}
-            onChange={(event) => setCollectionId(event.target.value)}
-            options={collections.map((collection) => ({
-              value: collection.id,
-              label: collection.name,
-            }))}
-            placeholder="Select collection"
-            hint="Only active Codex connections in this collection are eligible for text dispatch."
-          />
+          {provider === "codex" ? (
+            <Select
+              label="Connection collection"
+              value={collectionId}
+              onChange={(event) => setCollectionId(event.target.value)}
+              options={collections.map((collection) => ({
+                value: collection.id,
+                label: collection.name,
+              }))}
+              placeholder="Select collection"
+              hint="Only active Codex connections in this collection are eligible for text dispatch."
+            />
+          ) : (
+            <div className="rounded-lg border border-black/5 bg-black/[0.02] p-3 text-sm text-text-muted dark:border-white/5 dark:bg-white/[0.02]">
+              Collection scoping applies to Codex only. {providerLabel} uses all
+              active accounts for this provider.
+            </div>
+          )}
           <div className="rounded-lg border border-black/5 bg-black/[0.02] p-3 text-sm text-text-muted dark:border-white/5 dark:bg-white/[0.02]">
-            <p>
-              Selected:{" "}
+            {provider === "codex" ? (
+              <p>
+                Selected:{" "}
+                <span className="font-medium text-text-main">
+                  {snapshot.selectedCollection?.name || "Unknown collection"}
+                </span>
+              </p>
+            ) : null}
+            <p className={provider === "codex" ? "mt-1" : undefined}>
+              Eligible connections:{" "}
               <span className="font-medium text-text-main">
-                {snapshot.selectedCollection?.name || "Unknown collection"}
+                {snapshot.capacity?.activeConnections ?? 0}
               </span>
             </p>
             <p className="mt-1">
-              Eligible connections:{" "}
+              Current capacity:{" "}
               <span className="font-medium text-text-main">
-                {snapshot.capacity.activeConnections}
-              </span>
+                {snapshot.capacity?.totalCapacity ?? 0}
+              </span>{" "}
+              ({snapshot.capacity?.slotsPerConnection ?? savedSlots} slot
+              {Number(snapshot.capacity?.slotsPerConnection ?? savedSlots) === 1
+                ? ""
+                : "s"}{" "}
+              × {snapshot.capacity?.activeConnections ?? 0} connection
+              {Number(snapshot.capacity?.activeConnections ?? 0) === 1
+                ? ""
+                : "s"}
+              )
             </p>
           </div>
         </Card.Section>
 
         <Card.Section className="flex flex-col gap-3">
           <Input
-            label="Slots per connection"
+            label={`Slots per connection (${providerLabel})`}
             type="number"
             min="1"
             max="100"
             value={slots}
             onChange={(event) => setSlots(event.target.value)}
-            hint="Active concurrent leases per connection (1–100). Not a provider-imposed service cap — raise only as far as accounts stay stable."
+            hint={`Active concurrent leases per ${providerLabel} connection (1–100). Does not share with Codex, Antigravity, or Grok CLI.`}
           />
           <div className="flex items-center gap-2">
             <Button
@@ -457,9 +501,7 @@ function DispatcherControlsCard({ snapshot, onSettingsApplied, onRefresh }) {
                 setCollectionId(
                   snapshot.settings.textDispatcherCollectionId || "",
                 );
-                setSlots(
-                  String(snapshot.settings.dispatcherSlotsPerConnection || 1),
-                );
+                setSlots(String(savedSlots));
                 setError("");
                 setMessage("");
               }}
@@ -644,6 +686,7 @@ export default function DispatcherPage() {
       <DispatcherOverview snapshot={snapshot} />
       <DispatcherControlsCard
         snapshot={snapshot}
+        provider={statusProvider}
         onRefresh={() => fetchStatus({ silent: true })}
         onSettingsApplied={(settingsUpdate) => {
           setSnapshot((current) =>
@@ -653,6 +696,12 @@ export default function DispatcherPage() {
                   settings: {
                     ...current.settings,
                     ...settingsUpdate,
+                    dispatcherSlotsPerConnection:
+                      settingsUpdate.dispatcherSlotsPerConnection ??
+                      current.settings.dispatcherSlotsPerConnection,
+                    dispatcherSlotsByProvider:
+                      settingsUpdate.dispatcherSlotsByProvider ||
+                      current.settings.dispatcherSlotsByProvider,
                   },
                 }
               : current,

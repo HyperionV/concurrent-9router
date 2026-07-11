@@ -9,6 +9,7 @@ import {
   normalizeCodexAdmissionPolicyOverride,
   normalizeCodexDefaultAdmissionPolicy,
 } from "@/lib/dispatcher/admissionPolicy.js";
+import { normalizeDispatcherSlotsByProvider } from "@/lib/dispatcher/settings.js";
 import {
   asBool,
   fromBool,
@@ -79,6 +80,11 @@ function mapSettingsRow(row) {
           : fromBool(row.dispatcher_codex_only),
       codexDefaultAdmissionPolicy: normalizeCodexDefaultAdmissionPolicy(
         row.codex_default_admission_policy || "legacy",
+      ),
+      dispatcherSlotsByProvider: normalizeDispatcherSlotsByProvider(
+        parseJson(row.dispatcher_slots_by_provider_json, {}),
+        row.dispatcher_slots_per_connection ??
+          DEFAULT_SETTINGS.dispatcherSlotsPerConnection,
       ),
       dispatcherSlotsPerConnection:
         row.dispatcher_slots_per_connection ??
@@ -151,6 +157,7 @@ export function writeSettings(updates) {
       dispatcher_codex_only = @dispatcherCodexOnly,
       codex_default_admission_policy = @codexDefaultAdmissionPolicy,
       dispatcher_slots_per_connection = @dispatcherSlotsPerConnection,
+      dispatcher_slots_by_provider_json = @dispatcherSlotsByProviderJson,
       image_dispatcher_slots_per_connection = @imageDispatcherSlotsPerConnection,
       text_dispatcher_collection_id = @textDispatcherCollectionId,
       image_dispatcher_collection_id = @imageDispatcherCollectionId,
@@ -190,7 +197,12 @@ export function writeSettings(updates) {
       codexDefaultAdmissionPolicy: normalizeCodexDefaultAdmissionPolicy(
         next.codexDefaultAdmissionPolicy,
       ),
+      dispatcherSlotsByProviderJson: stringifyJson(
+        next.dispatcherSlotsByProvider,
+        DEFAULT_SETTINGS.dispatcherSlotsByProvider,
+      ),
       dispatcherSlotsPerConnection:
+        next.dispatcherSlotsByProvider?.codex ??
         next.dispatcherSlotsPerConnection ??
         DEFAULT_SETTINGS.dispatcherSlotsPerConnection,
       imageDispatcherSlotsPerConnection:

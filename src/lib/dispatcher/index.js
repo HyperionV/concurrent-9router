@@ -2,7 +2,10 @@ import { getProviderConnections, getSettings } from "@/lib/localDb.js";
 import { createDispatcherCore } from "@/lib/dispatcher/core.js";
 import { createDispatcherWatchdog } from "@/lib/dispatcher/watchdog.js";
 import { buildDispatchConnectionView } from "@/lib/dispatcher/connectionState.js";
-import { TEXT_DISPATCH_PROVIDERS } from "@/lib/dispatcher/settings.js";
+import {
+  getDispatcherSlotsPerConnection,
+  TEXT_DISPATCH_PROVIDERS,
+} from "@/lib/dispatcher/settings.js";
 import {
   CONNECTION_CACHE_TTL_MS,
   getConnectionCacheEntry,
@@ -18,11 +21,6 @@ const watchdogSweepInFlightByProvider = new Map();
 let sharedWatchdogInterval = null;
 
 const WATCHDOG_SWEEP_INTERVAL_MS = 5000;
-
-function slotsSettingKey(provider) {
-  if (provider === "codex") return "dispatcherSlotsPerConnection";
-  return `dispatcherSlotsPerConnection_${provider}`;
-}
 
 async function loadProviderConnections(provider, { force = false } = {}) {
   const now = Date.now();
@@ -41,9 +39,11 @@ async function loadProviderConnections(provider, { force = false } = {}) {
   }
 
   const settings = await getSettings();
-  const slotsKey = slotsSettingKey(provider);
-  const slotsPerConnection =
-    settings[slotsKey] ?? settings.dispatcherSlotsPerConnection ?? 1;
+  // Per-provider isolation: never fall back to another provider's slots.
+  const slotsPerConnection = getDispatcherSlotsPerConnection(
+    settings,
+    provider,
+  );
   lastKnownSlotsByProvider.set(provider, slotsPerConnection);
 
   const query = {

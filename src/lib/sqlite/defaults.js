@@ -29,7 +29,14 @@ export const DEFAULT_SETTINGS = {
   dispatcherShadowMode: false,
   dispatcherCodexOnly: true,
   codexDefaultAdmissionPolicy: "managed",
+  // Legacy codex mirror — keep in sync with dispatcherSlotsByProvider.codex
   dispatcherSlotsPerConnection: 1,
+  // Isolated slots per text dispatch provider (never shared across providers)
+  dispatcherSlotsByProvider: {
+    codex: 1,
+    antigravity: 1,
+    "grok-cli": 1,
+  },
   imageDispatcherSlotsPerConnection: 1,
   textDispatcherCollectionId: null,
   imageDispatcherCollectionId: null,
@@ -69,6 +76,32 @@ export function normalizeSettings(input = {}) {
   next.dispatcherEnabled = true;
   next.dispatcherShadowMode = false;
   next.codexDefaultAdmissionPolicy = "managed";
+
+  // Ensure per-provider slots map is complete and isolated (no shared defaults
+  // across providers). Codex may seed from legacy dispatcherSlotsPerConnection.
+  const slotsSource =
+    source.dispatcherSlotsByProvider &&
+    typeof source.dispatcherSlotsByProvider === "object"
+      ? source.dispatcherSlotsByProvider
+      : next.dispatcherSlotsByProvider;
+  const codexSlots = Number(
+    slotsSource?.codex ??
+      source.dispatcherSlotsPerConnection ??
+      next.dispatcherSlotsPerConnection ??
+      1,
+  );
+  next.dispatcherSlotsByProvider = {
+    codex: Number.isInteger(codexSlots) && codexSlots >= 1 ? codexSlots : 1,
+    antigravity: (() => {
+      const n = Number(slotsSource?.antigravity);
+      return Number.isInteger(n) && n >= 1 ? n : 1;
+    })(),
+    "grok-cli": (() => {
+      const n = Number(slotsSource?.["grok-cli"]);
+      return Number.isInteger(n) && n >= 1 ? n : 1;
+    })(),
+  };
+  next.dispatcherSlotsPerConnection = next.dispatcherSlotsByProvider.codex;
 
   return next;
 }

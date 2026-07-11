@@ -129,6 +129,104 @@ test("TEXT_DISPATCH_PROVIDERS includes codex, antigravity, grok-cli", async () =
   );
 });
 
+test("slots per connection are isolated per provider (no shared fallback)", async () => {
+  const {
+    getDispatcherSlotsPerConnection,
+    normalizeDispatcherSlotsByProvider,
+    patchDispatcherSlotsForProvider,
+  } = await import("@/lib/dispatcher/settings.js");
+
+  // Raising codex must not raise antigravity / grok-cli.
+  const afterCodex = patchDispatcherSlotsForProvider(
+    {
+      dispatcherSlotsByProvider: {
+        codex: 1,
+        antigravity: 1,
+        "grok-cli": 1,
+      },
+      dispatcherSlotsPerConnection: 1,
+    },
+    "codex",
+    15,
+  );
+  assert.equal(afterCodex.dispatcherSlotsByProvider.codex, 15);
+  assert.equal(afterCodex.dispatcherSlotsByProvider.antigravity, 1);
+  assert.equal(afterCodex.dispatcherSlotsByProvider["grok-cli"], 1);
+  assert.equal(afterCodex.dispatcherSlotsPerConnection, 15);
+
+  assert.equal(getDispatcherSlotsPerConnection(afterCodex, "codex"), 15);
+  assert.equal(getDispatcherSlotsPerConnection(afterCodex, "antigravity"), 1);
+  assert.equal(getDispatcherSlotsPerConnection(afterCodex, "grok-cli"), 1);
+
+  // Raising grok-cli must not change codex.
+  const afterGrok = patchDispatcherSlotsForProvider(afterCodex, "grok-cli", 7);
+  assert.equal(afterGrok.dispatcherSlotsByProvider.codex, 15);
+  assert.equal(afterGrok.dispatcherSlotsByProvider["grok-cli"], 7);
+  assert.equal(afterGrok.dispatcherSlotsByProvider.antigravity, 1);
+
+  // Empty map seeds codex from legacy column only — other providers stay 1.
+  const fromLegacy = normalizeDispatcherSlotsByProvider({}, 12);
+  assert.equal(fromLegacy.codex, 12);
+  assert.equal(fromLegacy.antigravity, 1);
+  assert.equal(fromLegacy["grok-cli"], 1);
+
+  // Missing map entries must not inherit another provider's slots.
+  assert.equal(
+    getDispatcherSlotsPerConnection(
+      {
+        dispatcherSlotsPerConnection: 20,
+        dispatcherSlotsByProvider: { codex: 20 },
+      },
+      "antigravity",
+    ),
+    1,
+  );
+});
+
+test("persisted settings keep per-provider slots isolated", async () => {
+  const tempDir = makeTempDataDir();
+
+  try {
+    process.env.DATA_DIR = tempDir;
+    const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
+    closeSqlite();
+
+    const { writeSettings, readSettings } = await import(
+      "@/lib/sqlite/store.js"
+    );
+
+    writeSettings({
+      dispatcherSlotsByProvider: {
+        codex: 15,
+        antigravity: 3,
+        "grok-cli": 8,
+      },
+    });
+
+    const loaded = readSettings();
+    assert.equal(loaded.dispatcherSlotsByProvider.codex, 15);
+    assert.equal(loaded.dispatcherSlotsByProvider.antigravity, 3);
+    assert.equal(loaded.dispatcherSlotsByProvider["grok-cli"], 8);
+    assert.equal(loaded.dispatcherSlotsPerConnection, 15);
+
+    // Partial update of one provider must not clobber others.
+    writeSettings({
+      dispatcherSlotsByProvider: {
+        ...loaded.dispatcherSlotsByProvider,
+        antigravity: 4,
+      },
+    });
+    const again = readSettings();
+    assert.equal(again.dispatcherSlotsByProvider.codex, 15);
+    assert.equal(again.dispatcherSlotsByProvider.antigravity, 4);
+    assert.equal(again.dispatcherSlotsByProvider["grok-cli"], 8);
+  } finally {
+    const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
+    closeSqlite();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("specialized executors registered for antigravity and grok-cli", async () => {
   const { getExecutor, hasSpecializedExecutor } = await import(
     "open-sse/executors/index.js"
