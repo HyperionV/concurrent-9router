@@ -1,4 +1,4 @@
-import { getProviderConnections } from "@/lib/localDb.js";
+import { getProviderConnections, getSettings } from "@/lib/localDb.js";
 import { getUsageStats } from "@/lib/usageDb.js";
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -20,6 +20,16 @@ function escapeHtml(str) {
  * Send a message via Telegram Bot API.
  */
 export async function sendTelegramMessage(text) {
+  try {
+    const settings = await getSettings();
+    if (settings && settings.telegramEnabled === false) {
+      console.log("[Telegram] Telegram notifications are disabled in settings.");
+      return false;
+    }
+  } catch (error) {
+    console.error("[Telegram] Error fetching settings:", error);
+  }
+
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
     console.warn("[Telegram] BOT_TOKEN or CHAT_ID is not configured in environment.");
     return false;

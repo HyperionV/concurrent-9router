@@ -195,3 +195,36 @@ test("deleting a collection unassigns members and resets dispatcher fallback", a
   closeSqlite();
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
+
+test("telegram messaging settings guard", async () => {
+  const tempDir = makeTempDataDir();
+  process.env.DATA_DIR = tempDir;
+
+  const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
+  closeSqlite();
+
+  const { writeSettings } = await import("@/lib/sqlite/store.js");
+  const { sendTelegramMessage } = await import("@/lib/telegram.js");
+
+  // Save process env vars
+  const origToken = process.env.TELEGRAM_BOT_TOKEN;
+  const origChat = process.env.TELEGRAM_CHAT_ID;
+
+  process.env.TELEGRAM_BOT_TOKEN = "123:test";
+  process.env.TELEGRAM_CHAT_ID = "-456";
+
+  writeSettings({ telegramEnabled: false });
+
+  const resultDisabled = await sendTelegramMessage("test message");
+  assert.equal(resultDisabled, false);
+
+  // Restore env vars
+  if (origToken) process.env.TELEGRAM_BOT_TOKEN = origToken;
+  else delete process.env.TELEGRAM_BOT_TOKEN;
+
+  if (origChat) process.env.TELEGRAM_CHAT_ID = origChat;
+  else delete process.env.TELEGRAM_CHAT_ID;
+
+  closeSqlite();
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
