@@ -16,16 +16,23 @@ test("settings persist requireApiKey and default codex policy", async () => {
   closeSqlite();
 
   const { writeSettings, readSettings } = await import("@/lib/sqlite/store.js");
+  
+  // Verify default setting
+  const initialSettings = readSettings();
+  assert.equal(initialSettings.telegramEnabled, true);
+
   writeSettings({
     requireApiKey: true,
     dispatcherEnabled: true,
     dispatcherShadowMode: false,
     codexDefaultAdmissionPolicy: "managed",
+    telegramEnabled: false,
   });
 
   const settings = readSettings();
   assert.equal(settings.requireApiKey, true);
   assert.equal(settings.codexDefaultAdmissionPolicy, "managed");
+  assert.equal(settings.telegramEnabled, false);
 
   closeSqlite();
   fs.rmSync(tempDir, { recursive: true, force: true });

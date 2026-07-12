@@ -147,7 +147,8 @@ function runMigrations(db) {
       image_dispatcher_slots_per_connection INTEGER NOT NULL DEFAULT 1,
       mitm_router_base_url TEXT NOT NULL DEFAULT 'http://localhost:20128',
       password TEXT,
-      mitm_enabled INTEGER NOT NULL DEFAULT 0
+      mitm_enabled INTEGER NOT NULL DEFAULT 0,
+      telegram_enabled INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS provider_nodes (
@@ -535,6 +536,7 @@ function runMigrations(db) {
   );
   ensureColumn(db, "app_settings", "text_dispatcher_collection_id", "TEXT");
   ensureColumn(db, "app_settings", "image_dispatcher_collection_id", "TEXT");
+  ensureColumn(db, "app_settings", "telegram_enabled", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn(db, "api_keys", "codex_admission_policy_override", "TEXT");
   ensureColumn(
     db,
@@ -599,7 +601,8 @@ function seedDefaults(db) {
       image_dispatcher_collection_id,
       mitm_router_base_url,
       password,
-      mitm_enabled
+      mitm_enabled,
+      telegram_enabled
     ) VALUES (
       1, @requireApiKey, @cloudEnabled, @cloudUrl, @tunnelEnabled, @tunnelUrl, @tunnelProvider,
       @tailscaleEnabled, @tailscaleUrl, @fallbackStrategy, @stickyRoundRobinLimit,
@@ -611,7 +614,7 @@ function seedDefaults(db) {
       @dispatcherEnabled, @dispatcherShadowMode, @dispatcherCodexOnly, @codexDefaultAdmissionPolicy,
       @dispatcherSlotsPerConnection, @dispatcherSlotsByProviderJson, @imageDispatcherSlotsPerConnection,
       @textDispatcherCollectionId, @imageDispatcherCollectionId,
-      @mitmRouterBaseUrl, @password, @mitmEnabled
+      @mitmRouterBaseUrl, @password, @mitmEnabled, @telegramEnabled
     )
   `,
   ).run({
@@ -658,6 +661,7 @@ function seedDefaults(db) {
     mitmRouterBaseUrl: settings.mitmRouterBaseUrl,
     password: settings.password || null,
     mitmEnabled: settings.mitmEnabled ? 1 : 0,
+    telegramEnabled: settings.telegramEnabled ? 1 : 0,
   });
 
   const now = new Date().toISOString();

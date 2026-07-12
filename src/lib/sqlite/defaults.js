@@ -41,6 +41,7 @@ export const DEFAULT_SETTINGS = {
   textDispatcherCollectionId: null,
   imageDispatcherCollectionId: null,
   mitmRouterBaseUrl: DEFAULT_MITM_ROUTER_BASE,
+  telegramEnabled: true,
 };
 
 export function normalizeSettings(input = {}) {
@@ -62,6 +63,12 @@ export function normalizeSettings(input = {}) {
   }
   if (typeof source.observabilityEnabled === "boolean") {
     next.observabilityEnabled = source.observabilityEnabled;
+  }
+  if (typeof source.enableTelegram === "boolean") {
+    next.telegramEnabled = source.enableTelegram;
+  }
+  if (typeof source.telegramEnabled === "boolean") {
+    next.telegramEnabled = source.telegramEnabled;
   }
 
   if (
@@ -110,5 +117,6 @@ export function withSettingsAliases(settings) {
   return {
     ...settings,
     enableObservability: settings.observabilityEnabled === true,
+    enableTelegram: settings.telegramEnabled === true,
   };
 }

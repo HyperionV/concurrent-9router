@@ -64,6 +64,7 @@ function mapSettingsRow(row) {
       requireLogin: fromBool(row.require_login),
       tunnelDashboardAccess: fromBool(row.tunnel_dashboard_access),
       mitmEnabled: fromBool(row.mitm_enabled),
+      telegramEnabled: fromBool(row.telegram_enabled),
       observabilityEnabled: fromBool(row.observability_enabled),
       observabilityMaxRecords: row.observability_max_records ?? 1000,
       observabilityBatchSize: row.observability_batch_size ?? 20,
@@ -163,7 +164,8 @@ export function writeSettings(updates) {
       image_dispatcher_collection_id = @imageDispatcherCollectionId,
       mitm_router_base_url = @mitmRouterBaseUrl,
       password = @password,
-      mitm_enabled = @mitmEnabled
+      mitm_enabled = @mitmEnabled,
+      telegram_enabled = @telegramEnabled
     WHERE id = 1
   `,
     )
@@ -214,6 +216,7 @@ export function writeSettings(updates) {
         next.mitmRouterBaseUrl || DEFAULT_SETTINGS.mitmRouterBaseUrl,
       password: next.password || null,
       mitmEnabled: asBool(next.mitmEnabled),
+      telegramEnabled: asBool(next.telegramEnabled),
     });
 
   return readSettings();
