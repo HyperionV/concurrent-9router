@@ -297,6 +297,21 @@ export default function ProfilePage() {
     }
   };
 
+  const updateTelegramEnabled = async (enabled) => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ telegramEnabled: enabled }),
+      });
+      if (res.ok) {
+        setSettings((prev) => ({ ...prev, telegramEnabled: enabled }));
+      }
+    } catch (err) {
+      console.error("Failed to update telegramEnabled:", err);
+    }
+  };
+
   const reloadSettings = async () => {
     try {
       const res = await fetch("/api/settings");
@@ -871,6 +886,20 @@ export default function ProfilePage() {
             <h3 className="text-lg font-semibold">Telegram Notifications</h3>
           </div>
           <div className="flex flex-col gap-4">
+            <div className="flex items-center justify-between pb-4 border-b border-border/50">
+              <div>
+                <p className="font-medium">Enable Telegram notifications</p>
+                <p className="text-sm text-text-muted">
+                  Send connection status alerts and periodic usage reports.
+                </p>
+              </div>
+              <Toggle
+                checked={settings.telegramEnabled === true}
+                onChange={() => updateTelegramEnabled(settings.telegramEnabled !== true)}
+                disabled={loading}
+              />
+            </div>
+
             <div>
               <p className="font-medium">Trigger Connection & Usage Report</p>
               <p className="text-sm text-text-muted">
