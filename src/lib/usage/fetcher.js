@@ -3,6 +3,12 @@
  */
 
 import { GITHUB_CONFIG, GEMINI_CONFIG, ANTIGRAVITY_CONFIG } from "@/lib/oauth/constants/oauth";
+import {
+  GROK_CLI_USER_AGENT,
+  GROK_CLI_TOKEN_AUTH,
+  GROK_CLI_CLIENT_IDENTIFIER,
+  GROK_CLI_CLIENT_VERSION,
+} from "open-sse/config/providers.js";
 
 /**
  * Get usage data for a provider connection
@@ -221,10 +227,10 @@ async function getGrokCliUsage(accessToken, providerSpecificData = {}) {
   const headers = {
     Authorization: `Bearer ${accessToken}`,
     Accept: "application/json",
-    "User-Agent": "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)",
-    "x-xai-token-auth": "xai-grok-cli",
-    "x-grok-client-identifier": "grok-pager",
-    "x-grok-client-version": "0.2.93",
+    "User-Agent": GROK_CLI_USER_AGENT,
+    "x-xai-token-auth": GROK_CLI_TOKEN_AUTH,
+    "x-grok-client-identifier": GROK_CLI_CLIENT_IDENTIFIER,
+    "x-grok-client-version": GROK_CLI_CLIENT_VERSION,
   };
   if (psd.email) headers["x-email"] = psd.email;
   if (psd.userId || psd.principalId) {

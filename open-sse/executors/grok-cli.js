@@ -1,6 +1,11 @@
 import crypto from "node:crypto";
 import { BaseExecutor } from "./base.js";
-import { PROVIDERS } from "../config/providers.js";
+import {
+  PROVIDERS,
+  GROK_CLI_CLIENT_VERSION,
+  GROK_CLI_CLIENT_IDENTIFIER,
+  GROK_CLI_TOKEN_AUTH,
+} from "../config/providers.js";
 import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
@@ -223,12 +228,16 @@ export class GrokCliExecutor extends BaseExecutor {
       if (v != null && headers[k] === undefined) headers[k] = v;
     }
 
-    // Ensure token-auth marker is present even if headers map was overridden
-    headers["x-xai-token-auth"] = this.config.tokenAuth || "xai-grok-cli";
+    // CLI chat-proxy identity (official CLI: xai-grok-workspace/<version>)
+    const clientVersion =
+      this.config.clientVersion || headers["x-grok-client-version"] || GROK_CLI_CLIENT_VERSION;
+    headers["User-Agent"] = `xai-grok-workspace/${clientVersion}`;
+    headers["x-xai-token-auth"] = this.config.tokenAuth || GROK_CLI_TOKEN_AUTH;
     headers["x-grok-client-identifier"] =
-      this.config.clientIdentifier || headers["x-grok-client-identifier"] || "grok-pager";
-    headers["x-grok-client-version"] =
-      this.config.clientVersion || headers["x-grok-client-version"] || "0.2.93";
+      this.config.clientIdentifier ||
+      headers["x-grok-client-identifier"] ||
+      GROK_CLI_CLIENT_IDENTIFIER;
+    headers["x-grok-client-version"] = clientVersion;
     headers["x-authenticateresponse"] = "authenticate-response";
 
     const sessionId = this._currentSessionId || credentials?.connectionId || crypto.randomUUID();

@@ -26,6 +26,21 @@ const CLAUDE_API_HEADERS = {
   "Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14"
 };
 
+// Grok CLI / cli-chat-proxy identity.
+// Official CLI User-Agent is xai-grok-workspace/<version> (not grok-pager/grok-shell).
+// Keep version in sync with the Grok CLI client that chat-proxy expects.
+export const GROK_CLI_CLIENT_VERSION = "0.2.101";
+export const GROK_CLI_CLIENT_IDENTIFIER = "grok-pager";
+export const GROK_CLI_TOKEN_AUTH = "xai-grok-cli";
+export const GROK_CLI_USER_AGENT = `xai-grok-workspace/${GROK_CLI_CLIENT_VERSION}`;
+export const GROK_CLI_IDENTITY_HEADERS = {
+  "User-Agent": GROK_CLI_USER_AGENT,
+  "x-xai-token-auth": GROK_CLI_TOKEN_AUTH,
+  "x-grok-client-identifier": GROK_CLI_CLIENT_IDENTIFIER,
+  "x-grok-client-version": GROK_CLI_CLIENT_VERSION,
+  "x-authenticateresponse": "authenticate-response",
+};
+
 // Shared baseUrls
 const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/v1/messages";
 
@@ -124,16 +139,10 @@ export const PROVIDERS = {
     modelsUrl: "https://cli-chat-proxy.grok.com/v1/models",
     userUrl: "https://cli-chat-proxy.grok.com/v1/user",
     billingUrl: "https://cli-chat-proxy.grok.com/v1/billing",
-    clientVersion: "0.2.93",
-    clientIdentifier: "grok-pager",
-    tokenAuth: "xai-grok-cli",
-    headers: {
-      "User-Agent": "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)",
-      "x-xai-token-auth": "xai-grok-cli",
-      "x-grok-client-identifier": "grok-pager",
-      "x-grok-client-version": "0.2.93",
-      "x-authenticateresponse": "authenticate-response",
-    },
+    clientVersion: GROK_CLI_CLIENT_VERSION,
+    clientIdentifier: GROK_CLI_CLIENT_IDENTIFIER,
+    tokenAuth: GROK_CLI_TOKEN_AUTH,
+    headers: { ...GROK_CLI_IDENTITY_HEADERS },
     compactionAt: 400000,
     clientId: "b1a00492-073a-47ea-816f-4c329264a828",
     tokenUrl: "https://auth.x.ai/oauth2/token",

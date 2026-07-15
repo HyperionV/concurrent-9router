@@ -4,6 +4,12 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/sha
 import { KiroService } from "@/lib/oauth/services/kiro";
 import { GEMINI_CONFIG } from "@/lib/oauth/constants/oauth";
 import { refreshGoogleToken, updateProviderCredentials, refreshKiroToken } from "@/sse/services/tokenRefresh";
+import {
+  GROK_CLI_USER_AGENT,
+  GROK_CLI_TOKEN_AUTH,
+  GROK_CLI_CLIENT_IDENTIFIER,
+  GROK_CLI_CLIENT_VERSION,
+} from "open-sse/config/providers.js";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 
@@ -100,10 +106,10 @@ const PROVIDER_MODELS_CONFIG = {
     method: "GET",
     headers: {
       "Content-Type": "application/json",
-      "User-Agent": "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)",
-      "x-xai-token-auth": "xai-grok-cli",
-      "x-grok-client-identifier": "grok-pager",
-      "x-grok-client-version": "0.2.93",
+      "User-Agent": GROK_CLI_USER_AGENT,
+      "x-xai-token-auth": GROK_CLI_TOKEN_AUTH,
+      "x-grok-client-identifier": GROK_CLI_CLIENT_IDENTIFIER,
+      "x-grok-client-version": GROK_CLI_CLIENT_VERSION,
     },
     authHeader: "Authorization",
     authPrefix: "Bearer ",

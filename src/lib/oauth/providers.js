@@ -12,6 +12,11 @@ import {
   updateProviderConnection,
 } from "../localDb.js";
 import {
+  GROK_CLI_USER_AGENT,
+  GROK_CLI_TOKEN_AUTH,
+  GROK_CLI_CLIENT_VERSION,
+} from "open-sse/config/providers.js";
+import {
   CLAUDE_CONFIG,
   CODEX_CONFIG,
   GEMINI_CONFIG,
@@ -313,7 +318,7 @@ const PROVIDERS = {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
           Accept: "application/json",
-          "User-Agent": "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)",
+          "User-Agent": GROK_CLI_USER_AGENT,
         },
         body,
       });
@@ -351,7 +356,7 @@ const PROVIDERS = {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
           Accept: "application/json",
-          "User-Agent": "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)",
+          "User-Agent": GROK_CLI_USER_AGENT,
         },
         body: new URLSearchParams({
           grant_type: "urn:ietf:params:oauth:grant-type:device_code",
@@ -384,9 +389,9 @@ const PROVIDERS = {
           headers: {
             Authorization: `Bearer ${tokens.access_token}`,
             Accept: "application/json",
-            "User-Agent": "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)",
-            "x-xai-token-auth": "xai-grok-cli",
-            "x-grok-client-version": "0.2.93",
+            "User-Agent": GROK_CLI_USER_AGENT,
+            "x-xai-token-auth": GROK_CLI_TOKEN_AUTH,
+            "x-grok-client-version": GROK_CLI_CLIENT_VERSION,
           },
         });
         if (res.ok) return { user: await res.json() };

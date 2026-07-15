@@ -378,7 +378,8 @@ export async function refreshGrokCliToken(refreshToken, log) {
               "Content-Type": "application/x-www-form-urlencoded",
               Accept: "application/json",
               "User-Agent":
-                "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)",
+                PROVIDERS["grok-cli"]?.headers?.["User-Agent"] ||
+                "xai-grok-workspace/0.2.101",
             },
             body: new URLSearchParams({
               grant_type: "refresh_token",
