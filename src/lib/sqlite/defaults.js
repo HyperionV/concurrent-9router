@@ -42,6 +42,7 @@ export const DEFAULT_SETTINGS = {
   imageDispatcherCollectionId: null,
   mitmRouterBaseUrl: DEFAULT_MITM_ROUTER_BASE,
   telegramEnabled: true,
+  telegramPeriodicReportEnabled: true,
 };
 
 export function normalizeSettings(input = {}) {
@@ -69,6 +70,9 @@ export function normalizeSettings(input = {}) {
   }
   if (typeof source.telegramEnabled === "boolean") {
     next.telegramEnabled = source.telegramEnabled;
+  }
+  if (typeof source.telegramPeriodicReportEnabled === "boolean") {
+    next.telegramPeriodicReportEnabled = source.telegramPeriodicReportEnabled;
   }
 
   if (

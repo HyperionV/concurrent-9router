@@ -135,6 +135,28 @@ function extractTierFromJwt(token) {
 }
 
 /**
+ * Send a periodic usage report, but only if the periodic-report toggle is on.
+ * Connection-status alerts (e.g. account disabled) are not gated by this toggle —
+ * they always flow through `sendTelegramMessage` so they remain enabled when the
+ * 12 AM / 12 PM digest is silenced.
+ */
+export async function maybeSendPeriodicReport() {
+  try {
+    const settings = await getSettings();
+    if (settings && settings.telegramPeriodicReportEnabled === false) {
+      console.log(
+        "[Telegram] Periodic usage report is disabled in settings; skipping scheduled run.",
+      );
+      return false;
+    }
+  } catch (error) {
+    console.error("[Telegram] Error fetching settings for periodic report:", error);
+  }
+
+  return await sendUsageReport();
+}
+
+/**
  * Retrieve current connection usage stats and send a periodic report.
  */
 export async function sendUsageReport() {

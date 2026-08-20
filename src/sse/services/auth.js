@@ -18,6 +18,10 @@ import {
   resolveProviderId,
   FREE_PROVIDERS,
 } from "@/shared/constants/providers.js";
+import {
+  isConnectionRateLimitDisabled,
+  filterOutRateLimitedConnections,
+} from "@/lib/connectionHealth.js";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
@@ -79,10 +83,11 @@ export async function getProviderCredentials(
       return null;
     }
 
-    // Filter out model-locked and excluded connections
+    // Filter out model-locked, rate-limited disabled, and excluded connections
     const availableConnections = connections.filter((c) => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
+      if (isConnectionRateLimitDisabled(c)) return false;
       return true;
     });
 
@@ -93,11 +98,12 @@ export async function getProviderCredentials(
     connections.forEach((c) => {
       const excluded = excludeSet.has(c.id);
       const locked = isModelLockActive(c, model);
-      if (excluded || locked) {
+      const rateLimited = isConnectionRateLimitDisabled(c);
+      if (excluded || locked || rateLimited) {
         const lockUntil = getEarliestModelLockUntil(c);
         log.debug(
           "AUTH",
-          `  → ${c.id?.slice(0, 8)} | ${excluded ? "excluded" : ""} ${locked ? `modelLocked(${model}) until ${lockUntil}` : ""}`,
+          `  → ${c.id?.slice(0, 8)} | ${excluded ? "excluded" : ""} ${locked ? `modelLocked(${model}) until ${lockUntil}` : ""} ${rateLimited ? `rateLimited until ${c.disabledUntil}` : ""}`,
         );
       }
     });
@@ -107,15 +113,25 @@ export async function getProviderCredentials(
       const lockedConns = connections.filter((c) =>
         isModelLockActive(c, model),
       );
+      // Also check rate-limited disabled connections
+      const rateLimitedConns = connections.filter((c) =>
+        isConnectionRateLimitDisabled(c),
+      );
       const expiries = lockedConns
         .map((c) => getEarliestModelLockUntil(c))
         .filter(Boolean);
-      const earliest = expiries.sort()[0] || null;
+      const rateLimitedExpiries = rateLimitedConns
+        .map((c) => c.disabledUntil)
+        .filter(Boolean);
+      const allExpiries = [...expiries, ...rateLimitedExpiries].sort();
+      const earliest = allExpiries[0] || null;
       if (earliest) {
-        const earliestConn = lockedConns[0];
+        const earliestConn = rateLimitedConns.find(
+          (c) => c.disabledUntil === earliest,
+        ) || lockedConns[0];
         log.warn(
           "AUTH",
-          `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`,
+          `${provider} | all ${connections.length} accounts locked/rate-limited for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`,
         );
         return {
           allRateLimited: true,

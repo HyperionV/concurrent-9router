@@ -537,6 +537,12 @@ function runMigrations(db) {
   ensureColumn(db, "app_settings", "text_dispatcher_collection_id", "TEXT");
   ensureColumn(db, "app_settings", "image_dispatcher_collection_id", "TEXT");
   ensureColumn(db, "app_settings", "telegram_enabled", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn(
+    db,
+    "app_settings",
+    "telegram_periodic_report_enabled",
+    "INTEGER NOT NULL DEFAULT 1",
+  );
   ensureColumn(db, "api_keys", "codex_admission_policy_override", "TEXT");
   ensureColumn(
     db,
@@ -553,10 +559,18 @@ function runMigrations(db) {
   ensureColumn(db, "dispatch_conversation_affinity", "api_key_id", "TEXT");
   rebuildDispatchConversationAffinityTable(db);
 
+  // Migration 0003: Add disabled_until for 429 auto-disable feature
+  ensureColumn(
+    db,
+    "provider_connections",
+    "disabled_until",
+    "TEXT",
+  );
+
   db.prepare(
     `
       INSERT OR IGNORE INTO schema_migrations(version, applied_at)
-      VALUES ('0002_dispatcher', datetime('now'))
+      VALUES ('0003_rate_limit_disable', datetime('now'))
     `,
   ).run();
 }
@@ -602,7 +616,8 @@ function seedDefaults(db) {
       mitm_router_base_url,
       password,
       mitm_enabled,
-      telegram_enabled
+      telegram_enabled,
+      telegram_periodic_report_enabled
     ) VALUES (
       1, @requireApiKey, @cloudEnabled, @cloudUrl, @tunnelEnabled, @tunnelUrl, @tunnelProvider,
       @tailscaleEnabled, @tailscaleUrl, @fallbackStrategy, @stickyRoundRobinLimit,
@@ -614,7 +629,8 @@ function seedDefaults(db) {
       @dispatcherEnabled, @dispatcherShadowMode, @dispatcherCodexOnly, @codexDefaultAdmissionPolicy,
       @dispatcherSlotsPerConnection, @dispatcherSlotsByProviderJson, @imageDispatcherSlotsPerConnection,
       @textDispatcherCollectionId, @imageDispatcherCollectionId,
-      @mitmRouterBaseUrl, @password, @mitmEnabled, @telegramEnabled
+      @mitmRouterBaseUrl, @password, @mitmEnabled, @telegramEnabled,
+      @telegramPeriodicReportEnabled
     )
   `,
   ).run({
@@ -662,6 +678,7 @@ function seedDefaults(db) {
     password: settings.password || null,
     mitmEnabled: settings.mitmEnabled ? 1 : 0,
     telegramEnabled: settings.telegramEnabled ? 1 : 0,
+    telegramPeriodicReportEnabled: settings.telegramPeriodicReportEnabled !== false ? 1 : 0,
   });
 
   const now = new Date().toISOString();

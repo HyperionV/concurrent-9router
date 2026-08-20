@@ -228,3 +228,65 @@ test("telegram messaging settings guard", async () => {
   closeSqlite();
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
+
+test("periodic telegram report gate persists and skips scheduler", async () => {
+  const tempDir = makeTempDataDir();
+  process.env.DATA_DIR = tempDir;
+
+  const { closeSqlite, getSqlite } = await import("@/lib/sqlite/runtime.js");
+  closeSqlite();
+
+  const {
+    readSettings,
+    writeSettings,
+    createProviderConnectionRecord,
+  } = await import("@/lib/sqlite/store.js");
+  const { maybeSendPeriodicReport } = await import("@/lib/telegram.js");
+
+  // Default: periodic report is enabled
+  const initial = readSettings();
+  assert.equal(initial.telegramPeriodicReportEnabled, true);
+
+  // Seed a connection so a real report would have content to send,
+  // but disable periodic reports + telegram so no broadcast happens.
+  createProviderConnectionRecord({
+    id: "conn-1",
+    provider: "codex",
+    authType: "apikey",
+    name: "Codex",
+    apiKey: "sk-test",
+  });
+
+  // Disable BOTH toggles; periodic report should return false without
+  // reaching the network.
+  writeSettings({
+    telegramEnabled: false,
+    telegramPeriodicReportEnabled: false,
+  });
+
+  const skipped = await maybeSendPeriodicReport();
+  assert.equal(skipped, false);
+
+  // Re-enable periodic only (not all telegram) — periodic still gated
+  // by the global telegramEnabled switch.
+  writeSettings({ telegramEnabled: false, telegramPeriodicReportEnabled: true });
+  const stillSkipped = await maybeSendPeriodicReport();
+  assert.equal(stillSkipped, false);
+
+  // Re-enable everything and confirm the row reflects the toggle.
+  writeSettings({ telegramEnabled: true, telegramPeriodicReportEnabled: false });
+  const reloaded = readSettings();
+  assert.equal(reloaded.telegramEnabled, true);
+  assert.equal(reloaded.telegramPeriodicReportEnabled, false);
+
+  // Column is actually persisted (not just normalized in memory).
+  const row = getSqlite()
+    .prepare(
+      "SELECT telegram_periodic_report_enabled FROM app_settings WHERE id = 1",
+    )
+    .get();
+  assert.equal(row.telegram_periodic_report_enabled, 0);
+
+  closeSqlite();
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});

@@ -312,6 +312,24 @@ export default function ProfilePage() {
     }
   };
 
+  const updateTelegramPeriodicReport = async (enabled) => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ telegramPeriodicReportEnabled: enabled }),
+      });
+      if (res.ok) {
+        setSettings((prev) => ({
+          ...prev,
+          telegramPeriodicReportEnabled: enabled,
+        }));
+      }
+    } catch (err) {
+      console.error("Failed to update telegramPeriodicReportEnabled:", err);
+    }
+  };
+
   const reloadSettings = async () => {
     try {
       const res = await fetch("/api/settings");
@@ -897,6 +915,30 @@ export default function ProfilePage() {
                 checked={settings.telegramEnabled === true}
                 onChange={() => updateTelegramEnabled(settings.telegramEnabled !== true)}
                 disabled={loading}
+              />
+            </div>
+
+            <div
+              className={cn(
+                "flex items-center justify-between pb-4 border-b border-border/50",
+                settings.telegramEnabled !== true && "opacity-60",
+              )}
+            >
+              <div>
+                <p className="font-medium">Periodic usage report (12 AM & 12 PM UTC+7)</p>
+                <p className="text-sm text-text-muted">
+                  Send the scheduled connection & usage digest. When off, account-disabled
+                  alerts still arrive.
+                </p>
+              </div>
+              <Toggle
+                checked={settings.telegramPeriodicReportEnabled !== false}
+                onChange={() =>
+                  updateTelegramPeriodicReport(
+                    settings.telegramPeriodicReportEnabled !== false ? false : true,
+                  )
+                }
+                disabled={loading || settings.telegramEnabled !== true}
               />
             </div>
 

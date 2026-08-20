@@ -112,8 +112,8 @@ function startTelegramPeriodicReport() {
 
     g.telegramPeriodicReportTimeout = setTimeout(async () => {
       try {
-        const { sendUsageReport } = await import("@/lib/telegram.js");
-        await sendUsageReport();
+        const { maybeSendPeriodicReport } = await import("@/lib/telegram.js");
+        await maybeSendPeriodicReport();
       } catch (err) {
         console.error("[Telegram] Error running periodic report:", err);
       }

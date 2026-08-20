@@ -101,6 +101,29 @@ export default function ConnectionRow({
 
   // Use useState + useEffect for impure Date.now() to avoid calling during render
   const [isCooldown, setIsCooldown] = useState(false);
+  const [isRateLimited, setIsRateLimited] = useState(false);
+  const [rateLimitedUntil, setRateLimitedUntil] = useState(null);
+
+  // Check if connection is rate-limited disabled
+  useEffect(() => {
+    const checkRateLimit = () => {
+      if (connection.disabledUntil) {
+        const until = new Date(connection.disabledUntil);
+        const isDisabled = until.getTime() > Date.now();
+        setIsRateLimited(isDisabled);
+        setRateLimitedUntil(isDisabled ? connection.disabledUntil : null);
+      } else {
+        setIsRateLimited(false);
+        setRateLimitedUntil(null);
+      }
+    };
+
+    checkRateLimit();
+    const interval = connection.disabledUntil ? setInterval(checkRateLimit, 1000) : null;
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [connection.disabledUntil]);
 
   // Get earliest model lock timestamp (useEffect handles the Date.now() comparison)
   const modelLockUntil =
@@ -133,6 +156,9 @@ export default function ConnectionRow({
     connection.testStatus === "unavailable" && !isCooldown
       ? "active" // Cooldown expired u2192 treat as active
       : connection.testStatus;
+
+  // Determine if the toggle should be disabled (rate-limited connections can still be manually re-enabled)
+  const isToggleDisabled = isRateLimited && connection.isActive !== false;
 
   const getStatusVariant = () => {
     if (connection.isActive === false) return "default";
@@ -191,6 +217,11 @@ export default function ConnectionRow({
             )}
             {isCooldown && connection.isActive !== false && (
               <CooldownTimer until={modelLockUntil} />
+            )}
+            {isRateLimited && (
+              <Badge variant="warning" size="sm">
+                Rate Limited
+              </Badge>
             )}
             {connection.lastError && connection.isActive !== false && (
               <span
@@ -287,16 +318,30 @@ export default function ConnectionRow({
             <span className="text-[10px] leading-tight">Delete</span>
           </button>
         </div>
-        <Toggle
-          size="sm"
-          checked={connection.isActive ?? true}
-          onChange={onToggleActive}
-          title={
-            (connection.isActive ?? true)
-              ? "Disable connection"
-              : "Enable connection"
-          }
-        />
+        {isRateLimited && rateLimitedUntil && (
+          <div className="flex flex-col items-center gap-1">
+            <CooldownTimer until={rateLimitedUntil} />
+            <button
+              onClick={() => onToggleActive(true)}
+              className="px-2 py-1 text-xs bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 rounded hover:bg-yellow-200 dark:hover:bg-yellow-900/50 whitespace-nowrap"
+              title="Re-enable connection now (overrides 24h wait)"
+            >
+              Re-enable
+            </button>
+          </div>
+        )}
+        {!isRateLimited && (
+          <Toggle
+            size="sm"
+            checked={connection.isActive ?? true}
+            onChange={onToggleActive}
+            title={
+              (connection.isActive ?? true)
+                ? "Disable connection"
+                : "Enable connection"
+            }
+          />
+        )}
       </div>
     </div>
   );
@@ -314,6 +359,7 @@ ConnectionRow.propTypes = {
     lastError: PropTypes.string,
     priority: PropTypes.number,
     globalPriority: PropTypes.number,
+    disabledUntil: PropTypes.string,
   }).isRequired,
   proxyPools: PropTypes.arrayOf(
     PropTypes.shape({

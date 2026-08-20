@@ -24,6 +24,7 @@ import {
   DISPATCH_REQUEST_STATUS,
 } from "@/lib/dispatcher/types.js";
 import { isModelLockActive } from "open-sse/services/accountFallback.js";
+import { isConnectionRateLimitDisabled } from "@/lib/connectionHealth.js";
 
 function buildLeaseKey(connectionId) {
   return `${connectionId}:${randomUUID()}`;
@@ -222,6 +223,7 @@ export function createDispatcherCore({
 
   function connectionCanServeRequest(connection, request) {
     const rawConnection = connection?._connection || connection;
+    if (isConnectionRateLimitDisabled(rawConnection)) return false;
     return (
       !isModelLockActive(rawConnection, request?.modelId || null) &&
       quotaHealth.canServeRequest(rawConnection, request)

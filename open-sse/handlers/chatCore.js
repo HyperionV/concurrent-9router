@@ -38,6 +38,12 @@ import {
   detectClientTool,
   isNativePassthrough,
 } from "../utils/clientDetector.js";
+import {
+  autoDisableForRateLimit,
+  isUsageLimitError,
+  supportsRateLimitDisable,
+  getRateLimitDisableHumanReadable,
+} from "@/lib/connectionHealth.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -403,6 +409,20 @@ export async function handleChatCore({
         status: "error",
       }),
     ).catch(() => {});
+
+    // Auto-disable connection for 429 usage limit errors (24 hours)
+    if (
+      statusCode === HTTP_STATUS.RATE_LIMITED &&
+      connectionId &&
+      supportsRateLimitDisable(provider) &&
+      isUsageLimitError(message)
+    ) {
+      autoDisableForRateLimit(connectionId);
+      const reEnableTime = getRateLimitDisableHumanReadable(connectionId);
+      console.log(
+        `${COLORS.yellow}[RATE_LIMIT_DISABLE] ${provider} | connection=${connectionId} | ${message} | auto-disabled for 24h${reEnableTime ? ` (${reEnableTime})` : ""}${COLORS.reset}`,
+      );
+    }
 
     const errMsg = formatProviderError(
       new Error(message),

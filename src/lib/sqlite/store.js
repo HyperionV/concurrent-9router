@@ -65,6 +65,7 @@ function mapSettingsRow(row) {
       tunnelDashboardAccess: fromBool(row.tunnel_dashboard_access),
       mitmEnabled: fromBool(row.mitm_enabled),
       telegramEnabled: fromBool(row.telegram_enabled),
+      telegramPeriodicReportEnabled: fromBool(row.telegram_periodic_report_enabled),
       observabilityEnabled: fromBool(row.observability_enabled),
       observabilityMaxRecords: row.observability_max_records ?? 1000,
       observabilityBatchSize: row.observability_batch_size ?? 20,
@@ -132,7 +133,6 @@ export function writeSettings(updates) {
     SET
       cloud_enabled = @cloudEnabled,
       require_api_key = @requireApiKey,
-      cloud_url = @cloudUrl,
       tunnel_enabled = @tunnelEnabled,
       tunnel_url = @tunnelUrl,
       tunnel_provider = @tunnelProvider,
@@ -165,7 +165,8 @@ export function writeSettings(updates) {
       mitm_router_base_url = @mitmRouterBaseUrl,
       password = @password,
       mitm_enabled = @mitmEnabled,
-      telegram_enabled = @telegramEnabled
+      telegram_enabled = @telegramEnabled,
+      telegram_periodic_report_enabled = @telegramPeriodicReportEnabled
     WHERE id = 1
   `,
     )
@@ -217,6 +218,7 @@ export function writeSettings(updates) {
       password: next.password || null,
       mitmEnabled: asBool(next.mitmEnabled),
       telegramEnabled: asBool(next.telegramEnabled),
+      telegramPeriodicReportEnabled: asBool(next.telegramPeriodicReportEnabled !== false),
     });
 
   return readSettings();
@@ -444,6 +446,7 @@ const RESERVED_CONNECTION_FIELDS = new Set([
   "providerSpecificData",
   "collections",
   "collectionIds",
+  "disabledUntil",
 ]);
 
 const DEFAULT_CONNECTION_COLLECTION_ID = "__all_connections__";
@@ -756,6 +759,9 @@ function mapConnectionRow(row) {
     ...(row.consecutive_use_count != null
       ? { consecutiveUseCount: row.consecutive_use_count }
       : {}),
+    ...(row.disabled_until != null
+      ? { disabledUntil: row.disabled_until }
+      : {}),
     providerSpecificData: parseJson(row.provider_specific_data_json, {}),
     collections: listCollectionsByConnectionId(row.id),
     collectionIds: listCollectionIdsByConnectionId(row.id),
@@ -933,6 +939,7 @@ export function createProviderConnectionRecord(data) {
     expiresIn: columnData.expiresIn ?? null,
     errorCode: columnData.errorCode ?? null,
     consecutiveUseCount: columnData.consecutiveUseCount ?? null,
+    disabledUntil: columnData.disabledUntil ?? null,
     providerSpecificData: columnData.providerSpecificData || {},
     extra,
   };
@@ -945,14 +952,14 @@ export function createProviderConnectionRecord(data) {
       global_priority, default_model, access_token, refresh_token, expires_at,
       token_type, scope, id_token, project_id, api_key, test_status, last_tested,
       last_error, last_error_at, rate_limited_until, expires_in, error_code,
-      consecutive_use_count, provider_specific_data_json, extra_fields_json,
+      consecutive_use_count, disabled_until, provider_specific_data_json, extra_fields_json,
       created_at, updated_at
     ) VALUES (
       @id, @provider, @authType, @name, @priority, @isActive, @displayName, @email,
       @globalPriority, @defaultModel, @accessToken, @refreshToken, @expiresAt,
       @tokenType, @scope, @idToken, @projectId, @apiKey, @testStatus, @lastTested,
       @lastError, @lastErrorAt, @rateLimitedUntil, @expiresIn, @errorCode,
-      @consecutiveUseCount, @providerSpecificDataJson, @extraFieldsJson,
+      @consecutiveUseCount, @disabledUntil, @providerSpecificDataJson, @extraFieldsJson,
       @createdAt, @updatedAt
     )
   `,
@@ -1015,6 +1022,7 @@ export function updateProviderConnectionRecord(id, data) {
       expires_in = @expiresIn,
       error_code = @errorCode,
       consecutive_use_count = @consecutiveUseCount,
+      disabled_until = @disabledUntil,
       provider_specific_data_json = @providerSpecificDataJson,
       extra_fields_json = @extraFieldsJson,
       updated_at = @updatedAt
@@ -1048,6 +1056,7 @@ export function updateProviderConnectionRecord(id, data) {
       expiresIn: columnData.expiresIn ?? null,
       errorCode: columnData.errorCode ?? null,
       consecutiveUseCount: columnData.consecutiveUseCount ?? null,
+      disabledUntil: columnData.disabledUntil ?? null,
       providerSpecificDataJson: stringifyJson(
         columnData.providerSpecificData || {},
         {},
