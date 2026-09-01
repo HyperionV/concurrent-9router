@@ -96,3 +96,17 @@ test("CodexExecutor normalizes Luna ultra to max and standard codex ultra/max to
   assert.equal(reqStandardUltra.transformedBody.model, "gpt-5.3-codex");
   assert.equal(reqStandardUltra.transformedBody.reasoning.effort, "xhigh");
 });
+
+test("openaiResponsesToOpenAIResponse translates reasoning deltas to reasoning_content", async () => {
+  const { openaiResponsesToOpenAIResponse } = await import("../../open-sse/translator/response/openai-responses.js");
+  const state = {};
+
+  const reasoningChunk = openaiResponsesToOpenAIResponse({
+    type: "response.reasoning_summary_text.delta",
+    data: { delta: "Let me think about this step." }
+  }, state);
+
+  assert.ok(reasoningChunk, "Should return a chunk for reasoning delta");
+  assert.equal(reasoningChunk.choices[0].delta.reasoning_content, "Let me think about this step.");
+});
+
