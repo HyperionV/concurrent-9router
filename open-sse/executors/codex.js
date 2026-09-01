@@ -139,8 +139,25 @@ function convertSystemToDeveloperRole(body) {
   }
 }
 
-function normalizeReasoningEffort(value) {
-  return value === "max" ? "xhigh" : value;
+const CODEX_GPT_5_6_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+function getCodexThinkingLevels(model) {
+  const m = String(model || "").toLowerCase();
+  if (m.includes("gpt-5.6-sol") || m.includes("gpt-5.6-terra")) {
+    return [...CODEX_GPT_5_6_LEVELS, "ultra"];
+  }
+  if (m.includes("gpt-5.6-luna")) {
+    return CODEX_GPT_5_6_LEVELS;
+  }
+  return ["none", "minimal", "low", "medium", "high", "xhigh"];
+}
+
+function normalizeReasoningEffort(model, value) {
+  const supportedLevels = getCodexThinkingLevels(model);
+  if (supportedLevels?.includes(value)) return value;
+  if (value === "ultra" && supportedLevels?.includes("max")) return "max";
+  if (value === "max" || value === "ultra") return "xhigh";
+  return value;
 }
 
 function findNestedMessage(value, depth = 0) {
@@ -438,7 +455,7 @@ export class CodexExecutor extends BaseExecutor {
 
     // Extract thinking level from model name suffix
     // e.g., gpt-5.3-codex-high → high, gpt-5.3-codex → medium (default)
-    const effortLevels = ["none", "minimal", "low", "medium", "high", "xhigh"];
+    const effortLevels = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
     let modelEffort = null;
     for (const level of effortLevels) {
       if (requestModel.endsWith(`-${level}`)) {
@@ -453,11 +470,13 @@ export class CodexExecutor extends BaseExecutor {
     // Priority: explicit reasoning.effort > reasoning_effort param > model suffix > default
     if (!workingBody.reasoning) {
       const effort = normalizeReasoningEffort(
+        workingBody.model,
         workingBody.reasoning_effort || modelEffort || "low",
       );
       workingBody.reasoning = { effort, summary: "auto" };
     } else {
       workingBody.reasoning.effort = normalizeReasoningEffort(
+        workingBody.model,
         workingBody.reasoning.effort,
       );
       if (!workingBody.reasoning.summary) {

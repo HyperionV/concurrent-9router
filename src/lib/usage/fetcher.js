@@ -9,6 +9,7 @@ import {
   GROK_CLI_CLIENT_IDENTIFIER,
   GROK_CLI_CLIENT_VERSION,
 } from "open-sse/config/providers.js";
+import { getCodexUsage as getCodexUsageFromService } from "open-sse/services/usage.js";
 
 /**
  * Get usage data for a provider connection
@@ -177,12 +178,7 @@ async function getClaudeUsage(accessToken) {
  * Codex (OpenAI) Usage
  */
 async function getCodexUsage(accessToken) {
-  try {
-    // OpenAI usage requires organization API access
-    return { message: "Codex connected. Check OpenAI dashboard for usage." };
-  } catch (error) {
-    return { message: "Unable to fetch Codex usage." };
-  }
+  return await getCodexUsageFromService(accessToken);
 }
 
 /**

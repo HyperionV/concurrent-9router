@@ -83,6 +83,9 @@ export const PROVIDERS = {
     baseUrl: "https://chatgpt.com/backend-api/codex/responses",
     format: "openai-responses",
     forceStream: true,
+    usageUrl: "https://chatgpt.com/backend-api/wham/usage",
+    resetCreditsUrl: "https://chatgpt.com/backend-api/rate_limit_reset_credits",
+    resetCreditsConsumeUrl: "https://chatgpt.com/backend-api/rate_limit_reset_credits/consume",
     headers: {
       originator: "codex_cli_rs",
       "User-Agent": "codex_cli_rs/0.136.0",

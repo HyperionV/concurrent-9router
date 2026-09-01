@@ -3,6 +3,7 @@
  */
 
 import { CLIENT_METADATA, getPlatformUserAgent } from "../config/appConstants.js";
+import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import {
   GROK_CLI_USER_AGENT,
   GROK_CLI_TOKEN_AUTH,
@@ -29,6 +30,8 @@ const ANTIGRAVITY_CONFIG = {
 // Codex (OpenAI) API config
 const CODEX_CONFIG = {
   usageUrl: "https://chatgpt.com/backend-api/wham/usage",
+  resetCreditsUrl: "https://chatgpt.com/backend-api/rate_limit_reset_credits",
+  resetCreditsConsumeUrl: "https://chatgpt.com/backend-api/rate_limit_reset_credits/consume",
 };
 
 // Claude API config
@@ -44,7 +47,7 @@ const CLAUDE_CONFIG = {
  * @param {Object} connection - Provider connection with accessToken
  * @returns {Object} Usage data with quotas
  */
-export async function getUsageForProvider(connection) {
+export async function getUsageForProvider(connection, proxyOptions = null) {
   const { provider, accessToken, providerSpecificData } = connection;
 
   switch (provider) {
@@ -57,7 +60,7 @@ export async function getUsageForProvider(connection) {
     case "claude":
       return await getClaudeUsage(accessToken);
     case "codex":
-      return await getCodexUsage(accessToken);
+      return await getCodexUsage(accessToken, proxyOptions);
     case "kiro":
       return await getKiroUsage(accessToken, providerSpecificData);
     case "qwen":
@@ -492,57 +495,218 @@ async function getClaudeUsageLegacy(accessToken) {
   }
 }
 
+function toIsoDate(value) {
+  if (!value) return null;
+  const date = value instanceof Date
+    ? value
+    : new Date(typeof value === "number" && value < 1e12 ? value * 1000 : value);
+  const time = date.getTime();
+  return Number.isFinite(time) ? date.toISOString() : null;
+}
+
+function getCodexAccountId(providerSpecificData) {
+  return providerSpecificData?.workspaceId || providerSpecificData?.accountId || providerSpecificData?.chatgptAccountId || null;
+}
+
+function getCodexRateLimitBody(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+  return snapshot.rate_limit && typeof snapshot.rate_limit === "object"
+    ? snapshot.rate_limit
+    : snapshot;
+}
+
+function formatCodexWindow(window) {
+  const rawUsed = window?.used_percent ?? window?.percent_used;
+  const used = Math.max(0, Math.min(100, typeof rawUsed === "number" && Number.isFinite(rawUsed) ? rawUsed : 0));
+  return {
+    used,
+    total: 100,
+    remaining: Math.max(0, 100 - used),
+    resetAt: parseResetTime(window?.reset_at ? (typeof window.reset_at === "number" && window.reset_at < 1e12 ? window.reset_at * 1000 : window.reset_at) : (window?.resets_at || window?.resetAt || null)),
+    unlimited: false,
+  };
+}
+
+function appendCodexQuotaWindows(quotas, prefix, snapshot) {
+  const rateLimit = getCodexRateLimitBody(snapshot);
+  if (!rateLimit) return false;
+
+  const primary = rateLimit.primary_window || rateLimit.primary || snapshot.primary_window || snapshot.primary;
+  const secondary = rateLimit.secondary_window || rateLimit.secondary || snapshot.secondary_window || snapshot.secondary;
+  let added = false;
+
+  if (primary) {
+    quotas[prefix ? `${prefix}_session` : "session"] = formatCodexWindow(primary);
+    added = true;
+  }
+  if (secondary) {
+    quotas[prefix ? `${prefix}_weekly` : "weekly"] = formatCodexWindow(secondary);
+    added = true;
+  }
+
+  return added;
+}
+
+function getCodexReviewRateLimit(data) {
+  if (data.code_review_rate_limit || data.review_rate_limit) {
+    return data.code_review_rate_limit || data.review_rate_limit;
+  }
+
+  const byLimitId = data.rate_limits_by_limit_id;
+  if (byLimitId && typeof byLimitId === "object" && !Array.isArray(byLimitId)) {
+    return byLimitId.code_review || byLimitId.codex_review || byLimitId.review || null;
+  }
+
+  const additional = Array.isArray(data.additional_rate_limits) ? data.additional_rate_limits : [];
+  return additional.find((entry) => {
+    const id = String(entry?.limit_name || entry?.metered_feature || entry?.id || "").toLowerCase();
+    return id === "code_review" || id === "codex_review" || id === "review" || id.includes("review");
+  }) || null;
+}
+
+function getCodexSparkRateLimit(data) {
+  if (data.spark_rate_limit || data.gpt_5_3_codex_spark_rate_limit) {
+    return data.spark_rate_limit || data.gpt_5_3_codex_spark_rate_limit;
+  }
+
+  const byLimitId = data.rate_limits_by_limit_id;
+  if (byLimitId && typeof byLimitId === "object" && !Array.isArray(byLimitId)) {
+    return byLimitId["gpt-5.3-codex-spark"] || byLimitId.gpt_5_3_codex_spark || byLimitId.spark || null;
+  }
+
+  const additional = Array.isArray(data.additional_rate_limits) ? data.additional_rate_limits : [];
+  return additional.find((entry) => {
+    const id = String(entry?.limit_name || entry?.metered_feature || entry?.id || "").toLowerCase();
+    return id.includes("spark") || id.includes("5.3-codex-spark");
+  }) || null;
+}
+
 /**
  * Codex (OpenAI) Usage - Fetch from ChatGPT backend API
  */
-async function getCodexUsage(accessToken) {
+export async function getCodexUsage(accessToken, proxyOptions = null) {
   try {
-    const response = await fetch(CODEX_CONFIG.usageUrl, {
+    const response = await proxyAwareFetch(CODEX_CONFIG.usageUrl, {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${accessToken}`,
         "Accept": "application/json",
       },
-    });
+    }, proxyOptions);
 
     if (!response.ok) {
       return { message: `Codex connected. Usage API temporarily unavailable (${response.status}).` };
     }
 
     const data = await response.json();
+    const normalRateLimit = data.rate_limit || data.rate_limits || data.rate_limits_by_limit_id?.codex || {};
+    const reviewRateLimit = getCodexReviewRateLimit(data);
+    const sparkRateLimit = getCodexSparkRateLimit(data);
+    const rawCredits = data.rate_limit_reset_credits?.available_count;
+    const availableResetCredits = Math.max(0, typeof rawCredits === "number" && Number.isFinite(rawCredits) ? rawCredits : 0);
+    const quotas = {};
 
-    // Parse rate limit info
-    const rateLimit = data.rate_limit || {};
-    const primaryWindow = rateLimit.primary_window || {};
-    const secondaryWindow = rateLimit.secondary_window || {};
-
-    // Parse reset dates (reset_at is Unix timestamp in seconds, multiply by 1000 for ms)
-    const sessionResetAt = parseResetTime(primaryWindow.reset_at ? primaryWindow.reset_at * 1000 : null);
-    const weeklyResetAt = parseResetTime(secondaryWindow.reset_at ? secondaryWindow.reset_at * 1000 : null);
+    appendCodexQuotaWindows(quotas, "", normalRateLimit);
+    appendCodexQuotaWindows(quotas, "review", reviewRateLimit);
+    appendCodexQuotaWindows(quotas, "spark", sparkRateLimit);
 
     return {
-      plan: data.plan_type || "unknown",
-      limitReached: rateLimit.limit_reached || false,
-      quotas: {
-        session: {
-          used: primaryWindow.used_percent || 0,
-          total: 100,
-          remaining: 100 - (primaryWindow.used_percent || 0),
-          resetAt: sessionResetAt,
-          unlimited: false,
-        },
-        weekly: {
-          used: secondaryWindow.used_percent || 0,
-          total: 100,
-          remaining: 100 - (secondaryWindow.used_percent || 0),
-          resetAt: weeklyResetAt,
-          unlimited: false,
-        },
-      },
+      plan: data.plan_type || data.summary?.plan || "unknown",
+      limitReached: getCodexRateLimitBody(normalRateLimit)?.limit_reached || false,
+      reviewLimitReached: getCodexRateLimitBody(reviewRateLimit)?.limit_reached || false,
+      sparkLimitReached: getCodexRateLimitBody(sparkRateLimit)?.limit_reached || false,
+      resetCredits: { availableCount: availableResetCredits },
+      quotas,
     };
   } catch (error) {
     throw new Error(`Failed to fetch Codex usage: ${error.message}`);
   }
+}
+
+export async function getCodexRateLimitResetCredits(accessToken, proxyOptions = null, providerSpecificData = null) {
+  if (!accessToken) {
+    throw new Error("No Codex access token available. Please re-authorize the connection.");
+  }
+
+  const accountId = getCodexAccountId(providerSpecificData);
+  const headers = {
+    "Authorization": `Bearer ${accessToken}`,
+    "Accept": "application/json",
+    "OpenAI-Beta": "codex-1",
+    "originator": "codex_cli_rs",
+  };
+  if (accountId) headers["ChatGPT-Account-ID"] = accountId;
+
+  const response = await proxyAwareFetch(CODEX_CONFIG.resetCreditsUrl, {
+    method: "GET",
+    headers,
+  }, proxyOptions);
+
+  let data = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    const message = data?.message || data?.error || data?.detail || `Codex reset credits API unavailable (${response.status}).`;
+    throw new Error(message);
+  }
+
+  const credits = Array.isArray(data?.credits) ? data.credits : [];
+  const rawCount = data?.available_count ?? data?.availableCount;
+  return {
+    availableCount: Math.max(0, typeof rawCount === "number" && Number.isFinite(rawCount) ? rawCount : 0),
+    credits: credits.map((credit) => ({
+      status: String(credit?.status || "unknown"),
+      grantedAt: toIsoDate(credit?.granted_at ?? credit?.grantedAt),
+      expiresAt: toIsoDate(credit?.expires_at ?? credit?.expiresAt),
+    })),
+  };
+}
+
+export async function consumeCodexRateLimitResetCredit(accessToken, redeemRequestId, proxyOptions = null) {
+  if (!accessToken) {
+    throw new Error("No Codex access token available. Please re-authorize the connection.");
+  }
+  if (!redeemRequestId || typeof redeemRequestId !== "string") {
+    throw new Error("A redeem request id is required to consume a Codex reset credit.");
+  }
+
+  let response;
+  let data = null;
+  try {
+    response = await proxyAwareFetch(CODEX_CONFIG.resetCreditsConsumeUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ redeem_request_id: redeemRequestId }),
+    }, proxyOptions);
+
+    const text = await response.text();
+    data = text ? JSON.parse(text) : null;
+  } catch (error) {
+    throw new Error(`Failed to consume Codex reset credit: ${error.message}`);
+  }
+
+  const code = data?.code || null;
+  const rawWindows = data?.windows_reset;
+  const windowsReset = typeof rawWindows === "number" && Number.isFinite(rawWindows) ? rawWindows : 0;
+  const success = response.ok && (code === "reset" || windowsReset > 0);
+
+  return {
+    ok: success,
+    noCredit: response.ok && code === "no_credit",
+    status: response.status,
+    code,
+    windowsReset,
+    message: data?.message || null,
+    raw: data,
+  };
 }
 
 /**
