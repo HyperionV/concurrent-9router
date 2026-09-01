@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { getDispatcherStatusSnapshot } from "@/lib/dispatcher/metrics.js";
 import {
   getProviderDispatcher,
-  TEXT_DISPATCH_PROVIDERS,
 } from "@/lib/dispatcher/index.js";
+import {
+  isTextDispatchProvider,
+} from "@/lib/dispatcher/settings.js";
 import { getConnectionCollections, getSettings } from "@/lib/localDb.js";
 
 export const dynamic = "force-dynamic";
@@ -11,7 +13,7 @@ export const dynamic = "force-dynamic";
 /**
  * GET /api/dispatcher/text/status
  * Query:
- *  - provider=codex|antigravity|grok-cli (default codex)
+ *  - provider={providerId} (default codex)
  *  - view=live|history|full (default live for cheaper multi-pool polls)
  *  - terminalLimit=100
  */
@@ -19,7 +21,7 @@ export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
     const providerParam = searchParams.get("provider") || "codex";
-    const provider = TEXT_DISPATCH_PROVIDERS.includes(providerParam)
+    const provider = isTextDispatchProvider(providerParam)
       ? providerParam
       : "codex";
     const viewParam = searchParams.get("view") || "live";

@@ -30,6 +30,7 @@ import {
   getConversationAffinity,
   resolveConversationKey,
 } from "@/lib/dispatcher/conversationAffinity.js";
+import { isTextDispatchProvider } from "@/lib/dispatcher/settings.js";
 
 /**
  * Handle chat completion request
@@ -221,10 +222,7 @@ async function handleSingleModelChat(
   const chatSettings = await getSettings();
   const providerThinking =
     (chatSettings.providerThinking || {})[provider] || null;
-  const isDispatchProvider =
-    provider === "codex" ||
-    provider === "antigravity" ||
-    provider === "grok-cli";
+  const isDispatchProvider = isTextDispatchProvider(provider);
   const existingAffinity = isDispatchProvider
     ? getConversationAffinity(
         resolveConversationKey({

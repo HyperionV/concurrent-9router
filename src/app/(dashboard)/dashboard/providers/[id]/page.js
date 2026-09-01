@@ -68,6 +68,9 @@ export default function ProviderDetailPage() {
   const [thinkingMode, setThinkingMode] = useState("auto");
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [kiloFreeModels, setKiloFreeModels] = useState([]);
+  const [dispatcherSlots, setDispatcherSlots] = useState(1);
+  const [savingSlots, setSavingSlots] = useState(false);
+  const [slotsSaved, setSlotsSaved] = useState(false);
   const { copied, copy } = useCopyToClipboard();
 
   const providerInfo = providerNode
@@ -129,17 +132,22 @@ export default function ProviderDetailPage() {
 
   const fetchConnections = useCallback(async () => {
     try {
-      const [connectionsRes, nodesRes, proxyPoolsRes, settingsRes] =
+      const [connectionsRes, nodesRes, proxyPoolsRes, settingsRes, dispatcherRes] =
         await Promise.all([
           fetch("/api/providers", { cache: "no-store" }),
           fetch("/api/provider-nodes", { cache: "no-store" }),
           fetch("/api/proxy-pools?isActive=true", { cache: "no-store" }),
           fetch("/api/settings", { cache: "no-store" }),
+          fetch(`/api/dispatcher/text/settings?provider=${encodeURIComponent(providerId)}`, { cache: "no-store" }),
         ]);
       const connectionsData = await connectionsRes.json();
       const nodesData = await nodesRes.json();
       const proxyPoolsData = await proxyPoolsRes.json();
       const settingsData = settingsRes.ok ? await settingsRes.json() : {};
+      if (dispatcherRes.ok) {
+        const dispData = await dispatcherRes.json();
+        setDispatcherSlots(dispData.dispatcherSlotsPerConnection ?? 1);
+      }
       if (connectionsRes.ok) {
         const filtered = (connectionsData.connections || []).filter(
           (c) => c.provider === providerId,
@@ -486,6 +494,30 @@ export default function ProviderDetailPage() {
     } catch (error) {
       console.log("Error swapping priority:", error);
       await fetchConnections();
+    }
+  };
+
+  const handleSaveDispatcherSlots = async (val) => {
+    const numeric = Math.max(1, Math.min(100, Number(val) || 1));
+    setDispatcherSlots(numeric);
+    setSavingSlots(true);
+    try {
+      const res = await fetch("/api/dispatcher/text/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: providerId,
+          dispatcherSlotsPerConnection: numeric,
+        }),
+      });
+      if (res.ok) {
+        setSlotsSaved(true);
+        setTimeout(() => setSlotsSaved(false), 2500);
+      }
+    } catch (e) {
+      console.error("Failed to save dispatcher slots", e);
+    } finally {
+      setSavingSlots(false);
     }
   };
 
@@ -1066,6 +1098,49 @@ export default function ProviderDetailPage() {
           )}
         </Card>
       )}
+
+      {/* Dispatcher Concurrency Settings Card */}
+      <Card padding="md">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <span className="material-symbols-outlined text-[20px]">hub</span>
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-text-main">
+                  Dispatcher Concurrency Slots
+                </h3>
+                <Badge variant="info" size="sm">Managed Mode</Badge>
+              </div>
+              <p className="mt-0.5 text-xs text-text-muted">
+                Max concurrent active requests allocated per active {providerInfo.name} account before queueing in managed mode.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 self-end sm:self-center">
+            <div className="flex items-center gap-1.5">
+              <Input
+                type="number"
+                min={1}
+                max={100}
+                value={dispatcherSlots}
+                onChange={(e) => setDispatcherSlots(e.target.value)}
+                className="w-20 text-sm"
+              />
+              <span className="text-xs text-text-muted">slots / account</span>
+            </div>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => handleSaveDispatcherSlots(dispatcherSlots)}
+              disabled={savingSlots}
+            >
+              {savingSlots ? "Saving…" : slotsSaved ? "Saved ✓" : "Save"}
+            </Button>
+          </div>
+        </div>
+      </Card>
 
       {/* Connections */}
       {isFreeNoAuth ? (

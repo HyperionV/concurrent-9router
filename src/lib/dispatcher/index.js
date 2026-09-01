@@ -140,8 +140,8 @@ function ensureSharedWatchdogInterval() {
  * Get or create an isolated text dispatcher for a provider.
  */
 export function getProviderDispatcher(provider) {
-  if (!TEXT_DISPATCH_PROVIDERS.includes(provider)) {
-    throw new Error(`No text dispatcher for provider: ${provider}`);
+  if (!provider || typeof provider !== "string") {
+    throw new Error(`Invalid text dispatcher provider: ${provider}`);
   }
 
   // Once per Node process: free pure-LEASED / stuck rows from a previous run

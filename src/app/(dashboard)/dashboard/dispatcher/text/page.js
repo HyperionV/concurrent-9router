@@ -10,6 +10,7 @@ import {
   Select,
   Spinner,
 } from "@/shared/components";
+import { AI_PROVIDERS, getProviderAlias } from "@/shared/constants/providers";
 
 const LIVE_REFRESH_INTERVAL_MS = 3000;
 const HISTORY_REFRESH_INTERVAL_MS = 20000;
@@ -40,21 +41,20 @@ function getModeBadge(mode) {
     return {
       label: "Managed",
       variant: "success",
-      description: "Dispatcher owns admission and slot control.",
+      description: "Dispatcher owns admission, concurrency slots, and queueing.",
     };
   }
   if (mode === "shadow") {
     return {
       label: "Shadow",
       variant: "warning",
-      description:
-        "Ledger records traffic, but legacy routing still executes requests.",
+      description: "Ledger records traffic, but requests bypass queueing.",
     };
   }
   return {
-    label: "Off",
+    label: "Direct / Off",
     variant: "default",
-    description: "Dispatcher is not participating in runtime traffic.",
+    description: "Dispatcher is not managing traffic for this provider.",
   };
 }
 
@@ -64,29 +64,29 @@ function getHealthBadge(snapshot) {
   const failures = snapshot?.terminal?.byState?.failed ?? 0;
 
   if (oldestQueueAgeMs > 180000 || timedOut > 0) {
-    return { label: "At Risk", variant: "error" };
+    return { label: "Backlog Alert", variant: "error" };
   }
   if (oldestQueueAgeMs > 30000 || failures > 0) {
-    return { label: "Watch", variant: "warning" };
+    return { label: "Elevated Load", variant: "warning" };
   }
-  return { label: "Healthy", variant: "success" };
+  return { label: "Operational", variant: "success" };
 }
 
 function getPathModeLabel(pathMode) {
-  if (!pathMode) return "unknown";
+  if (!pathMode) return "direct";
   return pathMode.replace(/-/g, " ");
 }
 
-function StatCard({ title, value, detail, icon, badge }) {
+function StatCard({ title, value, detail, icon, badge, progress = null }) {
   return (
-    <Card padding="md" className="min-h-[140px]">
-      <div className="flex h-full flex-col justify-between gap-4">
+    <Card padding="md" className="min-h-[145px]">
+      <div className="flex h-full flex-col justify-between gap-3">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-text-muted/70">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-text-muted/70">
               {title}
             </p>
-            <p className="mt-3 text-3xl font-semibold tracking-tight text-text-main">
+            <p className="mt-2 text-3xl font-semibold tracking-tight text-text-main">
               {value}
             </p>
           </div>
@@ -96,49 +96,90 @@ function StatCard({ title, value, detail, icon, badge }) {
             </span>
           </div>
         </div>
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-sm text-text-muted">{detail}</p>
-          {badge ? <Badge variant={badge.variant}>{badge.label}</Badge> : null}
+
+        {progress !== null && (
+          <div className="space-y-1">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/5 dark:bg-white/10">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${
+                  progress > 0.8
+                    ? "bg-red-500"
+                    : progress > 0.6
+                      ? "bg-yellow-500"
+                      : "bg-primary"
+                }`}
+                style={{ width: `${Math.min(100, Math.max(0, progress * 100))}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-3 pt-1">
+          <p className="text-xs text-text-muted truncate">{detail}</p>
+          {badge ? <Badge variant={badge.variant} size="sm">{badge.label}</Badge> : null}
         </div>
       </div>
     </Card>
   );
 }
 
-function DispatcherOverview({ snapshot }) {
+function DispatcherOverview({ snapshot, providerLabel }) {
   const health = getHealthBadge(snapshot);
+  const totalCapacity = snapshot.capacity.totalCapacity || 0;
+  const activeLeases = snapshot.capacity.activeLeases || 0;
+  const utilization = totalCapacity > 0 ? activeLeases / totalCapacity : 0;
 
   return (
-    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <StatCard
-        title="Capacity"
-        value={`${snapshot.capacity.activeLeases}/${snapshot.capacity.totalCapacity}`}
+        title="Active Capacity"
+        value={`${activeLeases} / ${totalCapacity}`}
         detail={
           snapshot.capacity.activeConnections > 0
-            ? `${snapshot.capacity.activeConnections} active connections · ${snapshot.capacity.availableLeases} lease(s) free`
-            : "No active Codex connections are currently available to the dispatcher."
+            ? `${snapshot.capacity.activeConnections} account(s) · ${snapshot.capacity.availableLeases} slot(s) free`
+            : `No active ${providerLabel} accounts currently registered.`
         }
         icon="hub"
+        progress={utilization}
         badge={{
-          label:
-            snapshot.capacity.activeConnections > 0
-              ? formatPercent(snapshot.capacity.utilization)
-              : health.label,
-          variant:
-            snapshot.capacity.activeConnections > 0 ? "info" : health.variant,
+          label: formatPercent(utilization),
+          variant: utilization > 0.8 ? "error" : utilization > 0.5 ? "warning" : "info",
         }}
       />
       <StatCard
-        title="Queue"
+        title="Live Queue"
         value={snapshot.queued.count}
-        detail={`Oldest queued: ${formatDuration(snapshot.queued.oldestQueueAgeMs)}`}
+        detail={
+          snapshot.queued.count > 0
+            ? `Oldest in queue: ${formatDuration(snapshot.queued.oldestQueueAgeMs)}`
+            : "Queue clear · No waiting requests"
+        }
         icon="schedule"
+        badge={
+          snapshot.queued.count > 0
+            ? { label: `${snapshot.queued.count} waiting`, variant: "warning" }
+            : { label: "Clear", variant: "success" }
+        }
       />
       <StatCard
-        title="Recent terminals"
+        title="Terminal Outcomes"
         value={snapshot.terminal.count}
-        detail={`${snapshot.terminal.byState.failed || 0} failed · ${snapshot.terminal.byState.timed_out || 0} timed out`}
+        detail={`${snapshot.terminal.byState.completed || 0} completed · ${snapshot.terminal.byState.failed || 0} failed`}
         icon="monitoring"
+        badge={{
+          label: health.label,
+          variant: health.variant,
+        }}
+      />
+      <StatCard
+        title="Watchdog & Timeouts"
+        value={snapshot.terminal.byState.timed_out || 0}
+        detail={`${snapshot.terminal.byTimeoutKind?.stream_hang || 0} stream hangs · ${snapshot.terminal.byTimeoutKind?.queue_expired || 0} queue expired`}
+        icon="timer"
+        badge={{
+          label: (snapshot.terminal.byState.timed_out || 0) > 0 ? "Timeouts" : "Nominal",
+          variant: (snapshot.terminal.byState.timed_out || 0) > 0 ? "error" : "success",
+        }}
       />
     </div>
   );
@@ -151,13 +192,14 @@ function SummaryTableCard({
   columns,
   rows,
   emptyLabel,
+  headerAction,
 }) {
   return (
-    <Card title={title} subtitle={subtitle} icon={icon}>
+    <Card title={title} subtitle={subtitle} icon={icon} headerAction={headerAction}>
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead>
-            <tr className="border-b border-black/5 text-left text-xs uppercase tracking-[0.16em] text-text-muted/70 dark:border-white/5">
+            <tr className="border-b border-black/5 text-left text-xs uppercase tracking-[0.14em] text-text-muted/70 dark:border-white/5">
               {columns.map((column) => (
                 <th
                   key={column.key}
@@ -173,12 +215,12 @@ function SummaryTableCard({
               rows.map((row) => (
                 <tr
                   key={row.key}
-                  className="border-b border-black/[0.04] align-top last:border-b-0 dark:border-white/[0.04]"
+                  className="border-b border-black/[0.04] align-middle last:border-b-0 dark:border-white/[0.04] hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors"
                 >
                   {columns.map((column) => (
                     <td
                       key={column.key}
-                      className="py-4 pr-4 text-text-main last:pr-0"
+                      className="py-3.5 pr-4 text-text-main last:pr-0 text-sm"
                     >
                       {column.render ? column.render(row) : row[column.key]}
                     </td>
@@ -189,7 +231,7 @@ function SummaryTableCard({
               <tr>
                 <td
                   colSpan={columns.length}
-                  className="py-6 text-sm text-text-muted"
+                  className="py-8 text-center text-sm text-text-muted"
                 >
                   {emptyLabel}
                 </td>
@@ -202,125 +244,89 @@ function SummaryTableCard({
   );
 }
 
-function ModelsTable({ models }) {
-  const rows = models.map((model) => ({
-    key: model.modelId,
-    name: model.modelId,
-    queued: model.queued,
-    active: model.active,
-    completed: model.completed,
-    failures: model.failed + model.timedOut,
-    total: model.total,
-  }));
+function ConnectionsTable({ connections, slotsPerConnection }) {
+  const rows = connections.map((connection) => {
+    const occupied = connection.occupiedSlots || 0;
+    const capacity = connection.capacity || slotsPerConnection || 1;
+    const ratio = capacity > 0 ? occupied / capacity : 0;
+
+    return {
+      key: connection.connectionId,
+      connectionName: connection.connectionName,
+      occupied,
+      capacity,
+      ratio,
+      lastActivity: formatTimestamp(connection.lastAttemptAt),
+      recentAttempts: connection.recentAttempts || 0,
+      terminalReasons: Object.entries(
+        connection.recentTerminalReasonCounts || {},
+      ).map(([reason, count]) => `${reason} (${count})`),
+    };
+  });
 
   return (
     <SummaryTableCard
-      title="Model distribution"
-      subtitle="Grouped throughput and terminal outcomes by model."
-      icon="deployed_code"
-      rows={rows}
-      emptyLabel="No model activity has been recorded yet."
-      columns={[
-        { key: "name", label: "Model" },
-        { key: "queued", label: "Queued" },
-        { key: "active", label: "Active" },
-        { key: "completed", label: "Completed" },
-        { key: "failures", label: "Failures" },
-        { key: "total", label: "Total" },
-      ]}
-    />
-  );
-}
-
-function PathsTable({ paths }) {
-  const rows = paths.map((pathSummary) => ({
-    key: pathSummary.pathMode,
-    pathMode: pathSummary.pathMode,
-    active: pathSummary.active,
-    completed: pathSummary.completed,
-    failed: pathSummary.failed,
-    timedOut: pathSummary.timedOut,
-    total: pathSummary.total,
-  }));
-
-  return (
-    <SummaryTableCard
-      title="Path performance"
-      subtitle="Grouped outcomes by execution path."
-      icon="route"
-      rows={rows}
-      emptyLabel="No path data is available yet."
-      columns={[
-        {
-          key: "pathMode",
-          label: "Path",
-          render: (row) => (
-            <span className="capitalize">{getPathModeLabel(row.pathMode)}</span>
-          ),
-        },
-        { key: "active", label: "Active" },
-        { key: "completed", label: "Completed" },
-        { key: "failed", label: "Failed" },
-        { key: "timedOut", label: "Timed out" },
-        { key: "total", label: "Total" },
-      ]}
-    />
-  );
-}
-
-function ConnectionsTable({ connections }) {
-  const rows = connections.map((connection) => ({
-    key: connection.connectionId,
-    connectionName: connection.connectionName,
-    capacity: `${connection.occupiedSlots}/${connection.capacity}`,
-    lastActivity: formatTimestamp(connection.lastAttemptAt),
-    recentAttempts: connection.recentAttempts,
-    terminalReasons: Object.entries(
-      connection.recentTerminalReasonCounts || {},
-    ).map(([reason, count]) => `${reason}: ${count}`),
-  }));
-
-  return (
-    <SummaryTableCard
-      title="Account distribution"
-      subtitle="How live capacity and recent outcomes are spread across accounts."
+      title="Account Distribution & Capacity Heatmap"
+      subtitle="Live slot lease occupancy and weighted traffic distribution across active accounts."
       icon="router"
       rows={rows}
-      emptyLabel="No active Codex connections are available."
+      emptyLabel="No active connections are currently configured for this provider."
       columns={[
         {
           key: "connectionName",
-          label: "Account",
+          label: "Account Name",
           render: (row) => (
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col">
               <span className="font-medium text-text-main">
                 {row.connectionName}
               </span>
+              <span className="text-xs text-text-muted">{row.key}</span>
             </div>
           ),
         },
-        { key: "capacity", label: "Slots" },
-        { key: "recentAttempts", label: "Recent activity" },
-        { key: "lastActivity", label: "Last activity" },
+        {
+          key: "slots",
+          label: "Slot Occupancy",
+          render: (row) => (
+            <div className="flex flex-col gap-1 w-32">
+              <div className="flex justify-between text-xs font-mono">
+                <span>{row.occupied} / {row.capacity}</span>
+                <span className="text-text-muted">{Math.round(row.ratio * 100)}%</span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/5 dark:bg-white/10">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${
+                    row.ratio > 0.8
+                      ? "bg-red-500"
+                      : row.ratio > 0.5
+                        ? "bg-yellow-500"
+                        : "bg-primary"
+                  }`}
+                  style={{ width: `${Math.min(100, row.ratio * 100)}%` }}
+                />
+              </div>
+            </div>
+          ),
+        },
+        { key: "recentAttempts", label: "Requests Served" },
+        { key: "lastActivity", label: "Last Active" },
         {
           key: "terminalReasons",
-          label: "Terminal reasons",
+          label: "Recent Diagnostics",
           render: (row) =>
             row.terminalReasons.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-1.5">
                 {row.terminalReasons.map((reason) => (
-                  <div
+                  <span
                     key={reason}
-                    className="rounded-full bg-black/5 px-2 py-1 text-xs text-text-muted dark:bg-white/10"
+                    className="rounded bg-black/5 px-2 py-0.5 text-xs text-text-muted dark:bg-white/10"
                   >
                     {reason}
-                  </div>
+                  </span>
                 ))}
               </div>
             ) : (
-              <span className="text-xs text-text-muted">
-                No recent terminal events
-              </span>
+              <span className="text-xs text-text-muted">Nominal</span>
             ),
         },
       ]}
@@ -328,19 +334,130 @@ function ConnectionsTable({ connections }) {
   );
 }
 
-const PROVIDER_LABELS = {
-  codex: "Codex",
-  antigravity: "Antigravity",
-  "grok-cli": "Grok CLI",
-};
+function ModelsTable({ models }) {
+  const rows = models.map((model) => ({
+    key: model.modelId,
+    name: model.modelId,
+    queued: model.queued,
+    active: model.active,
+    completed: model.completed,
+    failures: (model.failed || 0) + (model.timedOut || 0),
+    total: model.total,
+  }));
+
+  return (
+    <SummaryTableCard
+      title="Model Throughput & Outcomes"
+      subtitle="Grouped throughput and queue status by model."
+      icon="deployed_code"
+      rows={rows}
+      emptyLabel="No model activity recorded yet."
+      columns={[
+        { key: "name", label: "Model ID" },
+        { key: "queued", label: "Queued" },
+        { key: "active", label: "Active" },
+        { key: "completed", label: "Completed" },
+        {
+          key: "failures",
+          label: "Failures",
+          render: (row) => (
+            <span className={row.failures > 0 ? "text-red-500 font-medium" : "text-text-muted"}>
+              {row.failures}
+            </span>
+          ),
+        },
+        { key: "total", label: "Total Handled" },
+      ]}
+    />
+  );
+}
+
+function OutcomesBreakdownCard({ terminal }) {
+  const byState = terminal?.byState || {};
+  const byTimeout = terminal?.byTimeoutKind || {};
+  const byReason = terminal?.byTerminalReason || {};
+
+  const total = terminal?.count || 0;
+  const completed = byState.completed || 0;
+  const failed = byState.failed || 0;
+  const timedOut = byState.timed_out || 0;
+
+  const successRate = total > 0 ? Math.round((completed / total) * 100) : 100;
+
+  return (
+    <Card
+      title="Outcome Diagnostics"
+      subtitle="Real-time reliability breakdown and terminal reason distribution."
+      icon="troubleshoot"
+    >
+      <div className="grid gap-6 md:grid-cols-3">
+        <div className="flex flex-col justify-center gap-2 rounded-xl bg-black/[0.02] p-4 dark:bg-white/[0.02] border border-black/5 dark:border-white/5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+            Success Rate
+          </p>
+          <div className="flex items-baseline gap-2">
+            <span className="text-3xl font-bold text-text-main">{successRate}%</span>
+            <span className="text-xs text-text-muted">({completed} / {total})</span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-black/5 dark:bg-white/10 mt-1">
+            <div
+              className="h-full bg-green-500 transition-all duration-500"
+              style={{ width: `${successRate}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-2 rounded-xl bg-black/[0.02] p-4 dark:bg-white/[0.02] border border-black/5 dark:border-white/5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+            Failure Diagnostics
+          </p>
+          <div className="space-y-1.5 text-xs">
+            <div className="flex justify-between">
+              <span className="text-text-muted">Upstream Failures:</span>
+              <span className="font-semibold text-red-500">{failed}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-text-muted">Timeouts & Aborts:</span>
+              <span className="font-semibold text-yellow-500">{timedOut}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-text-muted">Rate Limits (429):</span>
+              <span className="font-semibold text-text-main">{byReason.rate_limited || 0}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-2 rounded-xl bg-black/[0.02] p-4 dark:bg-white/[0.02] border border-black/5 dark:border-white/5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+            Watchdog Alarms
+          </p>
+          <div className="space-y-1.5 text-xs">
+            <div className="flex justify-between">
+              <span className="text-text-muted">Stream Hang Aborts:</span>
+              <span className="font-medium text-text-main">{byTimeout.stream_hang || 0}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-text-muted">Queue TTL Expired:</span>
+              <span className="font-medium text-text-main">{byTimeout.queue_expired || 0}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-text-muted">Client Disconnects:</span>
+              <span className="font-medium text-text-main">{byReason.client_aborted || 0}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
 
 function DispatcherControlsCard({
   snapshot,
   provider,
+  providerLabel,
   onSettingsApplied,
   onRefresh,
 }) {
-  const providerLabel = PROVIDER_LABELS[provider] || provider;
   const savedSlots = Number(snapshot.settings.dispatcherSlotsPerConnection || 1);
   const [collections, setCollections] = useState([]);
   const [collectionId, setCollectionId] = useState(
@@ -392,7 +509,6 @@ function DispatcherControlsCard({
         provider,
         dispatcherSlotsPerConnection: Number(slots),
       };
-      // Collection scope is Codex-only today.
       if (provider === "codex") {
         body.textDispatcherCollectionId = collectionId;
       }
@@ -407,7 +523,7 @@ function DispatcherControlsCard({
       if (!response.ok) {
         throw new Error(data?.error || "Failed to update dispatcher settings");
       }
-      setMessage(`${providerLabel} slots updated (isolated from other providers).`);
+      setMessage(`${providerLabel} slots updated to ${slots} (isolated pool).`);
       onSettingsApplied(data);
       await onRefresh();
     } catch (nextError) {
@@ -419,83 +535,51 @@ function DispatcherControlsCard({
 
   return (
     <Card
-      title="Dispatcher controls"
-      subtitle={`${providerLabel} slots are independent — changing them does not affect other providers.`}
+      title={`${providerLabel} Dispatcher Settings`}
+      subtitle={`Concurrency slots and routing controls for ${providerLabel}.`}
       icon="tune"
     >
       <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
         <Card.Section className="flex flex-col gap-3">
           {provider === "codex" ? (
             <Select
-              label="Connection collection"
+              label="Connection Collection Scope"
               value={collectionId}
               onChange={(event) => setCollectionId(event.target.value)}
               options={collections.map((collection) => ({
                 value: collection.id,
                 label: collection.name,
               }))}
-              placeholder="Select collection"
+              placeholder="Select collection (or all connections)"
               hint="Only active Codex connections in this collection are eligible for text dispatch."
             />
           ) : (
             <div className="rounded-lg border border-black/5 bg-black/[0.02] p-3 text-sm text-text-muted dark:border-white/5 dark:bg-white/[0.02]">
-              Collection scoping applies to Codex only. {providerLabel} uses all
-              active accounts for this provider.
+              {providerLabel} operates with all active accounts registered for this provider.
             </div>
           )}
-          <div className="rounded-lg border border-black/5 bg-black/[0.02] p-3 text-sm text-text-muted dark:border-white/5 dark:bg-white/[0.02]">
-            {provider === "codex" ? (
-              <p>
-                Selected:{" "}
-                <span className="font-medium text-text-main">
-                  {snapshot.selectedCollection?.name || "Unknown collection"}
-                </span>
-              </p>
-            ) : null}
-            <p className={provider === "codex" ? "mt-1" : undefined}>
-              Eligible connections:{" "}
-              <span className="font-medium text-text-main">
-                {snapshot.capacity?.activeConnections ?? 0}
-              </span>
-            </p>
-            <p className="mt-1">
-              Current capacity:{" "}
-              <span className="font-medium text-text-main">
-                {snapshot.capacity?.totalCapacity ?? 0}
-              </span>{" "}
-              ({snapshot.capacity?.slotsPerConnection ?? savedSlots} slot
-              {Number(snapshot.capacity?.slotsPerConnection ?? savedSlots) === 1
-                ? ""
-                : "s"}{" "}
-              × {snapshot.capacity?.activeConnections ?? 0} connection
-              {Number(snapshot.capacity?.activeConnections ?? 0) === 1
-                ? ""
-                : "s"}
-              )
-            </p>
-          </div>
         </Card.Section>
 
-        <Card.Section className="flex flex-col gap-3">
+        <Card.Section className="flex flex-col justify-between gap-3">
           <Input
-            label={`Slots per connection (${providerLabel})`}
+            label="Concurrency Slots Per Account"
             type="number"
-            min="1"
-            max="100"
+            min={1}
+            max={100}
             value={slots}
             onChange={(event) => setSlots(event.target.value)}
-            hint={`Active concurrent leases per ${providerLabel} connection (1–100). Does not share with Codex, Antigravity, or Grok CLI.`}
+            hint="Max active leases per account before queueing."
           />
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 pt-2">
             <Button
-              variant="primary"
+              size="sm"
               onClick={handleSave}
-              disabled={!hasChanges}
-              loading={saving}
+              disabled={!hasChanges || saving}
             >
-              Apply
+              {saving ? <Spinner size="sm" /> : "Save Changes"}
             </Button>
             <Button
+              size="sm"
               variant="outline"
               onClick={() => {
                 setCollectionId(
@@ -511,9 +595,9 @@ function DispatcherControlsCard({
             </Button>
           </div>
           {error ? (
-            <p className="text-sm text-red-500">{error}</p>
+            <p className="text-xs text-red-500">{error}</p>
           ) : message ? (
-            <p className="text-sm text-green-600 dark:text-green-400">
+            <p className="text-xs text-green-600 dark:text-green-400">
               {message}
             </p>
           ) : null}
@@ -525,9 +609,9 @@ function DispatcherControlsCard({
 
 function DispatcherSkeleton() {
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-6">
       <CardSkeleton />
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <CardSkeleton />
         <CardSkeleton />
         <CardSkeleton />
@@ -544,6 +628,53 @@ export default function DispatcherPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [statusProvider, setStatusProvider] = useState("codex");
+  const [configuredProviders, setConfiguredProviders] = useState([]);
+
+  // Fetch all registered providers with active connections to build dynamic switcher tabs
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      fetch("/api/providers", { cache: "no-store" }),
+      fetch("/api/provider-nodes", { cache: "no-store" }),
+    ])
+      .then(async ([provRes, nodesRes]) => {
+        const provData = provRes.ok ? await provRes.json() : {};
+        const nodesData = nodesRes.ok ? await nodesRes.json() : {};
+        if (cancelled) return;
+
+        const connectionProviders = new Set(
+          (provData.connections || []).map((c) => c.provider),
+        );
+        const nodeIds = (nodesData.nodes || []).map((n) => n.id);
+
+        const allIds = new Set([
+          "codex",
+          "antigravity",
+          "grok-cli",
+          "openai",
+          "anthropic",
+          "gemini",
+          ...connectionProviders,
+          ...nodeIds,
+        ]);
+
+        const providerOptions = Array.from(allIds).map((id) => {
+          const known = AI_PROVIDERS[id];
+          const node = (nodesData.nodes || []).find((n) => n.id === id);
+          return {
+            id,
+            label: known?.name || node?.name || id.charAt(0).toUpperCase() + id.slice(1),
+          };
+        });
+
+        setConfiguredProviders(providerOptions);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const mergeSnapshot = useCallback((prev, next, view) => {
     if (!prev || view === "full") return next;
@@ -559,7 +690,8 @@ export default function DispatcherPage() {
     if (view === "history") {
       return {
         ...prev,
-        terminal: next.terminal,
+        ...next,
+        terminal: next.terminal || prev.terminal,
         models: next.models || prev.models,
         paths: next.paths || prev.paths,
         generatedAt: next.generatedAt || prev.generatedAt,
@@ -632,27 +764,26 @@ export default function DispatcherPage() {
     );
   }
 
-  const providerFilterOptions = [
-    { id: "codex", label: "Codex" },
-    { id: "antigravity", label: "Antigravity" },
-    { id: "grok-cli", label: "Grok CLI" },
-  ];
+  const currentProviderLabel =
+    configuredProviders.find((p) => p.id === statusProvider)?.label ||
+    statusProvider.charAt(0).toUpperCase() + statusProvider.slice(1);
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* Header & Provider Selector */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-2">
-          {providerFilterOptions.map((option) => {
+          {configuredProviders.map((option) => {
             const selected = statusProvider === option.id;
             return (
               <button
                 key={option.id}
                 type="button"
                 onClick={() => setStatusProvider(option.id)}
-                className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+                className={`rounded-lg border px-3 py-1.5 text-xs sm:text-sm font-medium transition-all ${
                   selected
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-black/10 text-text-muted hover:border-black/20 dark:border-white/10"
+                    ? "border-primary bg-primary/10 text-primary shadow-sm"
+                    : "border-black/10 text-text-muted hover:border-black/20 dark:border-white/10 hover:text-text-main"
                 }`}
               >
                 {option.label}
@@ -670,23 +801,18 @@ export default function DispatcherPage() {
           {refreshing ? <Spinner size="sm" /> : "Refresh"}
         </Button>
       </div>
-      <Card
-        title="Text dispatcher"
-        subtitle="Admission is decided only by API key type. Live metrics every 3s; history every 20s. Image dispatcher stays Codex-only."
-        icon="hub"
-      >
-        <p className="text-sm text-text-muted">
-          <strong>Production</strong> keys → managed (dispatcher).{" "}
-          <strong>Coding</strong> keys → legacy (direct accounts). Same rule for
-          Codex, Antigravity, and Grok CLI. The filter above only changes which
-          provider&apos;s accounts/queue you are inspecting — not admission
-          policy.
-        </p>
-      </Card>
-      <DispatcherOverview snapshot={snapshot} />
+
+      {/* Overview Stat Cards */}
+      <DispatcherOverview snapshot={snapshot} providerLabel={currentProviderLabel} />
+
+      {/* Outcome Diagnostics & Watchdog Alarms */}
+      <OutcomesBreakdownCard terminal={snapshot.terminal} />
+
+      {/* Dispatcher Controls */}
       <DispatcherControlsCard
         snapshot={snapshot}
         provider={statusProvider}
+        providerLabel={currentProviderLabel}
         onRefresh={() => fetchStatus({ silent: true })}
         onSettingsApplied={(settingsUpdate) => {
           setSnapshot((current) =>
@@ -708,11 +834,15 @@ export default function DispatcherPage() {
           );
         }}
       />
-      <div className="grid gap-6 xl:grid-cols-2">
-        <ConnectionsTable connections={snapshot.connections || []} />
-        <ModelsTable models={snapshot.models || []} />
-      </div>
-      <PathsTable paths={snapshot.paths || []} />
+
+      {/* Account Distribution Heatmap */}
+      <ConnectionsTable
+        connections={snapshot.connections || []}
+        slotsPerConnection={snapshot.capacity.slotsPerConnection}
+      />
+
+      {/* Model Activity */}
+      <ModelsTable models={snapshot.models || []} />
     </div>
   );
 }

@@ -95,8 +95,22 @@ function clampSlotsOrDefault(value, fallback = 1) {
 }
 
 /**
+ * Default concurrency slots per account by provider profile.
+ */
+export function getDefaultSlotsForProvider(provider) {
+  if (!provider) return 1;
+  if (provider === "codex" || provider === "antigravity" || provider === "grok-cli" || provider === "claude") {
+    return 1;
+  }
+  if (provider === "openai" || provider === "anthropic" || provider === "openrouter") {
+    return 10;
+  }
+  return 1;
+}
+
+/**
  * Build isolated slots-per-connection map for every text dispatch provider.
- * Providers never inherit another provider's value.
+ * Supports known and custom dynamic providers.
  * Codex may still seed from legacy dispatcherSlotsPerConnection on first read.
  */
 export function normalizeDispatcherSlotsByProvider(
@@ -107,30 +121,40 @@ export function normalizeDispatcherSlotsByProvider(
     input && typeof input === "object" && !Array.isArray(input) ? input : {};
   const codexLegacy = clampSlotsOrDefault(legacyCodexSlots, 1);
   const next = {};
+
+  // Populate all configured entries in source (supports custom nodes)
+  for (const [provider, val] of Object.entries(source)) {
+    if (val !== undefined && val !== null) {
+      next[provider] = clampSlotsOrDefault(val, getDefaultSlotsForProvider(provider));
+    }
+  }
+
+  // Ensure standard text dispatch providers have entries
   for (const provider of TEXT_DISPATCH_PROVIDERS) {
-    if (source[provider] !== undefined && source[provider] !== null) {
-      next[provider] = clampSlotsOrDefault(source[provider], 1);
-    } else if (provider === "codex") {
-      next[provider] = codexLegacy;
-    } else {
-      next[provider] = 1;
+    if (next[provider] === undefined) {
+      if (provider === "codex") {
+        next[provider] = codexLegacy;
+      } else {
+        next[provider] = getDefaultSlotsForProvider(provider);
+      }
     }
   }
   return next;
 }
 
 /**
- * Resolve slots for one provider only. No cross-provider fallback.
+ * Resolve slots for one provider. Supports built-in and dynamic custom providers.
  */
 export function getDispatcherSlotsPerConnection(settings = {}, provider) {
-  if (!TEXT_DISPATCH_PROVIDER_SET.has(provider)) {
-    return 1;
+  if (!provider) return 1;
+  const sourceMap = settings.dispatcherSlotsByProvider;
+  if (sourceMap && typeof sourceMap === "object" && sourceMap[provider] !== undefined) {
+    return clampSlotsOrDefault(sourceMap[provider], getDefaultSlotsForProvider(provider));
   }
-  const map = normalizeDispatcherSlotsByProvider(
-    settings.dispatcherSlotsByProvider,
-    settings.dispatcherSlotsPerConnection,
-  );
-  return map[provider] ?? 1;
+  if (provider === "codex" && settings.dispatcherSlotsPerConnection !== undefined) {
+    return clampSlotsOrDefault(settings.dispatcherSlotsPerConnection, 1);
+  }
+  return getDefaultSlotsForProvider(provider);
 }
 
 /**
@@ -141,8 +165,8 @@ export function patchDispatcherSlotsForProvider(
   provider,
   value,
 ) {
-  if (!TEXT_DISPATCH_PROVIDER_SET.has(provider)) {
-    throw new Error(`Unknown text dispatch provider: ${provider}`);
+  if (!provider || typeof provider !== "string") {
+    throw new Error(`Invalid text dispatch provider: ${provider}`);
   }
   const slots = normalizeDispatcherSlotsPerConnection(value);
   const nextMap = {
@@ -155,10 +179,10 @@ export function patchDispatcherSlotsForProvider(
   return {
     dispatcherSlotsByProvider: nextMap,
     // Keep legacy column as codex mirror for older readers / backups.
-    dispatcherSlotsPerConnection: nextMap.codex,
+    dispatcherSlotsPerConnection: nextMap.codex ?? nextMap[provider],
   };
 }
 
 export function isTextDispatchProvider(provider) {
-  return TEXT_DISPATCH_PROVIDER_SET.has(provider);
+  return typeof provider === "string" && provider.trim().length > 0;
 }
