@@ -1,6 +1,19 @@
 // Provider definitions
 
-export const FREE_PROVIDERS = {};
+export const FREE_PROVIDERS = {
+  opencode: {
+    id: "opencode",
+    alias: "oc",
+    name: "OpenCode Free",
+    icon: "terminal",
+    color: "#E87040",
+    textIcon: "OC",
+    noAuth: true,
+    hasFree: true,
+    passthroughModels: true,
+    website: "https://opencode.ai",
+  },
+};
 
 export const FREE_TIER_PROVIDERS = {};
 
@@ -72,6 +85,46 @@ export const OAUTH_PROVIDERS = {
       signupUrl: "https://grok.com/supergrok",
     },
   },
+  kimi: {
+    id: "kimi",
+    alias: "kimi",
+    name: "Kimi",
+    icon: "psychology",
+    color: "#1E3A8A",
+    textIcon: "KM",
+    website: "https://kimi.moonshot.cn",
+    authModes: ["oauth", "apikey"],
+    hasOAuth: true,
+    serviceKinds: ["llm", "webSearch"],
+    notice: {
+      apiKeyUrl: "https://platform.moonshot.ai/console/api-keys",
+      signupUrl: "https://www.kimi.com/code",
+    },
+  },
+  "kimi-coding": {
+    id: "kimi-coding",
+    alias: "kmc",
+    name: "Kimi Coding",
+    icon: "psychology",
+    color: "#1E3A8A",
+    textIcon: "KM",
+    website: "https://kimi.moonshot.cn",
+    authModes: ["oauth", "apikey"],
+    hasOAuth: true,
+    serviceKinds: ["llm", "webSearch"],
+  },
+  qwen: {
+    id: "qwen",
+    alias: "qwen",
+    name: "Qwen (Alibaba)",
+    icon: "cloud",
+    color: "#FF6A00",
+    textIcon: "QW",
+    website: "https://chat.qwen.ai",
+    authModes: ["oauth", "apikey"],
+    hasOAuth: true,
+    serviceKinds: ["llm", "embedding"],
+  },
 };
 
 export const APIKEY_PROVIDERS = {
@@ -102,6 +155,79 @@ export const APIKEY_PROVIDERS = {
     textIcon: "AN",
     website: "https://console.anthropic.com",
     serviceKinds: ["llm", "imageToText"],
+  },
+  glm: {
+    id: "glm",
+    alias: "glm",
+    name: "GLM Coding (Z.ai)",
+    icon: "code",
+    color: "#2563EB",
+    textIcon: "GL",
+    website: "https://open.bigmodel.cn",
+    serviceKinds: ["llm", "webSearch"],
+    notice: {
+      apiKeyUrl: "https://open.bigmodel.cn/usercenter/apikeys",
+    },
+  },
+  zai: {
+    id: "zai",
+    alias: "zai",
+    name: "Z.ai (GLM)",
+    icon: "code",
+    color: "#2563EB",
+    textIcon: "ZA",
+    website: "https://z.ai",
+    serviceKinds: ["llm", "webSearch"],
+  },
+  alicode: {
+    id: "alicode",
+    alias: "alicode",
+    name: "Alibaba DashScope (Bailian)",
+    icon: "cloud",
+    color: "#FF6A00",
+    textIcon: "ALi",
+    website: "https://bailian.console.aliyun.com",
+    serviceKinds: ["llm", "embedding"],
+    notice: {
+      apiKeyUrl: "https://bailian.console.aliyun.com/?apiKey=1",
+    },
+  },
+  "opencode-go": {
+    id: "opencode-go",
+    alias: "ocg",
+    name: "OpenCode Go",
+    icon: "terminal",
+    color: "#E87040",
+    textIcon: "OC",
+    website: "https://opencode.ai/auth",
+    serviceKinds: ["llm"],
+    notice: {
+      text: "OpenCode Go subscription: Access to Kimi, GLM, Qwen, MiMo, MiniMax models.",
+      apiKeyUrl: "https://opencode.ai/auth",
+    },
+  },
+  "xiaomi-mimo": {
+    id: "xiaomi-mimo",
+    alias: "mimo",
+    name: "Xiaomi MiMo",
+    icon: "smart_toy",
+    color: "#FF6900",
+    textIcon: "XM",
+    website: "https://xiaomimimo.com",
+    serviceKinds: ["llm", "tts"],
+    notice: {
+      apiKeyUrl: "https://platform.xiaomimimo.com/console/api-keys",
+    },
+  },
+  mimo: {
+    id: "mimo",
+    alias: "mimo",
+    name: "Xiaomi MiMo",
+    icon: "smart_toy",
+    color: "#FF6900",
+    textIcon: "XM",
+    website: "https://xiaomimimo.com",
+    serviceKinds: ["llm", "tts"],
   },
 };
 

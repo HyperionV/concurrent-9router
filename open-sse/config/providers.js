@@ -261,7 +261,28 @@ export const PROVIDERS = {
     headers: {}
   },
   opencode: {
-    baseUrl: "http://localhost:4096/v1/chat/completions",
+    baseUrl: "https://opencode.ai",
+    format: "openai",
+    headers: { "x-opencode-client": "desktop" },
+    noAuth: true
+  },
+  "opencode-go": {
+    baseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
+    format: "openai",
+    headers: {}
+  },
+  zai: {
+    baseUrl: "https://api.z.ai/api/anthropic/v1/messages",
+    format: "claude",
+    headers: { ...CLAUDE_API_HEADERS }
+  },
+  "xiaomi-mimo": {
+    baseUrl: "https://api.xiaomimimo.com/v1/chat/completions",
+    format: "openai",
+    headers: {}
+  },
+  mimo: {
+    baseUrl: "https://api.xiaomimimo.com/v1/chat/completions",
     format: "openai",
     headers: {}
   },
