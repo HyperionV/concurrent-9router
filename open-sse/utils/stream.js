@@ -88,6 +88,7 @@ export function createSSEStream(options = {}) {
   let currentOpenAIResponsesEvent = null;
   let openAIResponsesTerminalSeen = false;
   let openAIResponsesDoneSent = false;
+  let clientDoneSent = false;
 
   function emitFirstProgressOnce() {
     if (firstProgressPromise) return firstProgressPromise;
@@ -265,6 +266,7 @@ export function createSSEStream(options = {}) {
           const output = "data: [DONE]\n\n";
           reqLogger?.appendConvertedChunk?.(output);
           controller.enqueue(sharedEncoder.encode(output));
+          clientDoneSent = true;
           if (keepsOpenAIResponsesFormat) openAIResponsesDoneSent = true;
           continue;
         }
@@ -522,10 +524,18 @@ export function createSSEStream(options = {}) {
           openAIResponsesTerminalSeen = true;
         }
 
-        if (!keepsOpenAIResponsesFormat || !openAIResponsesDoneSent) {
+        const isClientExpectingDone =
+          sourceFormat !== FORMATS.CLAUDE &&
+          (sourceFormat === FORMATS.OPENAI ||
+            sourceFormat === FORMATS.OPENAI_RESPONSES ||
+            sourceFormat === FORMATS.GEMINI ||
+            sourceFormat === FORMATS.ANTIGRAVITY);
+
+        if (!clientDoneSent && (!keepsOpenAIResponsesFormat || !openAIResponsesDoneSent) && isClientExpectingDone) {
           const doneOutput = "data: [DONE]\n\n";
           reqLogger?.appendConvertedChunk?.(doneOutput);
           controller.enqueue(sharedEncoder.encode(doneOutput));
+          clientDoneSent = true;
         }
 
         if (!hasValidUsage(state?.usage) && totalContentLength > 0) {

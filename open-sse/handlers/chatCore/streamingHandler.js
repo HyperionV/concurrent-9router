@@ -20,6 +20,7 @@ const SSE_HEADERS = {
   "Cache-Control": "no-cache",
   Connection: "keep-alive",
   "Access-Control-Allow-Origin": "*",
+  "X-Accel-Buffering": "no",
 };
 
 // Responses-API providers emit Responses SSE → translate into client format

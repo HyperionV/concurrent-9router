@@ -86,7 +86,7 @@ export const PROVIDERS = {
     baseUrl: "https://chatgpt.com/backend-api/codex/responses",
     format: "openai-responses",
     forceStream: true,
-    timeoutMs: 10000,
+    timeoutMs: 45000,
     cliVersion: CODEX_CLI_VERSION,
     usageUrl: "https://chatgpt.com/backend-api/wham/usage",
     resetCreditsUrl: "https://chatgpt.com/backend-api/rate_limit_reset_credits",

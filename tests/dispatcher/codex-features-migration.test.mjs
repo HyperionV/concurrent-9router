@@ -239,9 +239,9 @@ test("waitForLease acquires lease quickly with adaptive fast polling", async () 
   assert.ok(elapsed < 80, `Should acquire lease in under 80ms (was ${elapsed}ms)`);
 });
 
-test("Codex and Grok-CLI have 10s connect timeout guardrails configured", async () => {
+test("Codex has 45s prefill headroom and Grok-CLI has 10s connect timeout configured", async () => {
   const { PROVIDERS } = await import("../../open-sse/config/providers.js");
-  assert.equal(PROVIDERS.codex.timeoutMs, 10000, "Codex connect timeout should be 10000ms");
+  assert.equal(PROVIDERS.codex.timeoutMs, 45000, "Codex timeoutMs should be 45000 for long-context prefill");
   assert.equal(PROVIDERS["grok-cli"].timeoutMs, 10000, "Grok-CLI connect timeout should be 10000ms");
 });
 
@@ -347,5 +347,95 @@ test("GrokCliExecutor preserves native Grok reasoning IDs and filters foreign ci
   assert.equal(reasoningItems[0].encrypted_content, "valid-grok-encrypted-bytes");
 });
 
+test("CodexExecutor strips chat-specific stop and parallel_tool_calls while preserving passthrough options", () => {
+  const executor = new CodexExecutor();
 
+  const req = executor.buildRequest({
+    model: "gpt-5.3-codex",
+    body: {
+      input: "Hello",
+      instructions: "You are a test assistant",
+      stop: ["\n"], // Unsupported chat field
+      parallel_tool_calls: true, // Unsupported chat field
+      response_format: { type: "json_schema" }, // Custom passthrough option
+      future_codex_option: { mode: "let-upstream-decide" }, // Custom option
+      prompt_cache_key: "my_key",
+    },
+    credentials: { connectionId: "conn-1" },
+  });
 
+  const body = req.transformedBody;
+  assert.equal(body.stop, undefined, "stop should be stripped");
+  assert.equal(body.parallel_tool_calls, undefined, "parallel_tool_calls should be stripped");
+  assert.deepEqual(body.response_format, { type: "json_schema" }, "response_format should be preserved");
+  assert.deepEqual(body.future_codex_option, { mode: "let-upstream-decide" }, "future_codex_option should be preserved");
+  assert.equal(body.prompt_cache_key, "my_key", "prompt_cache_key should be kept");
+  assert.equal(body.instructions, "You are a test assistant", "instructions should be kept");
+  assert.equal(body.model, "gpt-5.3-codex", "model should be kept");
+});
+
+test("streamingHandler SSE_HEADERS includes X-Accel-Buffering: no to bypass reverse proxy buffering", async () => {
+  const handlerFile = await import("../../open-sse/handlers/chatCore/streamingHandler.js");
+  // Test handleStreamingResponse headers by invoking with a mock providerResponse
+  const mockResponse = new Response(new ReadableStream({
+    start(controller) {
+      controller.close();
+    }
+  }), {
+    headers: { "content-type": "text/event-stream" }
+  });
+  const res = await handlerFile.handleStreamingResponse({
+    providerResponse: mockResponse,
+    provider: "codex",
+    model: "gpt-5.3-codex",
+    sourceFormat: "openai",
+    targetFormat: "openai-responses",
+    body: { stream: true },
+    streamController: {
+      signal: new AbortController().signal,
+      startTime: Date.now(),
+      isConnected: () => true,
+      handleComplete: () => {},
+      handleError: () => {},
+      handleDisconnect: () => {},
+      abort: () => {},
+    },
+  });
+  assert.equal(res.response.headers.get("X-Accel-Buffering"), "no", "X-Accel-Buffering should be 'no'");
+});
+
+test("CodexExecutor skips prefetchImages when input has no image_url", async () => {
+  const executor = new CodexExecutor();
+  let prefetchCalled = false;
+  const originalPrefetch = executor.prefetchImages;
+  executor.prefetchImages = async () => {
+    prefetchCalled = true;
+  };
+
+  // Mock BaseExecutor.prototype.execute
+  const { BaseExecutor } = await import("../../open-sse/executors/base.js");
+  const originalBaseExecute = BaseExecutor.prototype.execute;
+  BaseExecutor.prototype.execute = async () => ({
+    response: new Response('event: response.output_text.delta\ndata: {"delta":"hi"}\n\n', {
+      headers: { "content-type": "text/event-stream" },
+    }),
+    url: "https://chatgpt.com/backend-api/codex/responses",
+    headers: {},
+  });
+
+  try {
+    await executor.execute({
+      model: "gpt-5.3-codex",
+      body: {
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "Hello without images" }] },
+        ],
+      },
+      credentials: { connectionId: "conn-1" },
+    });
+    assert.equal(prefetchCalled, false, "prefetchImages should NOT be called when no image_url exists");
+  } finally {
+    executor.prefetchImages = originalPrefetch;
+    BaseExecutor.prototype.execute = originalBaseExecute;
+  }
+});

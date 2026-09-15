@@ -59,7 +59,9 @@ const CODEX_HOSTED_TOOL_TYPES = new Set([
   "code_interpreter",
   "mcp",
   "local_shell",
+  "tool_search",
 ]);
+const CODEX_PASSTHROUGH_TOOL_TYPES = new Set(["custom"]);
 const assistantSessionMap = new Map();
 let cachedMachineId = null;
 getConsistentMachineId()
@@ -282,6 +284,7 @@ function normalizeCodexTools(body) {
       return true;
     }
     if (type !== "function") {
+      if (CODEX_PASSTHROUGH_TOOL_TYPES.has(type)) return true;
       if (!type || tool.function || typeof tool.name === "string") return false;
       return CODEX_HOSTED_TOOL_TYPES.has(type);
     }
@@ -530,6 +533,8 @@ export class CodexExecutor extends BaseExecutor {
     delete workingBody.stream_options; // Cursor sends this but Codex doesn't support it
     delete workingBody.safety_identifier; // Droid CLI sends this but Codex doesn't support it
     delete workingBody.previous_response_id;
+    delete workingBody.stop; // Chat Completions parameter unsupported on /responses
+    delete workingBody.parallel_tool_calls; // Chat Completions parameter unsupported on /responses
 
     // Fast tier maps to Codex priority; unknown tiers are stripped
     if (workingBody.service_tier === "fast") {
@@ -748,7 +753,19 @@ export class CodexExecutor extends BaseExecutor {
 
   async execute(args) {
     const request = this.buildRequest(args);
-    await this.prefetchImages(request.transformedBody, args.proxyOptions);
+    const imgCount = Array.isArray(args.body?.input)
+      ? args.body.input.reduce(
+          (n, it) =>
+            n +
+            (Array.isArray(it.content)
+              ? it.content.filter((c) => c.type === "image_url").length
+              : 0),
+          0,
+        )
+      : 0;
+    if (imgCount > 0) {
+      await this.prefetchImages(request.transformedBody, args.proxyOptions);
+    }
     const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...this.config.retry };
     const retryEntry = resolveRetryEntry(retryConfig[503]);
     let attempt = 0;
