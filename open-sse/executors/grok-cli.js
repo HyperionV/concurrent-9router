@@ -1,5 +1,8 @@
 import crypto from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { BaseExecutor } from "./base.js";
+
+const executionContext = new AsyncLocalStorage();
 import {
   PROVIDERS,
   GROK_CLI_CLIENT_VERSION,
@@ -138,6 +141,74 @@ export function resolveGrokCliTurnIdx(sessionId, input) {
 /** Test helper — clear in-memory turn counters */
 export function _resetGrokCliTurnStore() {
   sessionTurnStore.clear();
+}
+
+function stringifyGrokCliToolOutput(output) {
+  if (typeof output === "string") return output;
+  if (output === undefined) return "";
+  return JSON.stringify(output);
+}
+
+function normalizeGrokCliInputItem(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+  const { internal_chat_message_metadata_passthrough: _metadata, ...clean } = item;
+
+  if (item.type === "reasoning") {
+    if (!isNativeGrokCliItemId(item.id) || typeof item.encrypted_content !== "string") return null;
+    return clean;
+  }
+
+  if (item.type === "custom_tool_call") {
+    const callId = item.call_id || item.id;
+    const name = typeof item.name === "string" ? item.name.trim() : "";
+    if (!callId || !name) return null;
+    return {
+      type: "function_call",
+      call_id: callId,
+      name,
+      arguments: JSON.stringify({ input: stringifyGrokCliToolOutput(item.input ?? item.arguments) }),
+    };
+  }
+
+  if (item.type === "custom_tool_call_output" || item.type === "function_call_output") {
+    const callId = item.call_id || item.id;
+    if (!callId) return null;
+    return {
+      type: "function_call_output",
+      call_id: callId,
+      output: stringifyGrokCliToolOutput(item.output),
+    };
+  }
+
+  if (item.type === "function_call") {
+    const callId = item.call_id || item.id;
+    const name = typeof item.name === "string" ? item.name.trim() : "";
+    if (!callId || !name) return null;
+    return {
+      type: "function_call",
+      ...(isNativeGrokCliItemId(item.id) ? { id: item.id } : {}),
+      call_id: callId,
+      name,
+      arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? {}),
+      ...(typeof item.status === "string" ? { status: item.status } : {}),
+    };
+  }
+
+  return clean;
+}
+
+export function normalizeGrokCliInput(body) {
+  if (!Array.isArray(body?.input)) return body;
+  const normalized = body.input.map(normalizeGrokCliInputItem).filter(Boolean);
+  const callIds = new Set(
+    normalized
+      .filter((item) => item?.type === "function_call" && item.call_id)
+      .map((item) => item.call_id)
+  );
+  body.input = normalized.filter(
+    (item) => item?.type !== "function_call_output" || callIds.has(item.call_id)
+  );
+  return body;
 }
 
 function stripStoredItemReferences(body) {
@@ -290,18 +361,25 @@ export class GrokCliExecutor extends BaseExecutor {
     headers["x-grok-client-version"] = clientVersion;
     headers["x-authenticateresponse"] = "authenticate-response";
 
-    const sessionId = this._currentSessionId || credentials?.connectionId || crypto.randomUUID();
-    const reqId = this._currentReqId || crypto.randomUUID();
+    const ctx = executionContext.getStore() || {};
+    const sessionId =
+      ctx.sessionId ||
+      this._currentSessionId ||
+      credentials?.connectionId ||
+      crypto.randomUUID();
+    const reqId = ctx.reqId || this._currentReqId || crypto.randomUUID();
     headers["x-grok-session-id"] = sessionId;
     // CLI uses the same id for conv + session on chat turns
     headers["x-grok-conv-id"] = sessionId;
     headers["x-grok-req-id"] = reqId;
-    headers["x-grok-turn-idx"] = String(this._currentTurnIdx || 1);
+    headers["x-grok-turn-idx"] = String(ctx.turnIdx || this._currentTurnIdx || 1);
 
-    if (this._agentId) headers["x-grok-agent-id"] = this._agentId;
+    const agentId = ctx.agentId || this._agentId;
+    if (agentId) headers["x-grok-agent-id"] = agentId;
 
     // Surface model override (CLI always sets this)
-    if (this._currentModel) headers["x-grok-model-override"] = this._currentModel;
+    const currentModel = ctx.model || this._currentModel;
+    if (currentModel) headers["x-grok-model-override"] = currentModel;
 
     if (this.config.compactionAt) {
       headers["x-compaction-at"] = String(this.config.compactionAt);
@@ -338,23 +416,34 @@ export class GrokCliExecutor extends BaseExecutor {
   }
 
   transformRequest(model, body, stream, credentials) {
+    const ctx = executionContext.getStore();
     // Session / request ids for headers — stable per client conversation when possible
-    this._currentSessionId = resolveSessionId({
+    const sessionId = resolveSessionId({
       headers: credentials?.rawHeaders,
       body,
       connectionId: credentials?.connectionId || credentials?.id,
       workspaceId: credentials?.providerSpecificData?.workspaceId,
       scope: "grok-cli",
     });
-    this._currentReqId = crypto.randomUUID();
-    this._agentId =
+    const reqId = crypto.randomUUID();
+    const agentId =
       credentials?.providerSpecificData?.deviceId ||
       credentials?.providerSpecificData?.agentId ||
       null;
 
+    this._currentSessionId = sessionId;
+    this._currentReqId = reqId;
+    this._agentId = agentId;
+    if (ctx) {
+      ctx.sessionId = sessionId;
+      ctx.reqId = reqId;
+      if (agentId) ctx.agentId = agentId;
+    }
+
     // Normalize Responses input
     const normalized = normalizeResponsesInput(body.input);
     if (normalized) body.input = normalized;
+    normalizeGrokCliInput(body);
 
     // Chat Completions clients arrive with messages[] — translator should have
     // converted already, but guard empty input.
@@ -378,7 +467,11 @@ export class GrokCliExecutor extends BaseExecutor {
     normalizeGrokCliTools(body);
 
     // Turn index after input is finalized (user-message count, monotonic per session)
-    this._currentTurnIdx = resolveGrokCliTurnIdx(this._currentSessionId, body.input);
+    const turnIdx = resolveGrokCliTurnIdx(sessionId, body.input);
+    this._currentTurnIdx = turnIdx;
+    if (ctx) {
+      ctx.turnIdx = turnIdx;
+    }
 
     body.stream = true;
     body.store = false;
@@ -396,6 +489,9 @@ export class GrokCliExecutor extends BaseExecutor {
     }
     body.model = resolvedModel;
     this._currentModel = resolvedModel;
+    if (ctx) {
+      ctx.model = resolvedModel;
+    }
 
     // Reasoning effort priority: explicit reasoning.effort > reasoning_effort > model suffix
     const isEffortSupported = supportsGrokCliReasoningEffort(resolvedModel);
@@ -480,7 +576,11 @@ export class GrokCliExecutor extends BaseExecutor {
       this._agentId = args.credentials.providerSpecificData.deviceId;
     }
 
-    return super.execute(args);
+    const agentId = args.credentials?.providerSpecificData?.deviceId || this._agentId;
+    const ctx = {
+      agentId,
+    };
+    return executionContext.run(ctx, () => super.execute(args));
   }
 }
 

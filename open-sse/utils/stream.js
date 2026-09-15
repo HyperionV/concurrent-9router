@@ -100,10 +100,15 @@ export function createSSEStream(options = {}) {
     return firstProgressPromise;
   }
 
-  async function maybeEmitResponseIdentity(parsed) {
+  function maybeEmitResponseIdentity(parsed) {
     const responseId = parsed?.response?.id || parsed?.id || null;
     if (typeof responseId === "string" && responseId.trim() !== "") {
-      await onResponseIdentity?.(responseId);
+      try {
+        const res = onResponseIdentity?.(responseId);
+        if (res && typeof res.catch === "function") {
+          res.catch(() => {});
+        }
+      } catch {}
     }
   }
 
@@ -141,7 +146,7 @@ export function createSSEStream(options = {}) {
           ) {
             try {
               const parsed = JSON.parse(trimmed.slice(5).trim());
-              await maybeEmitResponseIdentity(parsed);
+              maybeEmitResponseIdentity(parsed);
 
               const idFixed = fixInvalidId(parsed);
 
@@ -236,7 +241,7 @@ export function createSSEStream(options = {}) {
 
         const parsed = parseSSELine(trimmed, targetFormat);
         if (!parsed) continue;
-        await maybeEmitResponseIdentity(parsed);
+        maybeEmitResponseIdentity(parsed);
 
         const isOpenAIResponsesStream = targetFormat === FORMATS.OPENAI_RESPONSES;
         const keepsOpenAIResponsesFormat =

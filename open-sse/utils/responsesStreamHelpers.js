@@ -5,6 +5,7 @@ import { formatSSE } from "./streamHelpers.js";
 // Responses API events that signal the stream has reached a terminal state
 const OPENAI_RESPONSES_TERMINAL_EVENTS = new Set([
   "response.completed",
+  "response.done",
   "response.failed",
   "error"
 ]);
@@ -19,7 +20,7 @@ export function isOpenAIResponsesTerminalEvent(eventName, chunk) {
   const type = getOpenAIResponsesEventName(eventName, chunk);
   if (OPENAI_RESPONSES_TERMINAL_EVENTS.has(type)) return true;
   const status = chunk?.response?.status;
-  return status === "completed" || status === "failed";
+  return status === "completed" || status === "done" || status === "failed";
 }
 
 const sharedEncoder = new TextEncoder();

@@ -144,7 +144,7 @@ export const PROVIDERS = {
     baseUrl: "https://cli-chat-proxy.grok.com/v1/responses",
     format: "openai-responses",
     forceStream: true,
-    timeoutMs: 10000,
+    timeoutMs: 45000,
     modelsUrl: "https://cli-chat-proxy.grok.com/v1/models",
     userUrl: "https://cli-chat-proxy.grok.com/v1/user",
     billingUrl: "https://cli-chat-proxy.grok.com/v1/billing",

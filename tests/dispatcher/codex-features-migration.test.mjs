@@ -239,10 +239,10 @@ test("waitForLease acquires lease quickly with adaptive fast polling", async () 
   assert.ok(elapsed < 80, `Should acquire lease in under 80ms (was ${elapsed}ms)`);
 });
 
-test("Codex has 45s prefill headroom and Grok-CLI has 10s connect timeout configured", async () => {
+test("Codex and Grok-CLI have 45s prefill headroom configured", async () => {
   const { PROVIDERS } = await import("../../open-sse/config/providers.js");
   assert.equal(PROVIDERS.codex.timeoutMs, 45000, "Codex timeoutMs should be 45000 for long-context prefill");
-  assert.equal(PROVIDERS["grok-cli"].timeoutMs, 10000, "Grok-CLI connect timeout should be 10000ms");
+  assert.equal(PROVIDERS["grok-cli"].timeoutMs, 45000, "Grok-CLI timeoutMs should be 45000 for long-context prefill");
 });
 
 test("extractReasoningTextFromResponsesOutput extracts reasoning text for non-streaming responses", async () => {

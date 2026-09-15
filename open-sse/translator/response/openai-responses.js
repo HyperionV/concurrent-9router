@@ -465,6 +465,9 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
     const argsDelta = data.delta || "";
     if (!argsDelta) return null;
 
+    state.toolArgsEmitted ??= new Set();
+    state.toolArgsEmitted.add(state.toolCallIndex);
+
     return {
       id: state.chatId,
       object: "chat.completion.chunk",
@@ -485,12 +488,51 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
 
   // Function call done (standard or custom_tool_call variant)
   if (eventType === "response.output_item.done" && (data.item?.type === "function_call" || data.item?.type === "custom_tool_call")) {
+    const fullArgs = data.item?.arguments;
+    state.toolArgsEmitted ??= new Set();
+    const idx = state.toolCallIndex;
+    const addedAlready = state.currentToolCallId != null;
+    if (typeof fullArgs === "string" && fullArgs && !state.toolArgsEmitted.has(idx)) {
+      state.toolArgsEmitted.add(idx);
+      state.toolCallIndex++;
+      state.currentToolCallId = null;
+      return {
+        id: state.chatId,
+        object: "chat.completion.chunk",
+        created: state.created,
+        model: state.model || "unknown",
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: idx,
+              ...(addedAlready
+                ? {}
+                : {
+                    id: data.item.call_id || data.item.id || `call_${Date.now()}`,
+                    type: "function",
+                  }),
+              function: {
+                ...(addedAlready
+                  ? {}
+                  : data.item.name
+                    ? { name: data.item.name }
+                    : {}),
+                arguments: fullArgs,
+              },
+            }],
+          },
+          finish_reason: null,
+        }],
+      };
+    }
+    state.currentToolCallId = null;
     state.toolCallIndex++;
     return null;
   }
 
-  // Response completed
-  if (eventType === "response.completed") {
+  // Response completed / done
+  if (eventType === "response.completed" || eventType === "response.done") {
     // Extract usage from response.completed event
     const responseUsage = data.response?.usage;
     if (responseUsage && typeof responseUsage === "object") {
