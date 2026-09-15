@@ -7,6 +7,7 @@ import SystemLiveCharts from "./components/SystemLiveCharts";
 import ProcessDetailsCard from "./components/ProcessDetailsCard";
 import ServerDetailsCard from "./components/ServerDetailsCard";
 import StorageUsageCard from "./components/StorageUsageCard";
+import OptimizationModal from "./components/OptimizationModal";
 
 const MAX_HISTORY_POINTS = 35;
 
@@ -18,6 +19,7 @@ export default function SystemStatusPage() {
   const [activeTab, setActiveTab] = useState("all");
   const [history, setHistory] = useState([]);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [showOptimizeModal, setShowOptimizeModal] = useState(false);
 
   const fetchStatus = useCallback(async (isManual = false) => {
     if (isManual) setRefreshing(true);
@@ -110,6 +112,19 @@ export default function SystemStatusPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Optimize System Trigger */}
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={() => setShowOptimizeModal(true)}
+            className="flex items-center gap-1.5 shadow-xs"
+          >
+            <span className="material-symbols-outlined text-[16px]">
+              rocket_launch
+            </span>
+            <span>Optimize System</span>
+          </Button>
+
           {/* Interval Selector */}
           <div className="flex items-center rounded-lg border border-black/10 dark:border-white/10 bg-surface p-0.5 text-xs">
             {[
@@ -189,7 +204,10 @@ export default function SystemStatusPage() {
                   Server Storage & Application Footprint
                 </h3>
               </div>
-              <StorageUsageCard data={data} />
+              <StorageUsageCard
+                data={data}
+                onOptimize={() => setShowOptimizeModal(true)}
+              />
             </div>
           )}
 
@@ -218,6 +236,13 @@ export default function SystemStatusPage() {
           )}
         </>
       )}
+
+      {/* Optimization Modal */}
+      <OptimizationModal
+        isOpen={showOptimizeModal}
+        onClose={() => setShowOptimizeModal(false)}
+        onComplete={() => fetchStatus(true)}
+      />
     </div>
   );
 }

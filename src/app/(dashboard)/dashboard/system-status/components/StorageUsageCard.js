@@ -1,9 +1,9 @@
 "use client";
 
-import { Card, Badge } from "@/shared/components";
+import { Card, Badge, Button } from "@/shared/components";
 import { formatBytes, formatPercent, getStatusColor } from "../utils";
 
-export default function StorageUsageCard({ data }) {
+export default function StorageUsageCard({ data, onOptimize }) {
   if (!data?.storage) return null;
 
   const { storage } = data;
@@ -77,9 +77,22 @@ export default function StorageUsageCard({ data }) {
             </span>
             <h4 className="text-sm font-semibold text-text-main">Application Storage & SQLite</h4>
           </div>
-          <Badge variant={storage.connected ? "success" : "error"}>
-            {storage.connected ? "SQLite Active" : "Disconnected"}
-          </Badge>
+          <div className="flex items-center gap-2">
+            {onOptimize && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onOptimize}
+                className="text-xs flex items-center gap-1"
+              >
+                <span className="material-symbols-outlined text-[14px]">cleaning_services</span>
+                <span>Optimize Storage</span>
+              </Button>
+            )}
+            <Badge variant={storage.connected ? "success" : "error"}>
+              {storage.connected ? "SQLite Active" : "Disconnected"}
+            </Badge>
+          </div>
         </div>
 
         {/* Application storage breakdown cards */}
