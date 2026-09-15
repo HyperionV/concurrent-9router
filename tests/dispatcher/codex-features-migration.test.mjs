@@ -180,4 +180,69 @@ test("GrokCliExecutor defaults reasoning effort to low for fast query response",
   assert.equal(transformed.reasoning.summary, "concise");
 });
 
+test("resolveConversationKey generates deterministic prefix hash for prompt-cache affinity", async () => {
+  const { resolveConversationKey } = await import("../../src/lib/dispatcher/conversationAffinity.js");
+
+  // Multi-turn chat turn 1
+  const turn1 = {
+    messages: [
+      { role: "system", content: "You are a helpful coding assistant specialized in Node.js and TypeScript." },
+      { role: "user", content: "Hello, how do I create an HTTP server?" },
+    ],
+  };
+
+  // Multi-turn chat turn 2 (new messages appended, but first system prompt matches)
+  const turn2 = {
+    messages: [
+      { role: "system", content: "You are a helpful coding assistant specialized in Node.js and TypeScript." },
+      { role: "user", content: "Hello, how do I create an HTTP server?" },
+      { role: "assistant", content: "Here is how to create an HTTP server..." },
+      { role: "user", content: "Can you add TLS/HTTPS to that?" },
+    ],
+  };
+
+  const key1 = resolveConversationKey({ body: turn1 });
+  const key2 = resolveConversationKey({ body: turn2 });
+
+  assert.ok(key1 && key1.startsWith("pfx_"), `Key 1 should be a prefix hash: ${key1}`);
+  assert.equal(key1, key2, "Turn 1 and Turn 2 should share identical prefix cache affinity key");
+
+  // Explicit conversation ID should always override prefix hash
+  const explicitKey = resolveConversationKey({
+    body: { ...turn1, conversation_id: "conv-12345" },
+  });
+  assert.equal(explicitKey, "conv-12345", "Explicit conversation_id should take precedence");
+});
+
+test("waitForLease acquires lease quickly with adaptive fast polling", async () => {
+  const { waitForLease } = await import("../../src/lib/dispatcher/executeCodexAttempt.js");
+
+  let calls = 0;
+  const mockDispatcher = {
+    tryLeaseRequest: async () => {
+      calls++;
+      // Return lease on the second poll (after ~25ms)
+      if (calls >= 2) {
+        return { leaseId: "lease-fast-1", connectionId: "conn-1" };
+      }
+      return null;
+    },
+  };
+
+  const start = Date.now();
+  const lease = await waitForLease(mockDispatcher, "req-1", 500);
+  const elapsed = Date.now() - start;
+
+  assert.ok(lease, "Should acquire lease");
+  assert.equal(lease.leaseId, "lease-fast-1");
+  assert.equal(calls, 2);
+  assert.ok(elapsed < 80, `Should acquire lease in under 80ms (was ${elapsed}ms)`);
+});
+
+test("Codex and Grok-CLI have 10s connect timeout guardrails configured", async () => {
+  const { PROVIDERS } = await import("../../open-sse/config/providers.js");
+  assert.equal(PROVIDERS.codex.timeoutMs, 10000, "Codex connect timeout should be 10000ms");
+  assert.equal(PROVIDERS["grok-cli"].timeoutMs, 10000, "Grok-CLI connect timeout should be 10000ms");
+});
+
 

@@ -27,23 +27,33 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { PROVIDERS } from "open-sse/config/providers.js";
 
 /**
- * origin/main lease wait — poll tryLeaseRequest every 100ms.
+ * origin/main lease wait — adaptive polling tryLeaseRequest.
+ * First 4 iterations poll every 25ms to capture early freed slots (<25ms latency),
+ * then back off to 100ms steady-state to avoid CPU waste during deeper queues.
  * Do not use evented waiters here; that path regressed concurrent Codex.
  */
 const LEASE_POLL_INTERVAL_MS = 100;
+const LEASE_POLL_INITIAL_MS = 25;
+const LEASE_POLL_INITIAL_COUNT = 4;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForLease(dispatcher, requestId, timeoutMs) {
+export async function waitForLease(dispatcher, requestId, timeoutMs) {
   const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  let attempt = 0;
   while (Date.now() <= deadline) {
     const lease = await dispatcher.tryLeaseRequest(requestId);
     if (lease) return lease;
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
-    await sleep(Math.min(LEASE_POLL_INTERVAL_MS, remaining));
+    const interval =
+      attempt < LEASE_POLL_INITIAL_COUNT
+        ? LEASE_POLL_INITIAL_MS
+        : LEASE_POLL_INTERVAL_MS;
+    attempt++;
+    await sleep(Math.min(interval, remaining));
   }
   return null;
 }
