@@ -110,3 +110,74 @@ test("openaiResponsesToOpenAIResponse translates reasoning deltas to reasoning_c
   assert.equal(reasoningChunk.choices[0].delta.reasoning_content, "Let me think about this step.");
 });
 
+test("CodexExecutor _peekSseOverloaded unblocks immediately on reasoning deltas without buffering", async () => {
+  const executor = new CodexExecutor();
+
+  // Create a mock stream that sends reasoning deltas
+  const ssePayload = 'event: response.reasoning_summary_text.delta\ndata: {"type":"response.reasoning_summary_text.delta","delta":"Analyzing requirements..."}\n\n';
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(ssePayload));
+      // Stream intentionally left open to prove peek breaks early on the first chunk rather than waiting for EOF
+    },
+  });
+
+  const mockResponse = new Response(stream, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+
+  const peek = await executor._peekSseOverloaded(mockResponse, { buildReplacement: true });
+  assert.equal(peek.matched, null, "Should not match any error pattern");
+  assert.equal(peek.accountFallback, false, "Should not trigger account fallback");
+  assert.ok(peek.replacementBody, "Should produce replacementBody immediately");
+
+  // Read replacementBody to verify content is preserved intact
+  const reader = peek.replacementBody.getReader();
+  const { value } = await reader.read();
+  const decoded = new TextDecoder().decode(value);
+  assert.ok(decoded.includes("response.reasoning_summary_text.delta"), "Original reasoning event preserved");
+  await reader.cancel();
+});
+
+test("stripCodexUnsupportedPatterns removes Unicode-property regexes and preserves standard schemas", async () => {
+  const { stripCodexUnsupportedPatterns } = await import("../../open-sse/utils/codexToolSchema.js");
+
+  const schema = {
+    type: "object",
+    properties: {
+      badPattern: { type: "string", pattern: "^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]{1,200}$" },
+      goodPattern: { type: "string", pattern: "^[a-zA-Z0-9_-]+$" },
+      nested: {
+        type: "object",
+        properties: {
+          innerBad: { type: "string", pattern: "^\\p{L}+$" },
+        },
+      },
+    },
+  };
+
+  const cleaned = stripCodexUnsupportedPatterns(schema);
+  assert.equal(cleaned.properties.badPattern.pattern, undefined, "Unicode pattern removed");
+  assert.equal(cleaned.properties.goodPattern.pattern, "^[a-zA-Z0-9_-]+$", "Valid pattern preserved");
+  assert.equal(cleaned.properties.nested.properties.innerBad.pattern, undefined, "Nested Unicode pattern removed");
+  // Original source object intact
+  assert.ok(schema.properties.badPattern.pattern.includes("\\p{Cc}"));
+});
+
+test("GrokCliExecutor defaults reasoning effort to low for fast query response", async () => {
+  const { GrokCliExecutor } = await import("../../open-sse/executors/grok-cli.js");
+  const executor = new GrokCliExecutor();
+
+  const body = {
+    model: "grok-3",
+    input: [{ role: "user", content: "hello" }],
+  };
+
+  const transformed = executor.transformRequest("grok-3", body, true, { connectionId: "test-conn" });
+  assert.equal(transformed.reasoning.effort, "low", "Default reasoning effort should be low");
+  assert.equal(transformed.reasoning.summary, "concise");
+});
+
+

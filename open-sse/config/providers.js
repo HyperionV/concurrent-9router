@@ -26,6 +26,9 @@ const CLAUDE_API_HEADERS = {
   "Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14"
 };
 
+// Codex CLI version seen by OpenAI backend — single source for identity headers
+export const CODEX_CLI_VERSION = "0.154.0";
+
 // Grok CLI / cli-chat-proxy identity.
 // Official CLI User-Agent is xai-grok-workspace/<version> (not grok-pager/grok-shell).
 // Keep version in sync with the Grok CLI client that chat-proxy expects.
@@ -83,12 +86,13 @@ export const PROVIDERS = {
     baseUrl: "https://chatgpt.com/backend-api/codex/responses",
     format: "openai-responses",
     forceStream: true,
+    cliVersion: CODEX_CLI_VERSION,
     usageUrl: "https://chatgpt.com/backend-api/wham/usage",
     resetCreditsUrl: "https://chatgpt.com/backend-api/rate_limit_reset_credits",
     resetCreditsConsumeUrl: "https://chatgpt.com/backend-api/rate_limit_reset_credits/consume",
     headers: {
       originator: "codex_cli_rs",
-      "User-Agent": "codex_cli_rs/0.136.0",
+      "User-Agent": `codex_cli_rs/${CODEX_CLI_VERSION}`,
     },
     clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
     tokenUrl: "https://auth.openai.com/oauth/token",

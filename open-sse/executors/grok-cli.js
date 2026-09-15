@@ -65,6 +65,8 @@ const RESPONSES_API_ALLOWLIST = new Set([
 
 const EFFORT_LEVELS = ["low", "medium", "high"];
 
+const GROK_CLI_TURN_STORE_MAX = 5000;
+
 // Per-session last turn index so multi-turn headers never go backwards within this process
 const sessionTurnStore = new Map();
 
@@ -95,6 +97,9 @@ export function resolveGrokCliTurnIdx(sessionId, input) {
   if (!sessionId) return fromInput;
   const prev = sessionTurnStore.get(sessionId) || 0;
   const turn = Math.max(fromInput, prev);
+  while (sessionTurnStore.size >= GROK_CLI_TURN_STORE_MAX) {
+    sessionTurnStore.delete(sessionTurnStore.keys().next().value);
+  }
   sessionTurnStore.set(sessionId, turn);
   return turn;
 }
@@ -347,13 +352,13 @@ export class GrokCliExecutor extends BaseExecutor {
     body.model = resolvedModel;
     this._currentModel = resolvedModel;
 
-    // Reasoning effort priority: explicit > reasoning_effort > model suffix > default high
+    // Reasoning effort priority: explicit > reasoning_effort > model suffix > default low (faster responses)
     if (!body.reasoning || typeof body.reasoning !== "object") {
-      const effort = body.reasoning_effort || modelEffort || "high";
+      const effort = body.reasoning_effort || modelEffort || "low";
       body.reasoning = { effort, summary: "concise" };
     } else {
       if (!body.reasoning.effort) {
-        body.reasoning.effort = body.reasoning_effort || modelEffort || "high";
+        body.reasoning.effort = body.reasoning_effort || modelEffort || "low";
       }
       if (!body.reasoning.summary) body.reasoning.summary = "concise";
     }

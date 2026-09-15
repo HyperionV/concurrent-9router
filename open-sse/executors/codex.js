@@ -15,6 +15,7 @@ import {
   shouldRefreshCredentials,
 } from "../services/oauthCredentialManager.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
+import { stripCodexUnsupportedPatterns } from "../utils/codexToolSchema.js";
 
 // SSE error patterns inside 200-OK bodies. Some retry same account first; capacity rotates accounts.
 const CODEX_SSE_RETRY_PATTERNS = [
@@ -28,10 +29,20 @@ const CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS = [
 const CODEX_SSE_USER_OUTPUT_PATTERNS = [
   "event: response.output_text.delta",
   "event: response.function_call_arguments.delta",
+  "event: response.reasoning_summary_text.delta",
+  "event: response.reasoning_text.delta",
+  "event: response.reasoning.delta",
+  "event: response.output_item.added",
+  "event: response.content_part.added",
   '"type":"response.output_text.delta"',
   '"type":"response.function_call_arguments.delta"',
+  '"type":"response.reasoning_summary_text.delta"',
+  '"type":"response.reasoning_text.delta"',
+  '"type":"response.reasoning.delta"',
+  '"type":"response.output_item.added"',
+  '"type":"response.content_part.added"',
 ];
-const CODEX_SSE_PEEK_BYTES = 256 * 1024;
+const CODEX_SSE_PEEK_BYTES = 4 * 1024;
 const CODEX_MODEL_CAPACITY_MESSAGE =
   "Selected model is at capacity. Please try a different model.";
 // Keep legacy name for any external references
@@ -248,6 +259,7 @@ function stripStoredItemReferences(body) {
 function normalizeCodexTools(body) {
   if (!Array.isArray(body.tools)) return;
   const validNames = new Set();
+  const patternStats = { removed: 0 };
   body.tools = body.tools.filter((tool) => {
     if (!tool || typeof tool !== "object" || Array.isArray(tool)) return false;
     const type = typeof tool.type === "string" ? tool.type : "";
@@ -259,6 +271,12 @@ function normalizeCodexTools(body) {
               ? nested.name.trim().slice(0, 128)
               : "";
           if (name) validNames.add(name);
+          if (nested?.parameters && typeof nested.parameters === "object") {
+            nested.parameters = stripCodexUnsupportedPatterns(
+              nested.parameters,
+              patternStats,
+            );
+          }
         }
       }
       return true;
@@ -301,7 +319,7 @@ function normalizeCodexTools(body) {
     tool.type = "function";
     tool.name = name;
     if (description) tool.description = description;
-    tool.parameters = parameters;
+    tool.parameters = stripCodexUnsupportedPatterns(parameters, patternStats);
     validNames.add(name);
     return true;
   });
