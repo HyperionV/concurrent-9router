@@ -53,4 +53,10 @@ test("getSystemTelemetry collects comprehensive host and application telemetry",
   assert.ok(telemetry.storage, "Storage object should exist");
   assert.ok(typeof telemetry.storage.connected === "boolean");
   assert.ok(typeof telemetry.storage.dbSizeBytes === "number");
+  assert.ok(Array.isArray(telemetry.storage.disks), "Disks should be an array");
+  assert.ok(telemetry.storage.disks.length > 0, "At least one disk volume should be detected");
+  const firstDisk = telemetry.storage.disks[0];
+  assert.ok(firstDisk.totalBytes > 0, "Disk total bytes should be positive");
+  assert.ok(firstDisk.freeBytes >= 0, "Disk free bytes should be non-negative");
+  assert.ok(firstDisk.usagePercent >= 0 && firstDisk.usagePercent <= 100);
 });

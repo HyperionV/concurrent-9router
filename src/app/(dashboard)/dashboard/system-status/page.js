@@ -6,6 +6,7 @@ import SystemMetricCards from "./components/SystemMetricCards";
 import SystemLiveCharts from "./components/SystemLiveCharts";
 import ProcessDetailsCard from "./components/ProcessDetailsCard";
 import ServerDetailsCard from "./components/ServerDetailsCard";
+import StorageUsageCard from "./components/StorageUsageCard";
 
 const MAX_HISTORY_POINTS = 35;
 
@@ -76,6 +77,7 @@ export default function SystemStatusPage() {
   const tabOptions = [
     { value: "all", label: "Full View" },
     { value: "charts", label: "Realtime Charts" },
+    { value: "storage", label: "Disks & Storage" },
     { value: "host", label: "Host & Hardware" },
     { value: "process", label: "Process & V8 Engine" },
   ];
@@ -102,7 +104,7 @@ export default function SystemStatusPage() {
             )}
           </div>
           <p className="text-xs text-text-muted mt-1">
-            Realtime server performance, Node.js resource accounting, and V8 telemetry
+            Realtime server performance, disk storage, Node.js resource accounting, and V8 telemetry
             {lastUpdated && ` • Updated ${lastUpdated.toLocaleTimeString()}`}
           </p>
         </div>
@@ -176,6 +178,18 @@ export default function SystemStatusPage() {
                 </h3>
               </div>
               <SystemLiveCharts history={history} />
+            </div>
+          )}
+
+          {/* Storage & Disks Section */}
+          {(activeTab === "all" || activeTab === "storage") && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-text-muted">
+                  Server Storage & Application Footprint
+                </h3>
+              </div>
+              <StorageUsageCard data={data} />
             </div>
           )}
 

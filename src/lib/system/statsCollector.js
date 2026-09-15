@@ -120,6 +120,57 @@ function getEventLoopMetrics() {
   };
 }
 
+function getDiskDrives() {
+  const drives = [];
+  if (process.platform === "win32") {
+    for (let i = 65; i <= 90; i++) {
+      const driveLetter = String.fromCharCode(i) + ":\\";
+      try {
+        if (fs.existsSync(driveLetter)) {
+          const stats = fs.statfsSync(driveLetter);
+          const total = stats.blocks * stats.bsize;
+          const free = stats.bavail * stats.bsize;
+          const used = Math.max(0, total - free);
+          if (total > 0) {
+            drives.push({
+              mount: driveLetter,
+              totalBytes: total,
+              freeBytes: free,
+              usedBytes: used,
+              usagePercent: Math.round((used / total) * 1000) / 10,
+            });
+          }
+        }
+      } catch {}
+    }
+  } else {
+    const checkPaths = ["/", DATA_DIR];
+    const seen = new Set();
+    for (const p of checkPaths) {
+      try {
+        if (fs.existsSync(p)) {
+          const stats = fs.statfsSync(p);
+          const total = stats.blocks * stats.bsize;
+          const free = stats.bavail * stats.bsize;
+          const used = Math.max(0, total - free);
+          const key = `${total}-${free}`;
+          if (total > 0 && !seen.has(key)) {
+            seen.add(key);
+            drives.push({
+              mount: p,
+              totalBytes: total,
+              freeBytes: free,
+              usedBytes: used,
+              usagePercent: Math.round((used / total) * 1000) / 10,
+            });
+          }
+        }
+      } catch {}
+    }
+  }
+  return drives;
+}
+
 function getStorageAndDbStats() {
   let dbSizeBytes = 0;
   let walSizeBytes = 0;
@@ -161,6 +212,8 @@ function getStorageAndDbStats() {
     connected = false;
   }
 
+  const disks = getDiskDrives();
+
   return {
     dbPath,
     dataDir: DATA_DIR,
@@ -170,6 +223,7 @@ function getStorageAndDbStats() {
     totalStorageBytes: dbSizeBytes + walSizeBytes + shmSizeBytes,
     connected,
     counts,
+    disks,
   };
 }
 
