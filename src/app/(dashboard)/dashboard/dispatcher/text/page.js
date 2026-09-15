@@ -11,6 +11,7 @@ import {
   Spinner,
 } from "@/shared/components";
 import { AI_PROVIDERS, getProviderAlias } from "@/shared/constants/providers";
+import DispatcherTimelineChart from "./components/DispatcherTimelineChart";
 
 const LIVE_REFRESH_INTERVAL_MS = 3000;
 const HISTORY_REFRESH_INTERVAL_MS = 20000;
@@ -129,58 +130,129 @@ function DispatcherOverview({ snapshot, providerLabel }) {
   const activeLeases = snapshot.capacity.activeLeases || 0;
   const utilization = totalCapacity > 0 ? activeLeases / totalCapacity : 0;
 
+  const latency = snapshot.latency || {};
+  const aggregates = snapshot.aggregates || {};
+  const totalVolume = aggregates.totalRequests || snapshot.terminal?.count || 0;
+  const totalCompleted = aggregates.totalCompleted || snapshot.terminal?.byState?.completed || 0;
+  const totalFailed = aggregates.totalFailed || snapshot.terminal?.byState?.failed || 0;
+  const timedOut = snapshot.terminal?.byState?.timed_out || aggregates.totalTimedOut || 0;
+
+  const p50Ttft = latency.p50TtftMs || 0;
+  const p95Ttft = latency.p95TtftMs || 0;
+  const avgTtft = latency.avgTtftMs || 0;
+  const avgQueue = latency.avgQueueWaitMs || 0;
+  const p95Queue = latency.p95QueueWaitMs || 0;
+
   return (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <StatCard
-        title="Active Capacity"
-        value={`${activeLeases} / ${totalCapacity}`}
-        detail={
-          snapshot.capacity.activeConnections > 0
-            ? `${snapshot.capacity.activeConnections} account(s) · ${snapshot.capacity.availableLeases} slot(s) free`
-            : `No active ${providerLabel} accounts currently registered.`
-        }
-        icon="hub"
-        progress={utilization}
-        badge={{
-          label: formatPercent(utilization),
-          variant: utilization > 0.8 ? "error" : utilization > 0.5 ? "warning" : "info",
-        }}
-      />
-      <StatCard
-        title="Live Queue"
-        value={snapshot.queued.count}
-        detail={
-          snapshot.queued.count > 0
-            ? `Oldest in queue: ${formatDuration(snapshot.queued.oldestQueueAgeMs)}`
-            : "Queue clear · No waiting requests"
-        }
-        icon="schedule"
-        badge={
-          snapshot.queued.count > 0
-            ? { label: `${snapshot.queued.count} waiting`, variant: "warning" }
-            : { label: "Clear", variant: "success" }
-        }
-      />
-      <StatCard
-        title="Terminal Outcomes"
-        value={snapshot.terminal.count}
-        detail={`${snapshot.terminal.byState.completed || 0} completed · ${snapshot.terminal.byState.failed || 0} failed`}
-        icon="monitoring"
-        badge={{
-          label: health.label,
-          variant: health.variant,
-        }}
-      />
-      <StatCard
-        title="Watchdog & Timeouts"
-        value={snapshot.terminal.byState.timed_out || 0}
-        detail={`${snapshot.terminal.byTimeoutKind?.stream_hang || 0} stream hangs · ${snapshot.terminal.byTimeoutKind?.queue_expired || 0} queue expired`}
-        icon="timer"
-        badge={{
-          label: (snapshot.terminal.byState.timed_out || 0) > 0 ? "Timeouts" : "Nominal",
-          variant: (snapshot.terminal.byState.timed_out || 0) > 0 ? "error" : "success",
-        }}
-      />
+    <div className="flex flex-col gap-4">
+      {/* Primary KPI Row */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          title="Active Capacity"
+          value={`${activeLeases} / ${totalCapacity}`}
+          detail={
+            snapshot.capacity.activeConnections > 0
+              ? `${snapshot.capacity.activeConnections} account(s) · ${snapshot.capacity.availableLeases} slot(s) free`
+              : `No active ${providerLabel} accounts currently registered.`
+          }
+          icon="hub"
+          progress={utilization}
+          badge={{
+            label: formatPercent(utilization),
+            variant: utilization > 0.8 ? "error" : utilization > 0.5 ? "warning" : "info",
+          }}
+        />
+
+        <StatCard
+          title="Live Queue"
+          value={snapshot.queued.count}
+          detail={
+            snapshot.queued.count > 0
+              ? `Oldest in queue: ${formatDuration(snapshot.queued.oldestQueueAgeMs)}`
+              : "Queue clear · Zero wait delay"
+          }
+          icon="schedule"
+          badge={
+            snapshot.queued.count > 0
+              ? { label: `${snapshot.queued.count} waiting`, variant: "warning" }
+              : { label: "Clear", variant: "success" }
+          }
+        />
+
+        <StatCard
+          title="TTFT Latency (p50)"
+          value={p50Ttft > 0 ? `${p50Ttft} ms` : "--"}
+          detail={`Avg: ${avgTtft} ms · Max: ${latency.maxTtftMs || 0} ms`}
+          icon="bolt"
+          badge={{
+            label: p95Ttft > 0 ? `p95: ${p95Ttft} ms` : "Nominal",
+            variant: p95Ttft > 5000 ? "error" : p95Ttft > 2000 ? "warning" : "success",
+          }}
+        />
+
+        <StatCard
+          title="Queue Wait Delay"
+          value={avgQueue > 0 ? `${avgQueue} ms` : "< 1 ms"}
+          detail={`p50: ${latency.p50QueueWaitMs || 0} ms · Max: ${latency.maxQueueWaitMs || 0} ms`}
+          icon="hourglass_top"
+          badge={{
+            label: p95Queue > 0 ? `p95: ${p95Queue} ms` : "Immediate",
+            variant: p95Queue > 5000 ? "error" : p95Queue > 1000 ? "warning" : "success",
+          }}
+        />
+      </div>
+
+      {/* Secondary Operational Row */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          title="Throughput Volume"
+          value={totalVolume}
+          detail={`${totalCompleted} completed · ${totalFailed} failed`}
+          icon="monitoring"
+          badge={{
+            label: health.label,
+            variant: health.variant,
+          }}
+        />
+
+        <StatCard
+          title="Watchdog & Timeouts"
+          value={timedOut}
+          detail={`${snapshot.terminal?.byTimeoutKind?.stream_hang || 0} stream hangs · ${snapshot.terminal?.byTimeoutKind?.queue_expired || 0} queue expired`}
+          icon="timer"
+          badge={{
+            label: timedOut > 0 ? "Timeouts" : "Nominal",
+            variant: timedOut > 0 ? "error" : "success",
+          }}
+        />
+
+        <StatCard
+          title="Response Duration"
+          value={formatDuration(latency.avgDurationMs || 0)}
+          detail="Avg total duration including queue & stream"
+          icon="timelapse"
+          badge={{
+            label: latency.maxDurationMs > 0 ? `Max: ${formatDuration(latency.maxDurationMs)}` : "Nominal",
+            variant: "default",
+          }}
+        />
+
+        <StatCard
+          title="Reliability Rate"
+          value={
+            totalVolume > 0
+              ? `${Math.round((totalCompleted / totalVolume) * 100)}%`
+              : "100%"
+          }
+          detail={`Based on ${totalVolume} tracked requests`}
+          icon="verified"
+          progress={totalVolume > 0 ? totalCompleted / totalVolume : 1}
+          badge={{
+            label: totalFailed === 0 && timedOut === 0 ? "100% Succeeded" : `${totalFailed + timedOut} Errors`,
+            variant: totalFailed === 0 && timedOut === 0 ? "success" : "warning",
+          }}
+        />
+      </div>
     </div>
   );
 }
@@ -258,6 +330,9 @@ function ConnectionsTable({ connections, slotsPerConnection }) {
       ratio,
       lastActivity: formatTimestamp(connection.lastAttemptAt),
       recentAttempts: connection.recentAttempts || 0,
+      avgTtftMs: connection.avgTtftMs || 0,
+      p95TtftMs: connection.p95TtftMs || 0,
+      avgQueueWaitMs: connection.avgQueueWaitMs || 0,
       terminalReasons: Object.entries(
         connection.recentTerminalReasonCounts || {},
       ).map(([reason, count]) => `${reason} (${count})`),
@@ -267,7 +342,7 @@ function ConnectionsTable({ connections, slotsPerConnection }) {
   return (
     <SummaryTableCard
       title="Account Distribution & Capacity Heatmap"
-      subtitle="Live slot lease occupancy and weighted traffic distribution across active accounts."
+      subtitle="Live slot lease occupancy, latency health, and traffic distribution across active accounts."
       icon="router"
       rows={rows}
       emptyLabel="No active connections are currently configured for this provider."
@@ -308,11 +383,42 @@ function ConnectionsTable({ connections, slotsPerConnection }) {
             </div>
           ),
         },
-        { key: "recentAttempts", label: "Requests Served" },
+        { key: "recentAttempts", label: "Requests" },
+        {
+          key: "avgTtft",
+          label: "Avg TTFT",
+          render: (row) => (
+            <span className="font-mono text-xs">
+              {row.avgTtftMs > 0 ? `${row.avgTtftMs} ms` : "--"}
+            </span>
+          ),
+        },
+        {
+          key: "p95Ttft",
+          label: "p95 TTFT",
+          render: (row) => (
+            <span
+              className={`font-mono text-xs ${
+                row.p95TtftMs > 2000 ? "text-amber-500 font-semibold" : ""
+              }`}
+            >
+              {row.p95TtftMs > 0 ? `${row.p95TtftMs} ms` : "--"}
+            </span>
+          ),
+        },
+        {
+          key: "queueDelay",
+          label: "Queue Delay",
+          render: (row) => (
+            <span className="font-mono text-xs text-text-muted">
+              {row.avgQueueWaitMs > 0 ? `${row.avgQueueWaitMs} ms` : "< 1 ms"}
+            </span>
+          ),
+        },
         { key: "lastActivity", label: "Last Active" },
         {
           key: "terminalReasons",
-          label: "Recent Diagnostics",
+          label: "Diagnostics",
           render: (row) =>
             row.terminalReasons.length > 0 ? (
               <div className="flex flex-wrap gap-1.5">
@@ -342,13 +448,16 @@ function ModelsTable({ models }) {
     active: model.active,
     completed: model.completed,
     failures: (model.failed || 0) + (model.timedOut || 0),
+    avgTtftMs: model.avgTtftMs || 0,
+    p95TtftMs: model.p95TtftMs || 0,
+    avgQueueWaitMs: model.avgQueueWaitMs || 0,
     total: model.total,
   }));
 
   return (
     <SummaryTableCard
-      title="Model Throughput & Outcomes"
-      subtitle="Grouped throughput and queue status by model."
+      title="Model Throughput, Latency & Outcomes"
+      subtitle="Grouped throughput, tail TTFT, and queue wait times by model."
       icon="deployed_code"
       rows={rows}
       emptyLabel="No model activity recorded yet."
@@ -363,6 +472,37 @@ function ModelsTable({ models }) {
           render: (row) => (
             <span className={row.failures > 0 ? "text-red-500 font-medium" : "text-text-muted"}>
               {row.failures}
+            </span>
+          ),
+        },
+        {
+          key: "avgTtft",
+          label: "Avg TTFT",
+          render: (row) => (
+            <span className="font-mono text-xs">
+              {row.avgTtftMs > 0 ? `${row.avgTtftMs} ms` : "--"}
+            </span>
+          ),
+        },
+        {
+          key: "p95Ttft",
+          label: "p95 TTFT",
+          render: (row) => (
+            <span
+              className={`font-mono text-xs ${
+                row.p95TtftMs > 2000 ? "text-amber-500 font-semibold" : ""
+              }`}
+            >
+              {row.p95TtftMs > 0 ? `${row.p95TtftMs} ms` : "--"}
+            </span>
+          ),
+        },
+        {
+          key: "queueDelay",
+          label: "Queue Delay",
+          render: (row) => (
+            <span className="font-mono text-xs text-text-muted">
+              {row.avgQueueWaitMs > 0 ? `${row.avgQueueWaitMs} ms` : "< 1 ms"}
             </span>
           ),
         },
@@ -629,6 +769,7 @@ export default function DispatcherPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [statusProvider, setStatusProvider] = useState("codex");
   const [configuredProviders, setConfiguredProviders] = useState([]);
+  const [timeRange, setTimeRange] = useState("24h");
 
   // Fetch all registered providers with active connections to build dynamic switcher tabs
   useEffect(() => {
@@ -685,6 +826,9 @@ export default function DispatcherPage() {
         terminal: prev.terminal,
         models: prev.models,
         paths: prev.paths,
+        timeline: prev.timeline,
+        aggregates: prev.aggregates,
+        latency: prev.latency,
       };
     }
     if (view === "history") {
@@ -694,6 +838,9 @@ export default function DispatcherPage() {
         terminal: next.terminal || prev.terminal,
         models: next.models || prev.models,
         paths: next.paths || prev.paths,
+        timeline: next.timeline || prev.timeline,
+        aggregates: next.aggregates || prev.aggregates,
+        latency: next.latency || prev.latency,
         generatedAt: next.generatedAt || prev.generatedAt,
       };
     }
@@ -701,7 +848,7 @@ export default function DispatcherPage() {
   }, []);
 
   const fetchStatus = useCallback(
-    async ({ silent = false, view = "full" } = {}) => {
+    async ({ silent = false, view = "full", rangeOverride = null } = {}) => {
       if (silent) {
         setRefreshing(true);
       } else {
@@ -709,7 +856,8 @@ export default function DispatcherPage() {
       }
 
       try {
-        const url = `/api/dispatcher/text/status?provider=${encodeURIComponent(statusProvider)}&view=${encodeURIComponent(view)}&terminalLimit=100`;
+        const activeRange = rangeOverride || timeRange;
+        const url = `/api/dispatcher/text/status?provider=${encodeURIComponent(statusProvider)}&view=${encodeURIComponent(view)}&terminalLimit=100&range=${encodeURIComponent(activeRange)}`;
         const response = await fetch(url, {
           cache: "no-store",
         });
@@ -725,7 +873,7 @@ export default function DispatcherPage() {
         setRefreshing(false);
       }
     },
-    [statusProvider, mergeSnapshot],
+    [statusProvider, timeRange, mergeSnapshot],
   );
 
   useEffect(() => {
@@ -804,6 +952,17 @@ export default function DispatcherPage() {
 
       {/* Overview Stat Cards */}
       <DispatcherOverview snapshot={snapshot} providerLabel={currentProviderLabel} />
+
+      {/* Historical Throughput & Latency Timeline */}
+      <DispatcherTimelineChart
+        timeline={snapshot.timeline || []}
+        range={timeRange}
+        onRangeChange={(r) => {
+          setTimeRange(r);
+          fetchStatus({ silent: true, view: "history", rangeOverride: r });
+        }}
+        refreshing={refreshing}
+      />
 
       {/* Outcome Diagnostics & Watchdog Alarms */}
       <OutcomesBreakdownCard terminal={snapshot.terminal} />

@@ -32,6 +32,8 @@ export async function GET(request) {
       1,
       Math.min(500, Number(searchParams.get("terminalLimit")) || 100),
     );
+    const rangeParam = searchParams.get("range") || "24h";
+    const range = ["1h", "24h", "7d"].includes(rangeParam) ? rangeParam : "24h";
 
     const { dispatcher, watchdog, getConnections } =
       getProviderDispatcher(provider);
@@ -48,6 +50,7 @@ export async function GET(request) {
       connectionViews,
       view,
       terminalLimit,
+      range,
     });
     const selectedCollection =
       provider === "codex"

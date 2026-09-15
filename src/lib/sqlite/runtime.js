@@ -482,6 +482,52 @@ function runMigrations(db) {
       PRIMARY KEY (conversation_key, api_key_scope)
     );
 
+    CREATE TABLE IF NOT EXISTS dispatcher_metrics_1m (
+      provider TEXT NOT NULL,
+      bucket_start TEXT NOT NULL,
+      model_id TEXT NOT NULL DEFAULT 'all',
+      connection_id TEXT NOT NULL DEFAULT 'all',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      completed_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      timed_out_count INTEGER NOT NULL DEFAULT 0,
+      queue_wait_ms_sum INTEGER NOT NULL DEFAULT 0,
+      ttft_ms_sum INTEGER NOT NULL DEFAULT 0,
+      total_duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      queue_wait_ms_max INTEGER NOT NULL DEFAULT 0,
+      ttft_ms_max INTEGER NOT NULL DEFAULT 0,
+      total_duration_ms_max INTEGER NOT NULL DEFAULT 0,
+      ttft_hist_json TEXT NOT NULL DEFAULT '[]',
+      queue_hist_json TEXT NOT NULL DEFAULT '[]',
+      PRIMARY KEY (provider, bucket_start, model_id, connection_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_disp_metrics_1m_query
+      ON dispatcher_metrics_1m(provider, bucket_start ASC);
+
+    CREATE TABLE IF NOT EXISTS dispatcher_metrics_1h (
+      provider TEXT NOT NULL,
+      bucket_start TEXT NOT NULL,
+      model_id TEXT NOT NULL DEFAULT 'all',
+      connection_id TEXT NOT NULL DEFAULT 'all',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      completed_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      timed_out_count INTEGER NOT NULL DEFAULT 0,
+      queue_wait_ms_sum INTEGER NOT NULL DEFAULT 0,
+      ttft_ms_sum INTEGER NOT NULL DEFAULT 0,
+      total_duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      queue_wait_ms_max INTEGER NOT NULL DEFAULT 0,
+      ttft_ms_max INTEGER NOT NULL DEFAULT 0,
+      total_duration_ms_max INTEGER NOT NULL DEFAULT 0,
+      ttft_hist_json TEXT NOT NULL DEFAULT '[]',
+      queue_hist_json TEXT NOT NULL DEFAULT '[]',
+      PRIMARY KEY (provider, bucket_start, model_id, connection_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_disp_metrics_1h_query
+      ON dispatcher_metrics_1h(provider, bucket_start ASC);
+
     INSERT OR IGNORE INTO schema_migrations(version, applied_at)
     VALUES ('0001_initial', datetime('now'));
   `);

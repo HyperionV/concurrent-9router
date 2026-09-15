@@ -25,6 +25,7 @@ import {
 } from "@/lib/dispatcher/types.js";
 import { isModelLockActive } from "open-sse/services/accountFallback.js";
 import { isConnectionRateLimitDisabled } from "@/lib/connectionHealth.js";
+import { dispatcherMetricsAggregator } from "@/lib/dispatcher/metricsAggregator.js";
 
 function buildLeaseKey(connectionId) {
   return `${connectionId}:${randomUUID()}`;
@@ -670,6 +671,7 @@ export function createDispatcherCore({
     );
     if (!attempt) return null;
 
+    dispatcherMetricsAggregator.recordAttemptCompletion(attempt);
     releaseConnectionOccupancy(attempt.connectionId);
     finalizeRequestForAttempt(attempt, DISPATCH_ATTEMPT_STATE.COMPLETED);
     insertDispatchAttemptEvent({
@@ -708,6 +710,7 @@ export function createDispatcherCore({
     );
     if (!attempt) return null;
 
+    dispatcherMetricsAggregator.recordAttemptCompletion(attempt);
     releaseConnectionOccupancy(attempt.connectionId);
     finalizeRequestForAttempt(attempt, nextState);
     insertDispatchAttemptEvent({

@@ -1,5 +1,10 @@
 import { cleanupProviderConnections, getSettings } from "@/lib/localDb";
 import { pruneDispatchLedger } from "@/lib/sqlite/dispatcherStore.js";
+import { dispatcherMetricsAggregator } from "@/lib/dispatcher/metricsAggregator.js";
+import {
+  rollupHourlyDispatcherMetrics,
+  pruneDispatcherMetricsBuckets,
+} from "@/lib/sqlite/dispatcherMetricsStore.js";
 import {
   enableTunnel,
   isTunnelManuallyDisabled,
@@ -22,6 +27,7 @@ const g = (global.__appSingleton ??= {
   watchdogInterval: null,
   networkMonitorInterval: null,
   dispatcherRetentionInterval: null,
+  dispatcherMetricsFlushInterval: null,
   lastNetworkFingerprint: null,
   lastWatchdogTick: Date.now(),
   lastTunnelRestartAt: 0,
@@ -34,6 +40,9 @@ const NETWORK_RESTART_COOLDOWN_MS = 30000;
 const DISPATCHER_RETENTION_INTERVAL_MS = 15 * 60 * 1000;
 const DISPATCHER_ATTEMPT_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DISPATCHER_AFFINITY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const DISPATCHER_METRICS_FLUSH_INTERVAL_MS = 30 * 1000;
+const DISPATCHER_METRICS_1M_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const DISPATCHER_METRICS_1H_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
 /**
  * Initialize app on startup
@@ -225,11 +234,46 @@ function startNetworkMonitor() {
 }
 
 function startDispatcherRetention() {
+  // 1. Light background flush of in-memory metrics every 30 seconds
+  if (!g.dispatcherMetricsFlushInterval) {
+    g.dispatcherMetricsFlushInterval = setInterval(() => {
+      try {
+        dispatcherMetricsAggregator.flushToSqlite();
+      } catch (err) {
+        // silent fail in background
+      }
+    }, DISPATCHER_METRICS_FLUSH_INTERVAL_MS);
+
+    if (g.dispatcherMetricsFlushInterval.unref) {
+      g.dispatcherMetricsFlushInterval.unref();
+    }
+  }
+
+  // 2. Full maintenance loop every 15 minutes (rollup, retention)
   if (g.dispatcherRetentionInterval) return;
 
   const runPrune = () => {
     try {
       const now = Date.now();
+
+      // Flush any pending in-memory buffer before downsampling
+      dispatcherMetricsAggregator.flushToSqlite();
+
+      // Downsample completed hours into 1-hour rollups
+      const downsampleCutoff = new Date(now - 60 * 60 * 1000).toISOString();
+      rollupHourlyDispatcherMetrics(downsampleCutoff);
+
+      // Prune time-series bucket tables (7 days for 1m, 90 days for 1h)
+      pruneDispatcherMetricsBuckets({
+        retainMinutesSince: new Date(
+          now - DISPATCHER_METRICS_1M_RETENTION_MS,
+        ).toISOString(),
+        retainHoursSince: new Date(
+          now - DISPATCHER_METRICS_1H_RETENTION_MS,
+        ).toISOString(),
+      });
+
+      // Prune raw attempt rows (retaining 24h of detailed attempts for debugging)
       const retentionResult = pruneDispatchLedger({
         retainAttemptsSince: new Date(
           now - DISPATCHER_ATTEMPT_RETENTION_MS,

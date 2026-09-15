@@ -522,3 +522,11 @@ export function pruneDispatchLedger({
 
   return result;
 }
+
+export {
+  upsertDispatcherMinuteBuckets,
+  rollupHourlyDispatcherMetrics,
+  pruneDispatcherMetricsBuckets,
+  queryDispatcherTimeline,
+  queryDispatcherAggregates,
+} from "@/lib/sqlite/dispatcherMetricsStore.js";

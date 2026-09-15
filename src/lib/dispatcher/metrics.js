@@ -4,6 +4,15 @@ import {
   listQueuedDispatchRequests,
 } from "@/lib/sqlite/dispatcherStore.js";
 import {
+  queryDispatcherTimeline,
+  queryDispatcherAggregates,
+} from "@/lib/sqlite/dispatcherMetricsStore.js";
+import {
+  createEmptyHistogram,
+  recordLatency,
+  calculatePercentiles,
+} from "@/lib/dispatcher/histogram.js";
+import {
   deriveDispatcherMode,
   getDispatcherSlotsPerConnection,
   normalizeDispatcherSlotsByProvider,
@@ -65,18 +74,66 @@ function summarizeActiveAttempts(activeAttempts) {
   };
 }
 
+function getAttemptLatencies(attempt) {
+  let queueWaitMs = null;
+  let ttftMs = null;
+  let totalDurationMs = null;
+
+  if (attempt.leasedAt && attempt.queueEnteredAt) {
+    const q = Math.max(0, new Date(attempt.leasedAt).getTime() - new Date(attempt.queueEnteredAt).getTime());
+    if (Number.isFinite(q)) queueWaitMs = q;
+  }
+  if (attempt.firstProgressAt && attempt.connectStartedAt) {
+    const t = Math.max(0, new Date(attempt.firstProgressAt).getTime() - new Date(attempt.connectStartedAt).getTime());
+    if (Number.isFinite(t)) ttftMs = t;
+  }
+  if (attempt.finishedAt && attempt.queueEnteredAt) {
+    const d = Math.max(0, new Date(attempt.finishedAt).getTime() - new Date(attempt.queueEnteredAt).getTime());
+    if (Number.isFinite(d)) totalDurationMs = d;
+  }
+
+  return { queueWaitMs, ttftMs, totalDurationMs };
+}
+
 function summarizeTerminalAttempts(terminalAttempts) {
   const byState = {};
   const byTimeoutKind = {};
   const byTerminalReason = {};
   const byPathMode = {};
+  const ttftHist = createEmptyHistogram();
+  const queueHist = createEmptyHistogram();
+  let ttftSum = 0;
+  let ttftCount = 0;
+  let queueWaitSum = 0;
+  let queueWaitCount = 0;
+  let durationSum = 0;
+  let durationCount = 0;
 
   for (const attempt of terminalAttempts) {
     increment(byState, attempt.state);
     increment(byTimeoutKind, attempt.timeoutKind);
     increment(byTerminalReason, attempt.terminalReason);
     increment(byPathMode, attempt.pathMode);
+
+    const lat = getAttemptLatencies(attempt);
+    if (lat.queueWaitMs !== null) {
+      queueWaitSum += lat.queueWaitMs;
+      queueWaitCount += 1;
+      recordLatency(queueHist, lat.queueWaitMs);
+    }
+    if (lat.ttftMs !== null) {
+      ttftSum += lat.ttftMs;
+      ttftCount += 1;
+      recordLatency(ttftHist, lat.ttftMs);
+    }
+    if (lat.totalDurationMs !== null) {
+      durationSum += lat.totalDurationMs;
+      durationCount += 1;
+    }
   }
+
+  const ttftPercentiles = calculatePercentiles(ttftHist, [50, 90, 95, 99]);
+  const queuePercentiles = calculatePercentiles(queueHist, [50, 95]);
 
   return {
     count: terminalAttempts.length,
@@ -84,6 +141,18 @@ function summarizeTerminalAttempts(terminalAttempts) {
     byTimeoutKind,
     byTerminalReason,
     byPathMode,
+    latency: {
+      avgTtftMs: ttftCount > 0 ? Math.round(ttftSum / ttftCount) : 0,
+      p50TtftMs: ttftPercentiles.p50,
+      p90TtftMs: ttftPercentiles.p90,
+      p95TtftMs: ttftPercentiles.p95,
+      p99TtftMs: ttftPercentiles.p99,
+      maxTtftMs: ttftPercentiles.max,
+      avgQueueWaitMs: queueWaitCount > 0 ? Math.round(queueWaitSum / queueWaitCount) : 0,
+      p50QueueWaitMs: queuePercentiles.p50,
+      p95QueueWaitMs: queuePercentiles.p95,
+      avgDurationMs: durationCount > 0 ? Math.round(durationSum / durationCount) : 0,
+    },
   };
 }
 
@@ -125,6 +194,11 @@ function summarizeConnectionHealth(
     (attempt) => attempt.connectionId === connectionId,
   );
   const terminalReasonCounts = {};
+  const ttftHist = createEmptyHistogram();
+  let ttftSum = 0;
+  let ttftCount = 0;
+  let queueWaitSum = 0;
+  let queueWaitCount = 0;
   let lastAttemptAt = null;
 
   for (const attempt of attempts) {
@@ -150,12 +224,26 @@ function summarizeConnectionHealth(
     ) {
       lastAttemptAt = candidate;
     }
+
+    const lat = getAttemptLatencies(attempt);
+    if (lat.queueWaitMs !== null) {
+      queueWaitSum += lat.queueWaitMs;
+      queueWaitCount += 1;
+    }
+    if (lat.ttftMs !== null) {
+      ttftSum += lat.ttftMs;
+      ttftCount += 1;
+      recordLatency(ttftHist, lat.ttftMs);
+    }
   }
 
   return {
     recentAttempts: attempts.length,
     recentTerminalReasonCounts: terminalReasonCounts,
     lastAttemptAt,
+    avgTtftMs: ttftCount > 0 ? Math.round(ttftSum / ttftCount) : 0,
+    p95TtftMs: calculatePercentiles(ttftHist, [95]).p95,
+    avgQueueWaitMs: queueWaitCount > 0 ? Math.round(queueWaitSum / queueWaitCount) : 0,
   };
 }
 
@@ -196,6 +284,9 @@ function summarizeConnections({
         recentAttempts: health.recentAttempts,
         recentTerminalReasonCounts: health.recentTerminalReasonCounts,
         lastAttemptAt: health.lastAttemptAt,
+        avgTtftMs: health.avgTtftMs,
+        p95TtftMs: health.p95TtftMs,
+        avgQueueWaitMs: health.avgQueueWaitMs,
       };
     })
     .sort((a, b) => {
@@ -221,6 +312,11 @@ function summarizeModels(queuedRequests, activeAttempts, terminalAttempts) {
         cancelled: 0,
         reconciled: 0,
         total: 0,
+        ttftSum: 0,
+        ttftCount: 0,
+        queueSum: 0,
+        queueCount: 0,
+        ttftHist: createEmptyHistogram(),
       });
     }
     return byModel.get(key);
@@ -246,13 +342,39 @@ function summarizeModels(queuedRequests, activeAttempts, terminalAttempts) {
     if (attempt.state === "cancelled") entry.cancelled += 1;
     if (attempt.state === "reconciled") entry.reconciled += 1;
     entry.total += 1;
+
+    const lat = getAttemptLatencies(attempt);
+    if (lat.queueWaitMs !== null) {
+      entry.queueSum += lat.queueWaitMs;
+      entry.queueCount += 1;
+    }
+    if (lat.ttftMs !== null) {
+      entry.ttftSum += lat.ttftMs;
+      entry.ttftCount += 1;
+      recordLatency(entry.ttftHist, lat.ttftMs);
+    }
   }
 
-  return [...byModel.values()].sort((a, b) => {
-    const totalDiff = b.total - a.total;
-    if (totalDiff !== 0) return totalDiff;
-    return a.modelId.localeCompare(b.modelId);
-  });
+  return [...byModel.values()]
+    .map((m) => ({
+      modelId: m.modelId,
+      queued: m.queued,
+      active: m.active,
+      completed: m.completed,
+      failed: m.failed,
+      timedOut: m.timedOut,
+      cancelled: m.cancelled,
+      reconciled: m.reconciled,
+      total: m.total,
+      avgTtftMs: m.ttftCount > 0 ? Math.round(m.ttftSum / m.ttftCount) : 0,
+      p95TtftMs: calculatePercentiles(m.ttftHist, [95]).p95,
+      avgQueueWaitMs: m.queueCount > 0 ? Math.round(m.queueSum / m.queueCount) : 0,
+    }))
+    .sort((a, b) => {
+      const totalDiff = b.total - a.total;
+      if (totalDiff !== 0) return totalDiff;
+      return a.modelId.localeCompare(b.modelId);
+    });
 }
 
 function summarizePaths(activeAttempts, terminalAttempts) {
@@ -309,6 +431,7 @@ export function getDispatcherStatusSnapshot({
   connectionViews = [],
   view = "full",
   terminalLimit = 100,
+  range = "24h",
 } = {}) {
   const includeLive = view === "live" || view === "full";
   const includeHistory = view === "history" || view === "full";
@@ -341,6 +464,7 @@ export function getDispatcherStatusSnapshot({
     provider,
     mode,
     view,
+    range,
     generatedAt: new Date().toISOString(),
     settings: {
       dispatcherEnabled: settings.dispatcherEnabled === true,
@@ -392,6 +516,16 @@ export function getDispatcherStatusSnapshot({
       1,
       Math.min(500, Number(terminalLimit) || 100),
     );
+    base.aggregates = queryDispatcherAggregates(provider);
+    base.timeline = queryDispatcherTimeline({ provider, range });
+    base.latency = base.terminal.latency || {
+      avgTtftMs: base.aggregates.avgTtftMs,
+      p50TtftMs: base.aggregates.p50TtftMs,
+      p95TtftMs: base.aggregates.p95TtftMs,
+      avgQueueWaitMs: base.aggregates.avgQueueWaitMs,
+      p95QueueWaitMs: base.aggregates.p95QueueWaitMs,
+      avgDurationMs: base.aggregates.avgDurationMs,
+    };
   }
 
   if (includeLive && includeHistory) {
