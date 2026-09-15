@@ -29,7 +29,7 @@ export const THINKING_CONFIG = {
     defaultBudgetTokens: 10000,
   },
   effort: {
-    options: ["auto", "none", "low", "medium", "high"],
+    options: ["auto", "none", "low", "medium", "high", "xhigh"],
     defaultMode: "auto",
   },
 };
@@ -76,10 +76,7 @@ export const OAUTH_PROVIDERS = {
     color: "#1DA1F2",
     textIcon: "GC",
     website: "https://x.ai",
-    thinkingConfig: {
-      options: ["low", "medium", "high"],
-      defaultMode: "high",
-    },
+    thinkingConfig: THINKING_CONFIG.effort,
     notice: {
       text: "Sign in with your xAI / Grok account via device code. Uses Grok Build subscription credits (cli-chat-proxy.grok.com).",
       signupUrl: "https://grok.com/supergrok",

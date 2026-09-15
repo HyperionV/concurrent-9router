@@ -1165,20 +1165,26 @@ export default function ProviderDetailPage() {
             <h2 className="text-lg font-semibold">Connections</h2>
             <div className="flex items-center gap-4">
               {/* Thinking config */}
-              {/* {thinkingConfig && (
+              {thinkingConfig && (
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-text-muted font-medium">Thinking</span>
+                  <span className="text-xs text-text-muted font-medium">
+                    Thinking:
+                  </span>
                   <select
                     value={thinkingMode}
                     onChange={(e) => handleThinkingModeChange(e.target.value)}
-                    className="text-xs px-2 py-1 border border-border rounded-md bg-background focus:outline-none focus:border-primary"
+                    className="text-xs px-2 py-1 border border-border rounded-md bg-background focus:outline-none focus:border-primary capitalize"
                   >
                     {thinkingConfig.options.map((opt) => (
-                      <option key={opt} value={opt}>{opt.charAt(0).toUpperCase() + opt.slice(1)}</option>
+                      <option key={opt} value={opt}>
+                        {opt === "auto"
+                          ? "Auto (Client Default)"
+                          : opt.charAt(0).toUpperCase() + opt.slice(1)}
+                      </option>
                     ))}
                   </select>
                 </div>
-              )} */}
+              )}
               {/* Round Robin toggle */}
               <div className="flex items-center gap-2">
                 <span className="text-xs text-text-muted font-medium">

@@ -40,6 +40,25 @@ function pickAssistantMessageForChatCompletion(output) {
   return { msgItem: last, textContent: textFromResponsesMessageItem(last) };
 }
 
+export function extractReasoningTextFromResponsesOutput(output) {
+  if (!Array.isArray(output)) return null;
+  const reasoningItems = output.filter((item) => item?.type === "reasoning");
+  if (reasoningItems.length === 0) return null;
+
+  const parts = [];
+  for (const item of reasoningItems) {
+    if (Array.isArray(item.summary)) {
+      for (const s of item.summary) {
+        if (typeof s?.text === "string" && s.text) parts.push(s.text);
+      }
+    }
+    if (typeof item.text === "string" && item.text) parts.push(item.text);
+    if (typeof item.content === "string" && item.content) parts.push(item.content);
+  }
+
+  return parts.length > 0 ? parts.join("\n") : null;
+}
+
 /**
  * Parse OpenAI-style SSE text into a single chat completion JSON.
  * Used when provider forces streaming but client wants non-streaming.
@@ -201,6 +220,9 @@ export async function handleForcedSSEToJson({
       const { msgItem, textContent } = pickAssistantMessageForChatCompletion(
         jsonResponse.output,
       );
+      const reasoningContent = extractReasoningTextFromResponsesOutput(
+        jsonResponse.output,
+      );
       const totalLatency = Date.now() - requestStartTime;
 
       saveRequestDetail(
@@ -214,7 +236,7 @@ export async function handleForcedSSEToJson({
             },
             response: {
               content: textContent,
-              thinking: null,
+              thinking: reasoningContent,
               finish_reason: jsonResponse.status || "unknown",
             },
             status: "success",
@@ -269,7 +291,12 @@ export async function handleForcedSSEToJson({
               {
                 content: {
                   role: "model",
-                  parts: [{ text: textContent || "" }],
+                  parts: [
+                    ...(reasoningContent
+                      ? [{ text: reasoningContent, thought: true }]
+                      : []),
+                    { text: textContent || "" },
+                  ],
                 },
                 finishReason: "STOP",
                 index: 0,
@@ -289,6 +316,9 @@ export async function handleForcedSSEToJson({
           role: "assistant",
           content: textContent || (hasToolCalls ? null : ""),
         };
+        if (reasoningContent) {
+          message.reasoning_content = reasoningContent;
+        }
         if (hasToolCalls) message.tool_calls = toolCalls;
         const finishReason = hasToolCalls
           ? "tool_calls"

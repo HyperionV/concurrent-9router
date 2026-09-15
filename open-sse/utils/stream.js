@@ -314,6 +314,30 @@ export function createSSEStream(options = {}) {
           }
         }
 
+        // Responses API format (Codex & Grok-CLI) - reasoning & content deltas
+        if (targetFormat === FORMATS.OPENAI_RESPONSES && parsed) {
+          const eventType = parsed.type || currentOpenAIResponsesEvent;
+          const deltaText =
+            typeof parsed.delta === "string"
+              ? parsed.delta
+              : typeof parsed.text === "string"
+                ? parsed.text
+                : "";
+          if (deltaText) {
+            totalContentLength += deltaText.length;
+            if (
+              eventType === "response.reasoning_text.delta" ||
+              eventType === "response.reasoning_summary_text.delta" ||
+              eventType === "response.reasoning.delta"
+            ) {
+              accumulatedThinking += deltaText;
+            } else if (eventType === "response.output_text.delta") {
+              accumulatedContent += deltaText;
+            }
+            await emitFirstProgressOnce();
+          }
+        }
+
         // Extract usage
         const extracted = extractUsage(parsed);
         if (extracted) state.usage = extracted; // Keep original usage for logging

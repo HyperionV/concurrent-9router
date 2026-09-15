@@ -63,7 +63,38 @@ const RESPONSES_API_ALLOWLIST = new Set([
   "prompt_cache_key",
 ]);
 
-const EFFORT_LEVELS = ["low", "medium", "high"];
+const EFFORT_LEVELS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+];
+
+export const GROK_CLI_NATIVE_ITEM_ID =
+  /^(?:rs|msg|fc)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isNativeGrokCliItemId(id) {
+  return typeof id === "string" && GROK_CLI_NATIVE_ITEM_ID.test(id);
+}
+
+export function supportsGrokCliReasoningEffort(model) {
+  const m = String(model || "").toLowerCase();
+  return /^grok-(?:4\.[56]|3)(?:$|-)/.test(m);
+}
+
+export function normalizeGrokCliEffort(value) {
+  const effort = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (effort === "max") return "xhigh";
+  if (effort === "ultra") return "high";
+  if (effort === "minimal") return "low";
+  if (effort === "none") return "none";
+  if (["low", "medium", "high", "xhigh"].includes(effort)) return effort;
+  return null;
+}
 
 const GROK_CLI_TURN_STORE_MAX = 5000;
 
@@ -115,7 +146,21 @@ function stripStoredItemReferences(body) {
     if (typeof item === "string" && SERVER_ID_PATTERN.test(item)) return false;
     if (item && typeof item === "object" && !Array.isArray(item)) {
       if (item.type === "item_reference") return false;
-      if (typeof item.id === "string" && SERVER_ID_PATTERN.test(item.id)) delete item.id;
+      // Preserve native Grok reasoning items with encrypted content; discard foreign ciphertext
+      if (item.type === "reasoning") {
+        if (
+          !isNativeGrokCliItemId(item.id) ||
+          typeof item.encrypted_content !== "string"
+        ) {
+          return false;
+        }
+        return true;
+      }
+      if (typeof item.id === "string" && SERVER_ID_PATTERN.test(item.id)) {
+        if (!isNativeGrokCliItemId(item.id)) {
+          delete item.id;
+        }
+      }
     }
     return true;
   });
@@ -352,20 +397,38 @@ export class GrokCliExecutor extends BaseExecutor {
     body.model = resolvedModel;
     this._currentModel = resolvedModel;
 
-    // Reasoning effort priority: explicit > reasoning_effort > model suffix > default low (faster responses)
-    if (!body.reasoning || typeof body.reasoning !== "object") {
-      const effort = body.reasoning_effort || modelEffort || "low";
-      body.reasoning = { effort, summary: "concise" };
-    } else {
-      if (!body.reasoning.effort) {
-        body.reasoning.effort = body.reasoning_effort || modelEffort || "low";
+    // Reasoning effort priority: explicit reasoning.effort > reasoning_effort > model suffix
+    const isEffortSupported = supportsGrokCliReasoningEffort(resolvedModel);
+    const rawEffort =
+      body.reasoning?.effort ||
+      body.reasoning_effort ||
+      modelEffort ||
+      null;
+    const normalizedEffort = normalizeGrokCliEffort(rawEffort);
+
+    if (isEffortSupported) {
+      // Allow user to select any level (none, low, medium, high, xhigh)
+      // If none specified anywhere, fallback to "low" for speed
+      const effectiveEffort = normalizedEffort || "low";
+      if (!body.reasoning || typeof body.reasoning !== "object") {
+        body.reasoning = { effort: effectiveEffort, summary: "concise" };
+      } else {
+        body.reasoning.effort = effectiveEffort;
+        if (!body.reasoning.summary) body.reasoning.summary = "concise";
       }
-      if (!body.reasoning.summary) body.reasoning.summary = "concise";
+    } else {
+      // Model does not accept reasoning effort parameter (e.g. grok-build)
+      if (!body.reasoning || typeof body.reasoning !== "object") {
+        body.reasoning = { summary: "concise" };
+      } else {
+        delete body.reasoning.effort;
+        if (!body.reasoning.summary) body.reasoning.summary = "concise";
+      }
     }
     delete body.reasoning_effort;
 
     // Encrypted reasoning for multi-turn continuity (CLI always requests this)
-    if (body.reasoning?.effort && body.reasoning.effort !== "none") {
+    if (body.reasoning?.effort ? body.reasoning.effort !== "none" : isEffortSupported) {
       const include = Array.isArray(body.include) ? body.include : [];
       if (!include.includes("reasoning.encrypted_content")) {
         include.push("reasoning.encrypted_content");

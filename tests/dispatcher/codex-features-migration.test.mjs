@@ -245,4 +245,107 @@ test("Codex and Grok-CLI have 10s connect timeout guardrails configured", async 
   assert.equal(PROVIDERS["grok-cli"].timeoutMs, 10000, "Grok-CLI connect timeout should be 10000ms");
 });
 
+test("extractReasoningTextFromResponsesOutput extracts reasoning text for non-streaming responses", async () => {
+  const { extractReasoningTextFromResponsesOutput } = await import("../../open-sse/handlers/chatCore/sseToJsonHandler.js");
+
+  const outputWithReasoning = [
+    {
+      type: "reasoning",
+      id: "rs_123",
+      summary: [
+        { type: "summary_text", text: "First thought step." },
+        { type: "summary_text", text: "Second thought step." },
+      ],
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "The answer is 42." }],
+    },
+  ];
+
+  const extracted = extractReasoningTextFromResponsesOutput(outputWithReasoning);
+  assert.equal(extracted, "First thought step.\nSecond thought step.", "Should extract all reasoning summary steps");
+
+  const outputWithoutReasoning = [
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "No reasoning here." }],
+    },
+  ];
+  assert.equal(extractReasoningTextFromResponsesOutput(outputWithoutReasoning), null, "Should return null if no reasoning item");
+});
+
+test("GrokCliExecutor respects user-selected reasoning levels without hardcoding", async () => {
+  const { GrokCliExecutor } = await import("../../open-sse/executors/grok-cli.js");
+  const executor = new GrokCliExecutor();
+
+  // 1. User explicit reasoning_effort: "high"
+  const reqHigh = executor.transformRequest("grok-4.5", {
+    model: "grok-4.5",
+    input: [{ role: "user", content: "Solve this complex puzzle" }],
+    reasoning_effort: "high",
+  }, true, { connectionId: "test-conn" });
+  assert.equal(reqHigh.reasoning.effort, "high", "User explicit reasoning_effort high should be honored");
+
+  // 2. User virtual model suffix: grok-4.5-xhigh (or -max)
+  const reqMax = executor.transformRequest("grok-4.5-max", {
+    model: "grok-4.5-max",
+    input: [{ role: "user", content: "Hard problem" }],
+  }, true, { connectionId: "test-conn" });
+  assert.equal(reqMax.model, "grok-4.5", "Suffix should be stripped from model id");
+  assert.equal(reqMax.reasoning.effort, "xhigh", "Max should map to xhigh");
+
+  // 3. User explicit reasoning: { effort: "none" }
+  const reqNone = executor.transformRequest("grok-4.5", {
+    model: "grok-4.5",
+    input: [{ role: "user", content: "Fast query" }],
+    reasoning: { effort: "none" },
+  }, true, { connectionId: "test-conn" });
+  assert.equal(reqNone.reasoning.effort, "none", "None effort should be honored");
+
+  // 4. Model that rejects effort (grok-build): effort omitted to avoid HTTP 400
+  const reqBuild = executor.transformRequest("grok-build", {
+    model: "grok-build",
+    input: [{ role: "user", content: "Build command" }],
+    reasoning_effort: "high",
+  }, true, { connectionId: "test-conn" });
+  assert.equal(reqBuild.reasoning.effort, undefined, "grok-build must not have reasoning effort parameter");
+  assert.equal(reqBuild.reasoning.summary, "concise");
+});
+
+test("GrokCliExecutor preserves native Grok reasoning IDs and filters foreign ciphertext in multi-turn history", async () => {
+  const { GrokCliExecutor } = await import("../../open-sse/executors/grok-cli.js");
+  const executor = new GrokCliExecutor();
+
+  const nativeId = "rs_3e3f6187-892a-96db-893b-904eff019e19";
+  const foreignId = "rs_openai_07fe505b3114f180016a5698411c448191bdcdcb";
+
+  const req = executor.transformRequest("grok-4.5", {
+    model: "grok-4.5",
+    input: [
+      { role: "user", content: "Turn 1" },
+      {
+        type: "reasoning",
+        id: nativeId,
+        encrypted_content: "valid-grok-encrypted-bytes",
+      },
+      { role: "assistant", content: "Answer 1" },
+      {
+        type: "reasoning",
+        id: foreignId,
+        encrypted_content: "foreign-openai-bytes",
+      },
+      { role: "user", content: "Turn 2" },
+    ],
+  }, true, { connectionId: "test-conn" });
+
+  const reasoningItems = req.input.filter((item) => item.type === "reasoning");
+  assert.equal(reasoningItems.length, 1, "Only native Grok reasoning item should be preserved");
+  assert.equal(reasoningItems[0].id, nativeId, "Native reasoning ID should remain intact");
+  assert.equal(reasoningItems[0].encrypted_content, "valid-grok-encrypted-bytes");
+});
+
+
 
