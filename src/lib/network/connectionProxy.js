@@ -33,10 +33,14 @@ export async function resolveConnectionProxyConfig(providerSpecificData = {}) {
     const noProxy = normalizeString(proxyPool?.noProxy);
 
     if (proxyPool && proxyPool.isActive === true && proxyUrl) {
-      // Vercel relay: rewrite base URL instead of using HTTP_PROXY
-      if (proxyPool.type === "vercel") {
+      // Edge relay proxies (Vercel, Cloudflare, Deno): forward via relay headers instead of HTTP_PROXY
+      if (
+        proxyPool.type === "vercel" ||
+        proxyPool.type === "cloudflare" ||
+        proxyPool.type === "deno"
+      ) {
         return {
-          source: "vercel",
+          source: proxyPool.type,
           proxyPoolId,
           proxyPool,
           connectionProxyEnabled: false,

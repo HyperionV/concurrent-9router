@@ -24,18 +24,29 @@ export default async function handler(req) {
   headers.delete("x-relay-target");
   headers.delete("x-relay-path");
   headers.delete("host");
+  headers.delete("connection");
+  headers.delete("keep-alive");
+  headers.delete("transfer-encoding");
 
-  const response = await fetch(targetUrl, {
-    method: req.method,
-    headers,
-    body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
-    duplex: "half",
-  });
+  try {
+    const hasBody = req.method !== "GET" && req.method !== "HEAD";
+    const response = await fetch(targetUrl, {
+      method: req.method,
+      headers,
+      body: hasBody ? req.body : undefined,
+      duplex: hasBody ? "half" : undefined,
+    });
 
-  return new Response(response.body, {
-    status: response.status,
-    headers: response.headers,
-  });
+    return new Response(response.body, {
+      status: response.status,
+      headers: response.headers,
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ error: error.message || "Relay upstream fetch failed" }), {
+      status: 502,
+      headers: { "content-type": "application/json" },
+    });
+  }
 }
 `;
 

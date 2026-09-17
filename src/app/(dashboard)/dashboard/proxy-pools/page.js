@@ -385,6 +385,12 @@ export default function ProxyPoolsPage() {
                     {pool.type === "vercel" && (
                       <Badge variant="default" size="sm">vercel relay</Badge>
                     )}
+                    {pool.type === "cloudflare" && (
+                      <Badge variant="default" size="sm">cloudflare relay</Badge>
+                    )}
+                    {pool.type === "deno" && (
+                      <Badge variant="default" size="sm">deno relay</Badge>
+                    )}
                     <Badge variant="default" size="sm">
                       {pool.boundConnectionCount || 0} bound
                     </Badge>

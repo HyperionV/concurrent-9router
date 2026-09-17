@@ -9,12 +9,17 @@ import {
   enableTunnel,
   isTunnelManuallyDisabled,
   isTunnelReconnecting,
-} from "@/lib/tunnel/tunnelManager";
-import {
+  getTunnelService,
+  setTunnelUnexpectedExitCallback,
   killCloudflared,
   isCloudflaredRunning,
   ensureCloudflared,
-} from "@/lib/tunnel/cloudflared";
+  checkInternet,
+  RESTART_COOLDOWN_MS,
+  WATCHDOG_INTERVAL_MS,
+  NETWORK_CHECK_INTERVAL_MS,
+  VIRTUAL_IFACE_REGEX,
+} from "@/lib/tunnel";
 
 import os from "os";
 
@@ -34,9 +39,6 @@ const g = (global.__appSingleton ??= {
   tunnelRestartInProgress: false,
 });
 
-const WATCHDOG_INTERVAL_MS = 60000;
-const NETWORK_CHECK_INTERVAL_MS = 5000;
-const NETWORK_RESTART_COOLDOWN_MS = 30000;
 const DISPATCHER_RETENTION_INTERVAL_MS = 15 * 60 * 1000;
 const DISPATCHER_ATTEMPT_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DISPATCHER_AFFINITY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -145,6 +147,8 @@ function startWatchdog() {
       const settings = await getSettings();
       if (!settings.tunnelEnabled) return;
       if (isCloudflaredRunning()) return;
+      if (!(await checkInternet())) return;
+
       console.log("[Watchdog] Tunnel process is down, attempting recovery...");
       g.tunnelRestartInProgress = true;
       try {
@@ -161,12 +165,12 @@ function startWatchdog() {
   if (g.watchdogInterval.unref) g.watchdogInterval.unref();
 }
 
-/** Get network fingerprint from active interfaces (IPv4 only) */
+/** Get network fingerprint from active interfaces (IPv4 only, excluding virtual/transient interfaces) */
 function getNetworkFingerprint() {
   const interfaces = os.networkInterfaces();
   const active = [];
   for (const [name, addrs] of Object.entries(interfaces)) {
-    if (!addrs) continue;
+    if (!addrs || VIRTUAL_IFACE_REGEX.test(name)) continue;
     for (const addr of addrs) {
       if (!addr.internal && addr.family === "IPv4") {
         active.push(`${name}:${addr.address}`);
@@ -176,12 +180,32 @@ function getNetworkFingerprint() {
   return active.sort().join("|");
 }
 
-/** Monitor network changes + sleep/wake → kill and reconnect tunnel */
+/** Monitor network changes + sleep/wake → recover tunnel only if down */
 function startNetworkMonitor() {
   if (g.networkMonitorInterval) return;
 
   g.lastNetworkFingerprint = getNetworkFingerprint();
   g.lastWatchdogTick = Date.now();
+
+  setTunnelUnexpectedExitCallback(async () => {
+    try {
+      if (isTunnelManuallyDisabled() || isTunnelReconnecting() || g.tunnelRestartInProgress) return;
+      const settings = await getSettings();
+      if (!settings.tunnelEnabled) return;
+      if (!(await checkInternet())) return;
+
+      console.log("[Tunnel] Unexpected exit detected, attempting recovery...");
+      g.tunnelRestartInProgress = true;
+      try {
+        await enableTunnel();
+        console.log("[Tunnel] Recovered from unexpected exit");
+      } finally {
+        g.tunnelRestartInProgress = false;
+      }
+    } catch (err) {
+      console.log("[Tunnel] Unexpected exit recovery failed:", err.message);
+    }
+  });
 
   g.networkMonitorInterval = setInterval(async () => {
     try {
@@ -201,10 +225,15 @@ function startNetworkMonitor() {
 
       if (!networkChanged && !wasSleep) return;
 
+      // Process alive = trust cloudflared (self-reconnects via --retries 99, keeps same URL).
+      // Killing a live process on network change drops the tunnel and rotates the quick-tunnel URL.
+      if (isCloudflaredRunning()) return;
+
       // Skip if restart already in progress or restarted recently
       if (g.tunnelRestartInProgress) return;
       if (isTunnelReconnecting()) return;
-      if (now - g.lastTunnelRestartAt < NETWORK_RESTART_COOLDOWN_MS) return;
+      if (now - g.lastTunnelRestartAt < RESTART_COOLDOWN_MS) return;
+      if (!(await checkInternet())) return;
 
       const reason =
         wasSleep && networkChanged
@@ -212,15 +241,13 @@ function startNetworkMonitor() {
           : wasSleep
             ? "sleep/wake"
             : "network change";
-      console.log(`[NetworkMonitor] ${reason} detected, restarting tunnel...`);
+      console.log(`[NetworkMonitor] ${reason} detected, recovering dead tunnel...`);
 
       g.tunnelRestartInProgress = true;
       g.lastTunnelRestartAt = now;
       try {
-        killCloudflared();
-        await new Promise((r) => setTimeout(r, 2000));
         await enableTunnel();
-        console.log("[NetworkMonitor] Tunnel restarted");
+        console.log("[NetworkMonitor] Tunnel recovered");
         g.lastNetworkFingerprint = getNetworkFingerprint();
       } finally {
         g.tunnelRestartInProgress = false;
