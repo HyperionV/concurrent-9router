@@ -982,13 +982,30 @@ export function createProviderConnectionRecord(data) {
 export function updateProviderConnectionRecord(id, data) {
   const existing = getProviderConnection(id);
   if (!existing) return null;
+  const mergedProviderSpecificData =
+    data.providerSpecificData !== undefined
+      ? { ...data.providerSpecificData }
+      : { ...(existing.providerSpecificData || {}) };
+
+  if (
+    mergedProviderSpecificData.proxyPoolId === null ||
+    mergedProviderSpecificData.proxyPoolId === undefined ||
+    mergedProviderSpecificData.proxyPoolId === "" ||
+    mergedProviderSpecificData.proxyPoolId === "__none__"
+  ) {
+    delete mergedProviderSpecificData.proxyPoolId;
+    delete mergedProviderSpecificData.connectionProxyPoolId;
+  }
+
+  if (mergedProviderSpecificData.connectionProxyEnabled === false) {
+    delete mergedProviderSpecificData.connectionProxyUrl;
+    delete mergedProviderSpecificData.connectionNoProxy;
+  }
+
   const merged = {
     ...existing,
     ...data,
-    providerSpecificData: {
-      ...(existing.providerSpecificData || {}),
-      ...(data.providerSpecificData || {}),
-    },
+    providerSpecificData: mergedProviderSpecificData,
     updatedAt: nowIso(),
   };
   const { columnData, extra } = splitConnectionData(merged);

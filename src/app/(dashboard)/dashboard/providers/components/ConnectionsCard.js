@@ -641,25 +641,50 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
 
   const handleUpdateProxy = async (connId, proxyPoolId) => {
     try {
+      const targetPoolId = proxyPoolId || null;
       const res = await fetch(`/api/providers/${connId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ proxyPoolId: proxyPoolId || null }),
+        body: JSON.stringify({
+          proxyPoolId: targetPoolId,
+          ...(targetPoolId
+            ? {}
+            : {
+                connectionProxyEnabled: false,
+                connectionProxyUrl: "",
+                connectionNoProxy: "",
+              }),
+        }),
       });
-      if (res.ok)
-        setConnections((prev) =>
-          prev.map((c) =>
-            c.id === connId
-              ? {
-                  ...c,
-                  providerSpecificData: {
-                    ...c.providerSpecificData,
-                    proxyPoolId: proxyPoolId || null,
-                  },
-                }
-              : c,
-          ),
-        );
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.connection) {
+          setConnections((prev) =>
+            prev.map((c) => (c.id === connId ? data.connection : c)),
+          );
+        } else {
+          setConnections((prev) =>
+            prev.map((c) =>
+              c.id === connId
+                ? {
+                    ...c,
+                    providerSpecificData: {
+                      ...c.providerSpecificData,
+                      proxyPoolId: targetPoolId,
+                      ...(targetPoolId
+                        ? {}
+                        : {
+                            connectionProxyEnabled: false,
+                            connectionProxyUrl: "",
+                            connectionNoProxy: "",
+                          }),
+                    },
+                  }
+                : c,
+            ),
+          );
+        }
+      }
     } catch (e) {
       console.log("proxy error:", e);
     }

@@ -290,3 +290,60 @@ test("periodic telegram report gate persists and skips scheduler", async () => {
   closeSqlite();
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
+
+test("connection proxy unbinding persists and does not resurrect on reload", async () => {
+  const tempDir = makeTempDataDir();
+  process.env.DATA_DIR = tempDir;
+
+  const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
+  closeSqlite();
+
+  const {
+    createProviderConnectionRecord,
+    updateProviderConnectionRecord,
+    getProviderConnection,
+  } = await import("@/lib/sqlite/store.js");
+
+  createProviderConnectionRecord({
+    id: "conn-proxy-1",
+    provider: "codex",
+    authType: "oauth",
+    name: "Codex OAuth",
+    providerSpecificData: {
+      proxyPoolId: "pool-abc-123",
+      connectionProxyEnabled: true,
+      connectionProxyUrl: "http://proxy.example.com:8080",
+    },
+  });
+
+  const created = getProviderConnection("conn-proxy-1");
+  assert.equal(created.providerSpecificData.proxyPoolId, "pool-abc-123");
+  assert.equal(created.providerSpecificData.connectionProxyEnabled, true);
+
+  // Simulate unbinding proxy (as done when user selects "None")
+  updateProviderConnectionRecord("conn-proxy-1", {
+    providerSpecificData: {
+      ...created.providerSpecificData,
+      proxyPoolId: null,
+      connectionProxyEnabled: false,
+    },
+  });
+
+  const updated = getProviderConnection("conn-proxy-1");
+  assert.equal(updated.providerSpecificData.proxyPoolId, undefined);
+  assert.equal(updated.providerSpecificData.connectionProxyUrl, undefined);
+
+  // Close and re-open to test persistence across server restarts / page refreshes
+  closeSqlite();
+
+  const { getProviderConnection: getReloadedConnection } = await import(
+    "@/lib/sqlite/store.js"
+  );
+  const reloaded = getReloadedConnection("conn-proxy-1");
+  assert.equal(reloaded.providerSpecificData.proxyPoolId, undefined);
+  assert.equal(reloaded.providerSpecificData.connectionProxyUrl, undefined);
+
+  closeSqlite();
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
+

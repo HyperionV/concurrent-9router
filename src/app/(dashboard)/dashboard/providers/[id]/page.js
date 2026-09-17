@@ -603,7 +603,16 @@ export default function ProviderDetailPage() {
           const res = await fetch(`/api/providers/${connectionId}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ proxyPoolId }),
+            body: JSON.stringify({
+              proxyPoolId,
+              ...(proxyPoolId
+                ? {}
+                : {
+                    connectionProxyEnabled: false,
+                    connectionProxyUrl: "",
+                    connectionNoProxy: "",
+                  }),
+            }),
           });
           results.push(res.ok);
         } catch (e) {
@@ -648,25 +657,51 @@ export default function ProviderDetailPage() {
               }
               onUpdateProxy={async (proxyPoolId) => {
                 try {
+                  const targetPoolId = proxyPoolId || null;
                   const res = await fetch(`/api/providers/${conn.id}`, {
                     method: "PUT",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ proxyPoolId: proxyPoolId || null }),
+                    body: JSON.stringify({
+                      proxyPoolId: targetPoolId,
+                      ...(targetPoolId
+                        ? {}
+                        : {
+                            connectionProxyEnabled: false,
+                            connectionProxyUrl: "",
+                            connectionNoProxy: "",
+                          }),
+                    }),
                   });
                   if (res.ok) {
-                    setConnections((prev) =>
-                      prev.map((c) =>
-                        c.id === conn.id
-                          ? {
-                              ...c,
-                              providerSpecificData: {
-                                ...c.providerSpecificData,
-                                proxyPoolId: proxyPoolId || null,
-                              },
-                            }
-                          : c,
-                      ),
-                    );
+                    const data = await res.json();
+                    if (data?.connection) {
+                      setConnections((prev) =>
+                        prev.map((c) =>
+                          c.id === conn.id ? data.connection : c,
+                        ),
+                      );
+                    } else {
+                      setConnections((prev) =>
+                        prev.map((c) =>
+                          c.id === conn.id
+                            ? {
+                                ...c,
+                                providerSpecificData: {
+                                  ...c.providerSpecificData,
+                                  proxyPoolId: targetPoolId,
+                                  ...(targetPoolId
+                                    ? {}
+                                    : {
+                                        connectionProxyEnabled: false,
+                                        connectionProxyUrl: "",
+                                        connectionNoProxy: "",
+                                      }),
+                                },
+                              }
+                            : c,
+                        ),
+                      );
+                    }
                   }
                 } catch (error) {
                   console.log("Error updating proxy:", error);

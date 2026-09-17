@@ -183,15 +183,21 @@ export async function PUT(request, { params }) {
       if (proxyConfig.hasAnyProxyField) {
         updateData.providerSpecificData.connectionProxyEnabled =
           proxyConfig.connectionProxyEnabled;
-        updateData.providerSpecificData.connectionProxyUrl =
-          proxyConfig.connectionProxyUrl;
-        updateData.providerSpecificData.connectionNoProxy =
-          proxyConfig.connectionNoProxy;
+        if (proxyConfig.connectionProxyEnabled) {
+          updateData.providerSpecificData.connectionProxyUrl =
+            proxyConfig.connectionProxyUrl;
+          updateData.providerSpecificData.connectionNoProxy =
+            proxyConfig.connectionNoProxy;
+        } else {
+          delete updateData.providerSpecificData.connectionProxyUrl;
+          delete updateData.providerSpecificData.connectionNoProxy;
+        }
       }
 
       if (proxyPoolResult.hasProxyPoolField) {
         if (proxyPoolResult.proxyPoolId === null) {
           delete updateData.providerSpecificData.proxyPoolId;
+          delete updateData.providerSpecificData.connectionProxyPoolId;
         } else {
           updateData.providerSpecificData.proxyPoolId =
             proxyPoolResult.proxyPoolId;
