@@ -16,7 +16,11 @@ import {
   GROK_CLI_TOKEN_AUTH,
   GROK_CLI_IDENTITY_HEADERS,
 } from "../config/providers.js";
-import { GrokCliExecutor } from "./grok-cli.js";
+import {
+  GrokCliExecutor,
+  resolveGrokCliAgentId,
+  _resetGrokCliAgentStore,
+} from "./grok-cli.js";
 import { DefaultExecutor } from "./default.js";
 import { BaseExecutor } from "./base.js";
 
@@ -91,3 +95,45 @@ test("custom openai-compatible gateway path stays free of Grok CLI fingerprint",
   assert.equal(headers["x-xai-token-auth"], undefined);
   assert.equal(headers["x-grok-client-version"], undefined);
 });
+
+test("Grok CLI deviceId rotation: rotates across different sessions/requests and respects pinned deviceId", () => {
+  _resetGrokCliAgentStore();
+
+  // Case 1: unpinned connection without session generates unique random UUIDs
+  const id1 = resolveGrokCliAgentId(null, {});
+  const id2 = resolveGrokCliAgentId(null, {});
+  assert.match(id1, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  assert.match(id2, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  assert.notEqual(id1, id2, "Independent requests get distinct random deviceIds");
+
+  // Case 2: same session retains stable deviceId across turns
+  const sessA_turn1 = resolveGrokCliAgentId("sess-alpha", {});
+  const sessA_turn2 = resolveGrokCliAgentId("sess-alpha", {});
+  const sessB_turn1 = resolveGrokCliAgentId("sess-beta", {});
+  assert.equal(sessA_turn1, sessA_turn2, "Same session reuses deviceId across turns");
+  assert.notEqual(sessA_turn1, sessB_turn1, "Different sessions get distinct deviceIds");
+
+  // Case 3: pinned deviceId without rotation is respected
+  const pinned = resolveGrokCliAgentId("sess-pinned", { deviceId: "custom-device-123" });
+  assert.equal(pinned, "custom-device-123");
+
+  // Case 4: forced rotation overrides pinned deviceId
+  const rotated = resolveGrokCliAgentId("sess-pinned", {
+    deviceId: "custom-device-123",
+    rotateDeviceId: true,
+  });
+  assert.notEqual(rotated, "custom-device-123");
+  assert.match(rotated, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+});
+
+test("GrokCliExecutor buildHeaders includes rotated x-grok-agent-id header", () => {
+  const executor = new GrokCliExecutor();
+  const headers1 = executor.buildHeaders({ accessToken: "tok1", providerSpecificData: {} }, true);
+  const headers2 = executor.buildHeaders({ accessToken: "tok2", providerSpecificData: {} }, true);
+
+  assert.ok(headers1["x-grok-agent-id"]);
+  assert.ok(headers2["x-grok-agent-id"]);
+  assert.match(headers1["x-grok-agent-id"], /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  assert.match(headers2["x-grok-agent-id"], /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+});
+

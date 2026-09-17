@@ -143,6 +143,42 @@ export function _resetGrokCliTurnStore() {
   sessionTurnStore.clear();
 }
 
+const GROK_CLI_AGENT_STORE_MAX = 5000;
+const sessionAgentStore = new Map();
+
+/**
+ * Resolve device / agent ID for x-grok-agent-id header.
+ * - If connection explicitly pinned a fixed deviceId and didn't request rotation: use it
+ * - If rotateDeviceId is true or no fixed deviceId is provided: rotate with random UUID
+ * - When sessionId is present and rotateDeviceId !== "per-request", retain stable agentId across turns of the same session
+ */
+export function resolveGrokCliAgentId(sessionId, psd = {}) {
+  if (psd.deviceId && psd.rotateDeviceId !== true) {
+    return psd.deviceId;
+  }
+  if (psd.agentId && psd.rotateDeviceId !== true) {
+    return psd.agentId;
+  }
+
+  if (sessionId && psd.rotateDeviceId !== "per-request") {
+    const existing = sessionAgentStore.get(sessionId);
+    if (existing) return existing;
+    const generated = crypto.randomUUID();
+    while (sessionAgentStore.size >= GROK_CLI_AGENT_STORE_MAX) {
+      sessionAgentStore.delete(sessionAgentStore.keys().next().value);
+    }
+    sessionAgentStore.set(sessionId, generated);
+    return generated;
+  }
+
+  return crypto.randomUUID();
+}
+
+/** Test helper — clear in-memory agent id counters */
+export function _resetGrokCliAgentStore() {
+  sessionAgentStore.clear();
+}
+
 function stringifyGrokCliToolOutput(output) {
   if (typeof output === "string") return output;
   if (output === undefined) return "";
@@ -374,7 +410,11 @@ export class GrokCliExecutor extends BaseExecutor {
     headers["x-grok-req-id"] = reqId;
     headers["x-grok-turn-idx"] = String(ctx.turnIdx || this._currentTurnIdx || 1);
 
-    const agentId = ctx.agentId || this._agentId;
+    const psd = credentials?.providerSpecificData || {};
+    const agentId =
+      ctx.agentId ||
+      this._agentId ||
+      resolveGrokCliAgentId(sessionId, psd);
     if (agentId) headers["x-grok-agent-id"] = agentId;
 
     // Surface model override (CLI always sets this)
@@ -387,7 +427,6 @@ export class GrokCliExecutor extends BaseExecutor {
 
     // Identity: mapTokens stores email top-level AND in providerSpecificData;
     // fall back either way so OAuth connections always fingerprint like the CLI.
-    const psd = credentials?.providerSpecificData || {};
     const email = psd.email || credentials?.email;
     const userId = psd.userId || credentials?.userId || credentials?.providerUserId;
     if (email) headers["x-email"] = email;
@@ -426,10 +465,8 @@ export class GrokCliExecutor extends BaseExecutor {
       scope: "grok-cli",
     });
     const reqId = crypto.randomUUID();
-    const agentId =
-      credentials?.providerSpecificData?.deviceId ||
-      credentials?.providerSpecificData?.agentId ||
-      null;
+    const psd = credentials?.providerSpecificData || {};
+    const agentId = ctx?.agentId || resolveGrokCliAgentId(sessionId, psd);
 
     this._currentSessionId = sessionId;
     this._currentReqId = reqId;
@@ -557,26 +594,14 @@ export class GrokCliExecutor extends BaseExecutor {
   }
 
   async execute(args) {
-    // Lazy-resolve stable agent id once per process if connection has none
-    if (!this._agentId && !args.credentials?.providerSpecificData?.deviceId) {
-      try {
-        const mid = await getConsistentMachineId("grok-cli-agent");
-        // Format as UUID-ish for header aesthetics
-        this._agentId = [
-          mid.slice(0, 8),
-          mid.slice(8, 12),
-          "5" + mid.slice(13, 16),
-          "a" + mid.slice(17, 20),
-          mid.slice(0, 12).padEnd(12, "0"),
-        ].join("-");
-      } catch {
-        this._agentId = crypto.randomUUID();
-      }
-    } else if (args.credentials?.providerSpecificData?.deviceId) {
-      this._agentId = args.credentials.providerSpecificData.deviceId;
-    }
+    const psd = args.credentials?.providerSpecificData || {};
+    const bodySessionId =
+      (typeof args.body?.prompt_cache_key === "string" && args.body.prompt_cache_key.trim()) ||
+      (typeof args.body?.session_id === "string" && args.body.session_id.trim()) ||
+      (typeof args.body?.conversation_id === "string" && args.body.conversation_id.trim()) ||
+      null;
+    const agentId = resolveGrokCliAgentId(bodySessionId, psd);
 
-    const agentId = args.credentials?.providerSpecificData?.deviceId || this._agentId;
     const ctx = {
       agentId,
     };
