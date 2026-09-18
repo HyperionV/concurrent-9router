@@ -6,6 +6,9 @@ import {
 import {
   queryDispatcherTimeline,
   queryDispatcherAggregates,
+  queryDispatcherConnectionStats,
+  queryDispatcherModelStats,
+  queryDispatcherLastActiveByConnection,
 } from "@/lib/sqlite/dispatcherMetricsStore.js";
 import {
   createEmptyHistogram,
@@ -252,8 +255,7 @@ function summarizeConnections({
   settings,
   provider,
   inMemory,
-  activeAttempts,
-  terminalAttempts,
+  connectionStats = {},
 }) {
   const slotsPerConnection = getDispatcherSlotsPerConnection(
     settings,
@@ -264,11 +266,14 @@ function summarizeConnections({
   return [...connectionViews]
     .map((connection) => {
       const occupiedSlots = Number(occupancyByConnection[connection.id] || 0);
-      const health = summarizeConnectionHealth(
-        connection.id,
-        activeAttempts,
-        terminalAttempts,
-      );
+      const health = connectionStats[connection.id] || {
+        recentAttempts: 0,
+        recentTerminalReasonCounts: {},
+        lastAttemptAt: null,
+        avgTtftMs: 0,
+        p95TtftMs: 0,
+        avgQueueWaitMs: 0,
+      };
       return {
         connectionId: connection.id,
         connectionName:
@@ -490,6 +495,11 @@ export function getDispatcherStatusSnapshot({
     },
   };
 
+  const connectionStats = queryDispatcherConnectionStats({
+    provider,
+    range,
+  });
+
   if (includeLive) {
     base.capacity = buildCapacitySummary({
       connectionViews,
@@ -505,8 +515,7 @@ export function getDispatcherStatusSnapshot({
       settings,
       provider,
       inMemory,
-      activeAttempts,
-      terminalAttempts: [],
+      connectionStats,
     });
   }
 
@@ -526,24 +535,22 @@ export function getDispatcherStatusSnapshot({
       p95QueueWaitMs: base.aggregates.p95QueueWaitMs,
       avgDurationMs: base.aggregates.avgDurationMs,
     };
-  }
-
-  if (includeLive && includeHistory) {
-    base.models = summarizeModels(
+    base.models = queryDispatcherModelStats({
+      provider,
+      range,
       queuedRequests,
       activeAttempts,
-      terminalAttempts,
-    );
-    base.paths = summarizePaths(activeAttempts, terminalAttempts);
-    // Recompute connections with terminal for full view
-    base.connections = summarizeConnections({
-      connectionViews,
-      settings,
-      provider,
-      inMemory,
-      activeAttempts,
-      terminalAttempts,
     });
+    base.paths = summarizePaths(activeAttempts, terminalAttempts);
+    if (!base.connections) {
+      base.connections = summarizeConnections({
+        connectionViews,
+        settings,
+        provider,
+        inMemory,
+        connectionStats,
+      });
+    }
   }
 
   return base;

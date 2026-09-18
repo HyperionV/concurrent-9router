@@ -170,5 +170,6 @@ class DispatcherMetricsAggregator {
   }
 }
 
-// Global singleton instance
-export const dispatcherMetricsAggregator = new DispatcherMetricsAggregator();
+// Process-global singleton instance across Next.js / Webpack module copies
+export const dispatcherMetricsAggregator =
+  (globalThis.__dispatcherMetricsAggregator ||= new DispatcherMetricsAggregator());

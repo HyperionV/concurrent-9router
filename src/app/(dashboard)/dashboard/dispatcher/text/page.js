@@ -820,9 +820,50 @@ export default function DispatcherPage() {
   const mergeSnapshot = useCallback((prev, next, view) => {
     if (!prev || view === "full") return next;
     if (view === "live") {
+      const mergedConnections =
+        Array.isArray(prev.connections) && Array.isArray(next.connections)
+          ? next.connections.map((nextConn) => {
+              const prevConn = prev.connections.find(
+                (pc) => pc.connectionId === nextConn.connectionId,
+              );
+              if (!prevConn) return nextConn;
+              return {
+                ...prevConn,
+                ...nextConn,
+                occupiedSlots: nextConn.occupiedSlots,
+                availableSlots: nextConn.availableSlots,
+                capacity: nextConn.capacity,
+                recentAttempts:
+                  nextConn.recentAttempts > 0
+                    ? nextConn.recentAttempts
+                    : prevConn.recentAttempts || 0,
+                lastAttemptAt:
+                  nextConn.lastAttemptAt || prevConn.lastAttemptAt || null,
+                avgTtftMs:
+                  nextConn.avgTtftMs > 0
+                    ? nextConn.avgTtftMs
+                    : prevConn.avgTtftMs || 0,
+                p95TtftMs:
+                  nextConn.p95TtftMs > 0
+                    ? nextConn.p95TtftMs
+                    : prevConn.p95TtftMs || 0,
+                avgQueueWaitMs:
+                  nextConn.avgQueueWaitMs > 0
+                    ? nextConn.avgQueueWaitMs
+                    : prevConn.avgQueueWaitMs || 0,
+                recentTerminalReasonCounts:
+                  nextConn.recentTerminalReasonCounts &&
+                  Object.keys(nextConn.recentTerminalReasonCounts).length > 0
+                    ? nextConn.recentTerminalReasonCounts
+                    : prevConn.recentTerminalReasonCounts || {},
+              };
+            })
+          : next.connections || prev.connections;
+
       return {
         ...prev,
         ...next,
+        connections: mergedConnections,
         terminal: prev.terminal,
         models: prev.models,
         paths: prev.paths,
@@ -835,6 +876,7 @@ export default function DispatcherPage() {
       return {
         ...prev,
         ...next,
+        connections: next.connections || prev.connections,
         terminal: next.terminal || prev.terminal,
         models: next.models || prev.models,
         paths: next.paths || prev.paths,

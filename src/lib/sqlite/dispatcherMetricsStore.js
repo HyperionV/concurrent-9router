@@ -1,6 +1,7 @@
 import { getSqlite } from "@/lib/sqlite/runtime.js";
 import {
   createEmptyHistogram,
+  recordLatency,
   mergeHistograms,
   parseHistogram,
   calculatePercentiles,
@@ -413,4 +414,352 @@ export function queryDispatcherAggregates(provider, sinceIso = null) {
     avgDurationMs: totalCompleted > 0 ? Math.round(row.total_duration_sum / totalCompleted) : 0,
     maxDurationMs: Number(row?.max_duration) || 0,
   };
+}
+
+/**
+ * Queries the absolute latest active timestamp per connection across attempts and metrics buckets.
+ * @param {string} provider
+ * @returns {Record<string, string>} map of connectionId -> ISO timestamp
+ */
+export function queryDispatcherLastActiveByConnection(provider) {
+  const db = getSqlite();
+  const map = {};
+
+  const attemptRows = db.prepare(`
+    SELECT connection_id,
+           MAX(COALESCE(finished_at, last_progress_at, first_progress_at, stream_started_at, connect_started_at, leased_at, queue_entered_at)) AS last_active_at
+    FROM dispatch_attempts
+    WHERE provider = ? AND connection_id IS NOT NULL
+    GROUP BY connection_id
+  `).all(provider);
+
+  for (const r of attemptRows) {
+    if (r.connection_id && r.last_active_at) {
+      map[r.connection_id] = r.last_active_at;
+    }
+  }
+
+  const bucketRows = db.prepare(`
+    SELECT connection_id, MAX(bucket_start) AS last_bucket
+    FROM dispatcher_metrics_1m
+    WHERE provider = ? AND connection_id IS NOT NULL AND connection_id != 'all'
+    GROUP BY connection_id
+  `).all(provider);
+
+  for (const r of bucketRows) {
+    if (r.connection_id && r.last_bucket) {
+      if (!map[r.connection_id] || r.last_bucket > map[r.connection_id]) {
+        map[r.connection_id] = r.last_bucket;
+      }
+    }
+  }
+
+  return map;
+}
+
+/**
+ * Queries durable connection statistics for a provider over a given range or cutoff.
+ * @param {object} params
+ * @param {string} params.provider
+ * @param {"1h"|"24h"|"7d"} [params.range="24h"]
+ * @param {string} [params.sinceIso]
+ * @returns {Record<string, object>} map of connectionId -> connection health metrics
+ */
+export function queryDispatcherConnectionStats({
+  provider,
+  range = "24h",
+  sinceIso = null,
+}) {
+  const db = getSqlite();
+  const now = Date.now();
+  let effectiveSinceIso = sinceIso;
+  if (!effectiveSinceIso) {
+    let sinceMs = now - 24 * 60 * 60 * 1000;
+    if (range === "1h") sinceMs = now - 60 * 60 * 1000;
+    else if (range === "7d") sinceMs = now - 7 * 24 * 60 * 60 * 1000;
+    effectiveSinceIso = new Date(sinceMs).toISOString();
+  }
+
+  const lastActiveMap = queryDispatcherLastActiveByConnection(provider);
+
+  const attempts = db.prepare(`
+    SELECT connection_id, state, terminal_reason,
+           queue_entered_at, leased_at, connect_started_at, first_progress_at, finished_at
+    FROM dispatch_attempts
+    WHERE provider = ?
+      AND queue_entered_at >= ?
+      AND connection_id IS NOT NULL
+  `).all(provider, effectiveSinceIso);
+
+  const statsByConn = {};
+
+  for (const att of attempts) {
+    const cid = att.connection_id;
+    if (!statsByConn[cid]) {
+      statsByConn[cid] = {
+        recentAttempts: 0,
+        recentTerminalReasonCounts: {},
+        lastAttemptAt: lastActiveMap[cid] || null,
+        ttftSum: 0,
+        ttftCount: 0,
+        queueSum: 0,
+        queueCount: 0,
+        ttftHist: createEmptyHistogram(),
+      };
+    }
+    const s = statsByConn[cid];
+    s.recentAttempts += 1;
+
+    if (att.state !== "leased" && att.state !== "connecting" && att.state !== "streaming") {
+      const reason = att.terminal_reason || "unknown";
+      s.recentTerminalReasonCounts[reason] = (s.recentTerminalReasonCounts[reason] || 0) + 1;
+    }
+
+    const cand = att.finished_at || att.first_progress_at || att.queue_entered_at;
+    if (cand && (!s.lastAttemptAt || cand > s.lastAttemptAt)) {
+      s.lastAttemptAt = cand;
+    }
+
+    if (att.leased_at && att.queue_entered_at) {
+      const q = Math.max(0, new Date(att.leased_at).getTime() - new Date(att.queue_entered_at).getTime());
+      if (Number.isFinite(q)) {
+        s.queueSum += q;
+        s.queueCount += 1;
+      }
+    }
+
+    if (att.first_progress_at && att.connect_started_at) {
+      const t = Math.max(0, new Date(att.first_progress_at).getTime() - new Date(att.connect_started_at).getTime());
+      if (Number.isFinite(t)) {
+        s.ttftSum += t;
+        s.ttftCount += 1;
+        recordLatency(s.ttftHist, t);
+      }
+    }
+  }
+
+  const table = range === "7d" ? "dispatcher_metrics_1h" : "dispatcher_metrics_1m";
+  const metricRows = db.prepare(`
+    SELECT connection_id,
+           SUM(request_count) AS request_count,
+           SUM(completed_count) AS completed_count,
+           SUM(failed_count) AS failed_count,
+           SUM(timed_out_count) AS timed_out_count,
+           SUM(queue_wait_ms_sum) AS queue_wait_sum,
+           SUM(ttft_ms_sum) AS ttft_sum,
+           GROUP_CONCAT(ttft_hist_json, ';;') AS ttft_hists
+    FROM ${table}
+    WHERE provider = ?
+      AND bucket_start >= ?
+      AND connection_id IS NOT NULL
+      AND connection_id != 'all'
+    GROUP BY connection_id
+  `).all(provider, effectiveSinceIso);
+
+  for (const m of metricRows) {
+    const cid = m.connection_id;
+    if (!statsByConn[cid]) {
+      const ttftHist = createEmptyHistogram();
+      if (m.ttft_hists) {
+        for (const hStr of m.ttft_hists.split(";;")) {
+          mergeHistograms(ttftHist, parseHistogram(hStr));
+        }
+      }
+      const completed = Number(m.completed_count) || 0;
+      const reqs = Number(m.request_count) || 0;
+      statsByConn[cid] = {
+        recentAttempts: reqs,
+        recentTerminalReasonCounts: {},
+        lastAttemptAt: lastActiveMap[cid] || null,
+        avgTtftMs: completed > 0 ? Math.round(Number(m.ttft_sum) / completed) : 0,
+        p95TtftMs: calculatePercentiles(ttftHist, [95]).p95,
+        avgQueueWaitMs: reqs > 0 ? Math.round(Number(m.queue_wait_sum) / reqs) : 0,
+      };
+    }
+  }
+
+  const result = {};
+  for (const [cid, s] of Object.entries(statsByConn)) {
+    result[cid] = {
+      recentAttempts: s.recentAttempts,
+      recentTerminalReasonCounts: s.recentTerminalReasonCounts,
+      lastAttemptAt: s.lastAttemptAt || lastActiveMap[cid] || null,
+      avgTtftMs: s.avgTtftMs !== undefined ? s.avgTtftMs : (s.ttftCount > 0 ? Math.round(s.ttftSum / s.ttftCount) : 0),
+      p95TtftMs: s.p95TtftMs !== undefined ? s.p95TtftMs : calculatePercentiles(s.ttftHist, [95]).p95,
+      avgQueueWaitMs: s.avgQueueWaitMs !== undefined ? s.avgQueueWaitMs : (s.queueCount > 0 ? Math.round(s.queueSum / s.queueCount) : 0),
+    };
+  }
+
+  for (const [cid, lastActive] of Object.entries(lastActiveMap)) {
+    if (!result[cid]) {
+      result[cid] = {
+        recentAttempts: 0,
+        recentTerminalReasonCounts: {},
+        lastAttemptAt: lastActive,
+        avgTtftMs: 0,
+        p95TtftMs: 0,
+        avgQueueWaitMs: 0,
+      };
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Queries durable model statistics for a provider over a given range or cutoff.
+ * @param {object} params
+ * @param {string} params.provider
+ * @param {"1h"|"24h"|"7d"} [params.range="24h"]
+ * @param {string} [params.sinceIso]
+ * @param {Array<object>} [params.queuedRequests=[]]
+ * @param {Array<object>} [params.activeAttempts=[]]
+ * @returns {Array<object>} list of model statistics
+ */
+export function queryDispatcherModelStats({
+  provider,
+  range = "24h",
+  sinceIso = null,
+  queuedRequests = [],
+  activeAttempts = [],
+}) {
+  const db = getSqlite();
+  const now = Date.now();
+  let effectiveSinceIso = sinceIso;
+  if (!effectiveSinceIso) {
+    let sinceMs = now - 24 * 60 * 60 * 1000;
+    if (range === "1h") sinceMs = now - 60 * 60 * 1000;
+    else if (range === "7d") sinceMs = now - 7 * 24 * 60 * 60 * 1000;
+    effectiveSinceIso = new Date(sinceMs).toISOString();
+  }
+
+  const byModel = new Map();
+
+  function ensureModel(modelId) {
+    const key = modelId || "unknown";
+    if (!byModel.has(key)) {
+      byModel.set(key, {
+        modelId: key,
+        queued: 0,
+        active: 0,
+        completed: 0,
+        failed: 0,
+        timedOut: 0,
+        cancelled: 0,
+        reconciled: 0,
+        total: 0,
+        ttftSum: 0,
+        ttftCount: 0,
+        queueSum: 0,
+        queueCount: 0,
+        ttftHist: createEmptyHistogram(),
+      });
+    }
+    return byModel.get(key);
+  }
+
+  for (const req of queuedRequests) {
+    const m = ensureModel(req.modelId);
+    m.queued += 1;
+    m.total += 1;
+  }
+
+  for (const att of activeAttempts) {
+    const m = ensureModel(att.modelId);
+    m.active += 1;
+    m.total += 1;
+  }
+
+  const attempts = db.prepare(`
+    SELECT model_id, state,
+           queue_entered_at, leased_at, connect_started_at, first_progress_at, finished_at
+    FROM dispatch_attempts
+    WHERE provider = ?
+      AND queue_entered_at >= ?
+  `).all(provider, effectiveSinceIso);
+
+  for (const att of attempts) {
+    const m = ensureModel(att.model_id || att.modelId);
+    if (att.state === "completed") m.completed += 1;
+    else if (att.state === "failed") m.failed += 1;
+    else if (att.state === "timed_out") m.timedOut += 1;
+    else if (att.state === "cancelled") m.cancelled += 1;
+    else if (att.state === "reconciled") m.reconciled += 1;
+    m.total += 1;
+
+    if (att.leased_at && att.queue_entered_at) {
+      const q = Math.max(0, new Date(att.leased_at).getTime() - new Date(att.queue_entered_at).getTime());
+      if (Number.isFinite(q)) {
+        m.queueSum += q;
+        m.queueCount += 1;
+      }
+    }
+
+    if (att.first_progress_at && att.connect_started_at) {
+      const t = Math.max(0, new Date(att.first_progress_at).getTime() - new Date(att.connect_started_at).getTime());
+      if (Number.isFinite(t)) {
+        m.ttftSum += t;
+        m.ttftCount += 1;
+        recordLatency(m.ttftHist, t);
+      }
+    }
+  }
+
+  const table = range === "7d" ? "dispatcher_metrics_1h" : "dispatcher_metrics_1m";
+  const metricRows = db.prepare(`
+    SELECT model_id,
+           SUM(request_count) AS request_count,
+           SUM(completed_count) AS completed_count,
+           SUM(failed_count) AS failed_count,
+           SUM(timed_out_count) AS timed_out_count,
+           SUM(queue_wait_ms_sum) AS queue_wait_sum,
+           SUM(ttft_ms_sum) AS ttft_sum,
+           GROUP_CONCAT(ttft_hist_json, ';;') AS ttft_hists
+    FROM ${table}
+    WHERE provider = ?
+      AND bucket_start >= ?
+      AND model_id IS NOT NULL
+      AND model_id != 'all'
+    GROUP BY model_id
+  `).all(provider, effectiveSinceIso);
+
+  for (const row of metricRows) {
+    if (!byModel.has(row.model_id)) {
+      const m = ensureModel(row.model_id);
+      m.completed = Number(row.completed_count) || 0;
+      m.failed = Number(row.failed_count) || 0;
+      m.timedOut = Number(row.timed_out_count) || 0;
+      m.total = Number(row.request_count) || 0;
+      m.ttftSum = Number(row.ttft_sum) || 0;
+      m.ttftCount = m.completed;
+      m.queueSum = Number(row.queue_wait_sum) || 0;
+      m.queueCount = m.total;
+      if (row.ttft_hists) {
+        for (const hStr of row.ttft_hists.split(";;")) {
+          mergeHistograms(m.ttftHist, parseHistogram(hStr));
+        }
+      }
+    }
+  }
+
+  return [...byModel.values()]
+    .map((m) => ({
+      modelId: m.modelId,
+      queued: m.queued,
+      active: m.active,
+      completed: m.completed,
+      failed: m.failed,
+      timedOut: m.timedOut,
+      cancelled: m.cancelled,
+      reconciled: m.reconciled,
+      total: m.total,
+      avgTtftMs: m.ttftCount > 0 ? Math.round(m.ttftSum / m.ttftCount) : 0,
+      p95TtftMs: calculatePercentiles(m.ttftHist, [95]).p95,
+      avgQueueWaitMs: m.queueCount > 0 ? Math.round(m.queueSum / m.queueCount) : 0,
+    }))
+    .sort((a, b) => {
+      const totalDiff = b.total - a.total;
+      if (totalDiff !== 0) return totalDiff;
+      return a.modelId.localeCompare(b.modelId);
+    });
 }

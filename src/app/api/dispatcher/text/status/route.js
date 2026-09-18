@@ -7,6 +7,7 @@ import {
   isTextDispatchProvider,
 } from "@/lib/dispatcher/settings.js";
 import { getConnectionCollections, getSettings } from "@/lib/localDb.js";
+import { dispatcherMetricsAggregator } from "@/lib/dispatcher/metricsAggregator.js";
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +44,9 @@ export async function GET(request) {
       getConnectionCollections(),
     ]);
     const inMemory = dispatcher?.getInMemorySnapshot?.() || null;
+    try {
+      dispatcherMetricsAggregator.flushToSqlite();
+    } catch {}
     const snapshot = getDispatcherStatusSnapshot({
       provider,
       settings,
