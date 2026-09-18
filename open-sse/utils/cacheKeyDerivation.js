@@ -83,9 +83,10 @@ export function deriveStablePrefixCacheKey(body = {}) {
     parts.push(`system=${systemText.trim()}`);
   }
 
-  // If there is only model and no tools or system instructions,
-  // do not generate a key (avoid tenant-wide model-only collisions)
-  if (parts.length <= 1) return null;
+  // Must have substantive prompt content (system instructions or tool declarations)
+  // to avoid tenant-wide model-only collisions.
+  const hasContent = systemText.trim().length > 0 || (rawTools && rawTools.length > 0);
+  if (!hasContent) return null;
 
   const digest = createHash("sha256")
     .update(parts.join("||"))

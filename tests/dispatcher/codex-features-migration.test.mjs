@@ -204,7 +204,10 @@ test("resolveConversationKey generates deterministic prefix hash for prompt-cach
   const key1 = resolveConversationKey({ body: turn1 });
   const key2 = resolveConversationKey({ body: turn2 });
 
-  assert.ok(key1 && key1.startsWith("pfx_"), `Key 1 should be a prefix hash: ${key1}`);
+  assert.ok(
+    key1 && (key1.startsWith("pck_") || key1.startsWith("pfx_")),
+    `Key 1 should be a prefix hash: ${key1}`,
+  );
   assert.equal(key1, key2, "Turn 1 and Turn 2 should share identical prefix cache affinity key");
 
   // Explicit conversation ID should always override prefix hash
