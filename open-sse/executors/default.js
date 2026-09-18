@@ -3,6 +3,7 @@ import { PROVIDERS } from "../config/providers.js";
 import { OAUTH_ENDPOINTS, buildKimiHeaders } from "../config/appConstants.js";
 import { buildClineHeaders } from "../../src/shared/utils/clineAuth.js";
 import { getCachedClaudeHeaders } from "../utils/claudeHeaderCache.js";
+import { deriveStablePrefixCacheKey } from "../utils/cacheKeyDerivation.js";
 
 export class DefaultExecutor extends BaseExecutor {
   constructor(provider) {
@@ -10,7 +11,12 @@ export class DefaultExecutor extends BaseExecutor {
   }
 
   transformRequest(model, body) {
-    return this.applyJsonSchemaFallback(body);
+    const result = this.applyJsonSchemaFallback(body);
+    if (result && typeof result === "object" && !result.prompt_cache_key) {
+      const derived = deriveStablePrefixCacheKey(result);
+      if (derived) result.prompt_cache_key = derived;
+    }
+    return result;
   }
 
   applyJsonSchemaFallback(body) {

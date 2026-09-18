@@ -16,6 +16,7 @@ import {
 } from "../services/oauthCredentialManager.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 import { stripCodexUnsupportedPatterns } from "../utils/codexToolSchema.js";
+import { deriveStablePrefixCacheKey } from "../utils/cacheKeyDerivation.js";
 
 // SSE error patterns inside 200-OK bodies. Some retry same account first; capacity rotates accounts.
 const CODEX_SSE_RETRY_PATTERNS = [
@@ -108,6 +109,9 @@ function resolveCacheSessionId(body, credentials, explicitSessionId = null) {
     explicitSessionId || credentials?.providerSpecificData?.dispatchSessionId,
   );
   if (fromDispatcher) return fromDispatcher;
+
+  const stablePrefix = deriveStablePrefixCacheKey(body);
+  if (stablePrefix) return stablePrefix;
 
   if (Array.isArray(body?.input)) {
     let assistantText = "";
@@ -551,6 +555,10 @@ export class CodexExecutor extends BaseExecutor {
       workingBody.prompt_cache_key = resolvedSessionId;
     }
 
+    if (!workingBody.prompt_cache_options && String(workingBody.model || model).includes("gpt-5.6")) {
+      workingBody.prompt_cache_options = { ttl: "30m" };
+    }
+
     const url = isCompact
       ? `${super.buildUrl(model, stream, 0, credentials)}/compact`
       : super.buildUrl(model, stream, 0, credentials);
@@ -573,6 +581,16 @@ export class CodexExecutor extends BaseExecutor {
       sessionId: headers.session_id,
       isCompact,
     };
+  }
+
+  transformRequest(model, body, stream = true, credentials = null) {
+    const { transformedBody } = this.buildRequest({
+      model,
+      body,
+      stream,
+      credentials,
+    });
+    return transformedBody;
   }
 
   _replaceResponseBody(response, body) {
