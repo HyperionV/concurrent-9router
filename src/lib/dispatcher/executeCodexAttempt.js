@@ -296,6 +296,20 @@ async function executeManagedProviderRequest({
   const finalizeSuccess = async (terminalReason = "success") => {
     if (finalized) return;
     finalized = true;
+    if (conversationKey && lease?.connectionId) {
+      try {
+        persistConversationAffinity({
+          conversationKey,
+          provider,
+          modelId: model,
+          connectionId: lease.connectionId,
+          sessionId: credentials?.providerSpecificData?.dispatchSessionId || null,
+          apiKeyId: apiKeyRecord?.id || null,
+        });
+      } catch (err) {
+        log.warn("DISPATCHER", `failed to persist conversation affinity: ${err.message}`);
+      }
+    }
     await dispatcher.completeAttempt(attemptId, { terminalReason });
   };
   const finalizeFailure = async (terminalReason, errorPayload = {}) => {
