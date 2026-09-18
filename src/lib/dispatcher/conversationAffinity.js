@@ -89,6 +89,10 @@ export function resolveConversationKey({
   return null;
 }
 
+export function isCachePrefixKey(key) {
+  return typeof key === "string" && key.startsWith("pfx_");
+}
+
 export function getConversationAffinity(conversationKey, apiKeyId = null) {
   if (!conversationKey) return null;
   return getDispatchConversationAffinity(

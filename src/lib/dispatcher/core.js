@@ -23,6 +23,7 @@ import {
   DISPATCH_EVENT_TYPE,
   DISPATCH_REQUEST_STATUS,
 } from "@/lib/dispatcher/types.js";
+import { isCachePrefixKey } from "@/lib/dispatcher/conversationAffinity.js";
 import { isModelLockActive } from "open-sse/services/accountFallback.js";
 import { isConnectionRateLimitDisabled } from "@/lib/connectionHealth.js";
 import { dispatcherMetricsAggregator } from "@/lib/dispatcher/metricsAggregator.js";
@@ -195,6 +196,12 @@ export function createDispatcherCore({
   ) {
     const conversationKey = request?.conversationKey;
     if (!conversationKey) return true;
+
+    // Soft prompt-cache affinity does NOT enforce hard mutual exclusion across pool accounts.
+    if (isCachePrefixKey(conversationKey)) {
+      return true;
+    }
+
     const apiKeyScope =
       request?.metadata?.admission?.apiKeyScope || "__no_key__";
 
@@ -236,9 +243,25 @@ export function createDispatcherCore({
   }
 
   function getSortedConnectionsForRequest(connections, request) {
+    const conversationKey = request?.conversationKey;
+    const apiKeyScope =
+      request?.metadata?.admission?.apiKeyScope || "__no_key__";
+    const affinity =
+      conversationKey && isCachePrefixKey(conversationKey)
+        ? getDispatchConversationAffinity(conversationKey, apiKeyScope)
+        : null;
+    const preferredConnectionId = affinity?.connectionId || null;
+
     return [...connections]
       .filter((connection) => connection?.id)
       .sort((a, b) => {
+        if (preferredConnectionId) {
+          const occA = occupancyByConnection[a.id] || 0;
+          const occB = occupancyByConnection[b.id] || 0;
+          if (a.id === preferredConnectionId && occA === 0 && occB > 0) return -1;
+          if (b.id === preferredConnectionId && occB === 0 && occA > 0) return 1;
+        }
+
         const occupancyDiff =
           (occupancyByConnection[a.id] || 0) -
           (occupancyByConnection[b.id] || 0);
