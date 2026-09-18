@@ -268,6 +268,32 @@ export function queryDispatcherTimeline({
     ORDER BY bucket_start ASC
   `).all(...params);
 
+  // Query token and usage data from usage_events for the same intervals
+  const intervalSec = groupByMinutes * 60;
+  let usageFilterSql = "WHERE provider = ? AND timestamp >= ?";
+  const usageParams = [provider, sinceIso];
+  if (modelId) {
+    usageFilterSql += " AND model_id = ?";
+    usageParams.push(modelId);
+  }
+  if (connectionId) {
+    usageFilterSql += " AND connection_id = ?";
+    usageParams.push(connectionId);
+  }
+
+  const usageRows = db.prepare(`
+    SELECT 
+      strftime('%Y-%m-%dT%H:%M:00.000Z', datetime((strftime('%s', timestamp) / ${intervalSec}) * ${intervalSec}, 'unixepoch')) AS bucket,
+      COUNT(1) as requests,
+      SUM(prompt_tokens) as prompt_tokens,
+      SUM(completion_tokens) as completion_tokens,
+      SUM(cached_tokens) as cached_tokens
+    FROM usage_events
+    ${usageFilterSql}
+    GROUP BY bucket
+    ORDER BY bucket ASC
+  `).all(...usageParams);
+
   // Group raw rows into desired interval buckets
   const points = [];
   const intervalMs = groupByMinutes * 60 * 1000;
@@ -292,6 +318,10 @@ export function queryDispatcherTimeline({
         totalDurationMsMax: 0,
         ttftHist: createEmptyHistogram(),
         queueHist: createEmptyHistogram(),
+        promptTokens: 0,
+        completionTokens: 0,
+        cachedTokens: 0,
+        usageRequests: 0,
       });
     }
 
@@ -319,23 +349,86 @@ export function queryDispatcherTimeline({
     }
   }
 
-  for (const [timestamp, g] of grouped.entries()) {
-    const completed = g.completedCount;
+  // Merge usage_events tokens into grouped buckets
+  for (const urow of usageRows) {
+    const bucketTime = urow.bucket;
+    if (!grouped.has(bucketTime)) {
+      grouped.set(bucketTime, {
+        timestamp: bucketTime,
+        requestCount: 0,
+        completedCount: 0,
+        failedCount: 0,
+        timedOutCount: 0,
+        queueWaitMsSum: 0,
+        ttftMsSum: 0,
+        totalDurationMsSum: 0,
+        queueWaitMsMax: 0,
+        ttftMsMax: 0,
+        totalDurationMsMax: 0,
+        ttftHist: createEmptyHistogram(),
+        queueHist: createEmptyHistogram(),
+        promptTokens: 0,
+        completionTokens: 0,
+        cachedTokens: 0,
+        usageRequests: 0,
+      });
+    }
+    const g = grouped.get(bucketTime);
+    g.promptTokens += Number(urow.prompt_tokens) || 0;
+    g.completionTokens += Number(urow.completion_tokens) || 0;
+    g.cachedTokens += Number(urow.cached_tokens) || 0;
+    g.usageRequests += Number(urow.requests) || 0;
+  }
+
+  // Sort grouped timestamps chronologically
+  const sortedTimestamps = Array.from(grouped.keys()).sort();
+
+  for (const timestamp of sortedTimestamps) {
+    const g = grouped.get(timestamp);
+    const reqs = Math.max(g.requestCount, g.usageRequests || 0);
+    const completed = g.completedCount > 0 ? g.completedCount : (g.requestCount === 0 ? reqs : 0);
     const ttftPercentiles = calculatePercentiles(g.ttftHist, [50, 90, 95]);
     const queuePercentiles = calculatePercentiles(g.queueHist, [50, 95]);
 
+    const promptTokens = g.promptTokens || 0;
+    const completionTokens = g.completionTokens || 0;
+    const cachedTokens = g.cachedTokens || 0;
+    const totalTokens = promptTokens + completionTokens;
+    const cacheHitRate = (cachedTokens + promptTokens > 0)
+      ? Number(((cachedTokens / (promptTokens + cachedTokens)) * 100).toFixed(1))
+      : 0;
+
+    const avgTtftMs = completed > 0 && g.ttftMsSum > 0 ? Math.round(g.ttftMsSum / completed) : 0;
+    const avgQueueWaitMs = reqs > 0 && g.queueWaitMsSum > 0 ? Math.round(g.queueWaitMsSum / reqs) : 0;
+    const avgDurationMs = completed > 0 && g.totalDurationMsSum > 0 ? Math.round(g.totalDurationMsSum / completed) : 0;
+    const decodeDurationMs = Math.max(0, avgDurationMs - avgTtftMs - avgQueueWaitMs);
+
+    // Generation velocity: tokens per second during stream decode
+    const tps = decodeDurationMs > 0 && completionTokens > 0
+      ? Number(((completionTokens / (completed || 1)) / (decodeDurationMs / 1000)).toFixed(1))
+      : 0;
+    const tpsOverall = Number((completionTokens / (groupByMinutes * 60)).toFixed(1));
+
     points.push({
       timestamp,
-      requests: g.requestCount,
+      requests: reqs,
       completed,
       failed: g.failedCount,
       timedOut: g.timedOutCount,
-      avgTtftMs: completed > 0 ? Math.round(g.ttftMsSum / completed) : 0,
+      promptTokens,
+      completionTokens,
+      cachedTokens,
+      totalTokens,
+      cacheHitRate,
+      tps,
+      tpsOverall,
+      avgTtftMs,
       p50TtftMs: ttftPercentiles.p50,
       p95TtftMs: ttftPercentiles.p95,
-      avgQueueWaitMs: g.requestCount > 0 ? Math.round(g.queueWaitMsSum / g.requestCount) : 0,
+      avgQueueWaitMs,
       p95QueueWaitMs: queuePercentiles.p95,
-      avgDurationMs: completed > 0 ? Math.round(g.totalDurationMsSum / completed) : 0,
+      avgDurationMs,
+      decodeDurationMs,
     });
   }
 
@@ -396,11 +489,40 @@ export function queryDispatcherAggregates(provider, sinceIso = null) {
   const ttftPercentiles = calculatePercentiles(mergedTtft, [50, 90, 95, 99]);
   const queuePercentiles = calculatePercentiles(mergedQueue, [50, 95]);
 
+  let usageWhere = "WHERE provider = ?";
+  const usageParams = [provider];
+  if (sinceIso) {
+    usageWhere += " AND timestamp >= ?";
+    usageParams.push(sinceIso);
+  }
+  const usageRow = db.prepare(`
+    SELECT COUNT(1) AS usage_count,
+           SUM(prompt_tokens) AS prompt_tokens,
+           SUM(completion_tokens) AS completion_tokens,
+           SUM(cached_tokens) AS cached_tokens
+    FROM usage_events
+    ${usageWhere}
+  `).get(...usageParams);
+
+  const promptTokens = Number(usageRow?.prompt_tokens) || 0;
+  const completionTokens = Number(usageRow?.completion_tokens) || 0;
+  const cachedTokens = Number(usageRow?.cached_tokens) || 0;
+  const totalTokens = promptTokens + completionTokens;
+  const cacheHitRate = (cachedTokens + promptTokens > 0)
+    ? Number(((cachedTokens / (promptTokens + cachedTokens)) * 100).toFixed(1))
+    : 0;
+  const effectiveTotalRequests = Math.max(totalRequests, Number(usageRow?.usage_count) || 0);
+
   return {
-    totalRequests,
+    totalRequests: effectiveTotalRequests,
     totalCompleted,
     totalFailed,
     totalTimedOut,
+    promptTokens,
+    completionTokens,
+    cachedTokens,
+    totalTokens,
+    cacheHitRate,
     avgTtftMs: totalCompleted > 0 ? Math.round(row.total_ttft_sum / totalCompleted) : 0,
     p50TtftMs: ttftPercentiles.p50,
     p90TtftMs: ttftPercentiles.p90,
@@ -603,6 +725,54 @@ export function queryDispatcherConnectionStats({
     }
   }
 
+  // Merge token volumes and cache hit rate from usage_events
+  const usageConns = db.prepare(`
+    SELECT connection_id,
+           COUNT(1) AS request_count,
+           SUM(prompt_tokens) AS prompt_tokens,
+           SUM(completion_tokens) AS completion_tokens,
+           SUM(cached_tokens) AS cached_tokens
+    FROM usage_events
+    WHERE provider = ? AND timestamp >= ? AND connection_id IS NOT NULL
+    GROUP BY connection_id
+  `).all(provider, effectiveSinceIso);
+
+  for (const u of usageConns) {
+    const cid = u.connection_id;
+    const promptTokens = Number(u.prompt_tokens) || 0;
+    const completionTokens = Number(u.completion_tokens) || 0;
+    const cachedTokens = Number(u.cached_tokens) || 0;
+    const totalTokens = promptTokens + completionTokens;
+    const cacheHitRate = (cachedTokens + promptTokens > 0)
+      ? Number(((cachedTokens / (promptTokens + cachedTokens)) * 100).toFixed(1))
+      : 0;
+
+    if (!result[cid]) {
+      result[cid] = {
+        recentAttempts: Number(u.request_count) || 0,
+        recentTerminalReasonCounts: {},
+        lastAttemptAt: lastActiveMap[cid] || null,
+        avgTtftMs: 0,
+        p95TtftMs: 0,
+        avgQueueWaitMs: 0,
+        promptTokens,
+        completionTokens,
+        cachedTokens,
+        totalTokens,
+        cacheHitRate,
+      };
+    } else {
+      result[cid].promptTokens = promptTokens;
+      result[cid].completionTokens = completionTokens;
+      result[cid].cachedTokens = cachedTokens;
+      result[cid].totalTokens = totalTokens;
+      result[cid].cacheHitRate = cacheHitRate;
+      if (result[cid].recentAttempts === 0 && u.request_count > 0) {
+        result[cid].recentAttempts = Number(u.request_count) || 0;
+      }
+    }
+  }
+
   return result;
 }
 
@@ -653,6 +823,9 @@ export function queryDispatcherModelStats({
         queueSum: 0,
         queueCount: 0,
         ttftHist: createEmptyHistogram(),
+        promptTokens: 0,
+        completionTokens: 0,
+        cachedTokens: 0,
       });
     }
     return byModel.get(key);
@@ -742,21 +915,59 @@ export function queryDispatcherModelStats({
     }
   }
 
+  // Merge token volumes and cache hit rate from usage_events
+  const usageModels = db.prepare(`
+    SELECT model_id,
+           COUNT(1) AS request_count,
+           SUM(prompt_tokens) AS prompt_tokens,
+           SUM(completion_tokens) AS completion_tokens,
+           SUM(cached_tokens) AS cached_tokens
+    FROM usage_events
+    WHERE provider = ? AND timestamp >= ? AND model_id IS NOT NULL
+    GROUP BY model_id
+  `).all(provider, effectiveSinceIso);
+
+  for (const u of usageModels) {
+    const m = ensureModel(u.model_id);
+    m.promptTokens = (m.promptTokens || 0) + (Number(u.prompt_tokens) || 0);
+    m.completionTokens = (m.completionTokens || 0) + (Number(u.completion_tokens) || 0);
+    m.cachedTokens = (m.cachedTokens || 0) + (Number(u.cached_tokens) || 0);
+    if (m.total === 0 && u.request_count > 0) {
+      m.total = Number(u.request_count) || 0;
+      m.completed = Number(u.request_count) || 0;
+    }
+  }
+
   return [...byModel.values()]
-    .map((m) => ({
-      modelId: m.modelId,
-      queued: m.queued,
-      active: m.active,
-      completed: m.completed,
-      failed: m.failed,
-      timedOut: m.timedOut,
-      cancelled: m.cancelled,
-      reconciled: m.reconciled,
-      total: m.total,
-      avgTtftMs: m.ttftCount > 0 ? Math.round(m.ttftSum / m.ttftCount) : 0,
-      p95TtftMs: calculatePercentiles(m.ttftHist, [95]).p95,
-      avgQueueWaitMs: m.queueCount > 0 ? Math.round(m.queueSum / m.queueCount) : 0,
-    }))
+    .map((m) => {
+      const promptTokens = m.promptTokens || 0;
+      const completionTokens = m.completionTokens || 0;
+      const cachedTokens = m.cachedTokens || 0;
+      const totalTokens = promptTokens + completionTokens;
+      const cacheHitRate = (cachedTokens + promptTokens > 0)
+        ? Number(((cachedTokens / (promptTokens + cachedTokens)) * 100).toFixed(1))
+        : 0;
+
+      return {
+        modelId: m.modelId,
+        queued: m.queued,
+        active: m.active,
+        completed: m.completed,
+        failed: m.failed,
+        timedOut: m.timedOut,
+        cancelled: m.cancelled,
+        reconciled: m.reconciled,
+        total: m.total,
+        promptTokens,
+        completionTokens,
+        cachedTokens,
+        totalTokens,
+        cacheHitRate,
+        avgTtftMs: m.ttftCount > 0 ? Math.round(m.ttftSum / m.ttftCount) : 0,
+        p95TtftMs: calculatePercentiles(m.ttftHist, [95]).p95,
+        avgQueueWaitMs: m.queueCount > 0 ? Math.round(m.queueSum / m.queueCount) : 0,
+      };
+    })
     .sort((a, b) => {
       const totalDiff = b.total - a.total;
       if (totalDiff !== 0) return totalDiff;
