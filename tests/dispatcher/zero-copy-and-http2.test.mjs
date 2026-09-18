@@ -4,17 +4,16 @@ import { Readable, Writable } from "node:stream";
 import { getDirectDispatcher, getDispatcher } from "../../open-sse/utils/proxyFetch.js";
 import { createZeroCopyPassthroughStream } from "../../open-sse/utils/zeroCopyStream.js";
 
-test("HTTP/2 Undici Pool - direct dispatcher is initialized with allowH2 and keep-alive", async () => {
+test("Undici Connection Pool - direct dispatcher is initialized with keep-alive and socket isolation", async () => {
   const directDispatcher = await getDirectDispatcher();
   assert.ok(directDispatcher, "directDispatcher must not be null");
-  // Undici Agent options or properties check
   assert.ok(
     directDispatcher.dispatch !== undefined,
     "directDispatcher must be a valid Undici Dispatcher",
   );
 });
 
-test("HTTP/2 Undici Pool - proxy dispatcher is created with keep-alive and allowH2", async () => {
+test("Undici Connection Pool - proxy dispatcher is created with keep-alive and socket isolation", async () => {
   const proxyDispatcher = await getDispatcher("http://127.0.0.1:7890");
   assert.ok(proxyDispatcher, "proxyDispatcher must not be null");
   assert.ok(

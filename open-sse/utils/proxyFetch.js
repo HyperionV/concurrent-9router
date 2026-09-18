@@ -164,8 +164,12 @@ export async function getDirectDispatcher() {
   if (isCloud) return null;
   if (!directAgent) {
     const { Agent } = await import("undici");
+    // Do NOT enable allowH2: true here. Concurrent agent bursts (e.g. 10 agents uploading 32KB
+    // system prompts simultaneously) multiplex onto a single TCP socket under HTTP/2, choking
+    // on a single TCP congestion window (initcwnd ~14.6KB). HTTP/1.1 with keep-alive grants each
+    // concurrent stream an independent TCP socket while retaining warm socket reuse across turns.
     directAgent = new Agent({
-      allowH2: true,
+      allowH2: false,
       keepAliveTimeout: 60_000,
       keepAliveMaxTimeout: 120_000,
       maxSockets: 256,
@@ -180,7 +184,7 @@ export async function getDirectDispatcher() {
 }
 
 /**
- * Create proxy dispatcher lazily (undici-compatible with HTTP/2 and keep-alive)
+ * Create proxy dispatcher lazily (undici-compatible with keep-alive)
  */
 export async function getDispatcher(proxyUrl) {
   const normalized = normalizeProxyUrl(proxyUrl);
@@ -199,7 +203,7 @@ export async function getDispatcher(proxyUrl) {
       normalized,
       new ProxyAgent({
         uri: normalized,
-        allowH2: true,
+        allowH2: false,
         keepAliveTimeout: 60_000,
         keepAliveMaxTimeout: 120_000,
         maxSockets: 128,
