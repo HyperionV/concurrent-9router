@@ -16,6 +16,7 @@ import {
 import { normalizeResponsesInput } from "../translator/helpers/responsesApiHelper.js";
 import { deriveSessionId } from "../utils/sessionManager.js";
 import { getConsistentMachineId } from "../../src/shared/utils/machineId.js";
+import { deriveStablePrefixCacheKey } from "../utils/cacheKeyDerivation.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 
 function resolveSessionId({ body, connectionId, workspaceId, scope }) {
@@ -23,6 +24,7 @@ function resolveSessionId({ body, connectionId, workspaceId, scope }) {
     (typeof body?.prompt_cache_key === "string" && body.prompt_cache_key.trim()) ||
     (typeof body?.session_id === "string" && body.session_id.trim()) ||
     (typeof body?.conversation_id === "string" && body.conversation_id.trim()) ||
+    deriveStablePrefixCacheKey(body) ||
     null;
   if (fromBody) return fromBody;
   if (workspaceId) return String(workspaceId);
@@ -376,7 +378,7 @@ export class GrokCliExecutor extends BaseExecutor {
     return shouldRefreshCredentials("grok-cli", credentials);
   }
 
-  buildHeaders(credentials, stream = true) {
+  buildHeaders(credentials, stream = true, body = null) {
     const headers = super.buildHeaders(credentials, stream);
 
     // Static fingerprint from registry
@@ -401,6 +403,10 @@ export class GrokCliExecutor extends BaseExecutor {
     const sessionId =
       ctx.sessionId ||
       this._currentSessionId ||
+      (typeof body?.conversation_id === "string" && body.conversation_id.trim()) ||
+      (typeof body?.session_id === "string" && body.session_id.trim()) ||
+      (typeof body?.prompt_cache_key === "string" && body.prompt_cache_key.trim()) ||
+      deriveStablePrefixCacheKey(body) ||
       credentials?.connectionId ||
       crypto.randomUUID();
     const reqId = ctx.reqId || this._currentReqId || crypto.randomUUID();
@@ -475,6 +481,10 @@ export class GrokCliExecutor extends BaseExecutor {
       ctx.sessionId = sessionId;
       ctx.reqId = reqId;
       if (agentId) ctx.agentId = agentId;
+    }
+
+    if (!body.prompt_cache_key && sessionId) {
+      body.prompt_cache_key = sessionId;
     }
 
     // Normalize Responses input
@@ -603,6 +613,7 @@ export class GrokCliExecutor extends BaseExecutor {
     const agentId = resolveGrokCliAgentId(bodySessionId, psd);
 
     const ctx = {
+      sessionId: bodySessionId,
       agentId,
     };
     return executionContext.run(ctx, () => super.execute(args));
