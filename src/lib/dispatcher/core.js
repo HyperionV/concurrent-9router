@@ -251,38 +251,39 @@ export function createDispatcherCore({
     const conversationKey = request?.conversationKey;
     const apiKeyScope =
       request?.metadata?.admission?.apiKeyScope || "__no_key__";
-    const affinity =
-      conversationKey && isCachePrefixKey(conversationKey)
-        ? getDispatchConversationAffinity(conversationKey, apiKeyScope)
-        : null;
+    const affinity = conversationKey
+      ? getDispatchConversationAffinity(conversationKey, apiKeyScope)
+      : null;
     const preferredConnectionId = affinity?.connectionId || null;
 
     return [...connections]
       .filter((connection) => connection?.id)
       .sort((a, b) => {
+        // 1. Least-connections: lower occupancy strictly wins.
+        const occA = occupancyByConnection[a.id] || 0;
+        const occB = occupancyByConnection[b.id] || 0;
+        const occupancyDiff = occA - occB;
+        if (occupancyDiff !== 0) return occupancyDiff;
+
+        // 2. Session Warmth: on equal occupancy, connection with warm KV cache wins.
         if (preferredConnectionId) {
-          const occA = occupancyByConnection[a.id] || 0;
-          const occB = occupancyByConnection[b.id] || 0;
-          if (a.id === preferredConnectionId && occA === 0 && occB > 0) return -1;
-          if (b.id === preferredConnectionId && occB === 0 && occA > 0) return 1;
+          if (a.id === preferredConnectionId && b.id !== preferredConnectionId) return -1;
+          if (b.id === preferredConnectionId && a.id !== preferredConnectionId) return 1;
         }
 
-        const occupancyDiff =
-          (occupancyByConnection[a.id] || 0) -
-          (occupancyByConnection[b.id] || 0);
-        if (occupancyDiff !== 0) return occupancyDiff;
-        const leaseCountDiff =
-          (leaseCountByConnection[a.id] || 0) -
-          (leaseCountByConnection[b.id] || 0);
-        if (leaseCountDiff !== 0) return leaseCountDiff;
+        // 3. Quota health penalty.
         const quotaPenaltyDiff =
           quotaHealth.getSelectionPenalty(a, request) -
           quotaHealth.getSelectionPenalty(b, request);
         if (quotaPenaltyDiff !== 0) return quotaPenaltyDiff;
+
+        // 4. Path health score.
         const pathScoreDiff =
-          pathHealth.rankConnection(b, occupancyByConnection[b.id] || 0) -
-          pathHealth.rankConnection(a, occupancyByConnection[a.id] || 0);
+          pathHealth.rankConnection(b, occB) -
+          pathHealth.rankConnection(a, occA);
         if (pathScoreDiff !== 0) return pathScoreDiff;
+
+        // 5. Configured priority and deterministic ID tie-break.
         return compareConnections(a, b);
       });
   }
