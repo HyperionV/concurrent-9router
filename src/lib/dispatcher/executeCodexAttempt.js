@@ -136,6 +136,7 @@ async function executeManagedProviderRequest({
   ccFilterNaming,
   requestId = null,
   retryBudget = 1,
+  excludedConnectionIds = [],
 }) {
   const conversationKey = resolveConversationKey({
     body,
@@ -154,6 +155,7 @@ async function executeManagedProviderRequest({
           routeModel: modelStr,
           retryBudget,
           admission: decision,
+          excludedConnectionIds,
         },
       })
     : await dispatcher.enqueueRequest({
@@ -169,6 +171,7 @@ async function executeManagedProviderRequest({
           routeModel: modelStr,
           retryBudget,
           admission: decision,
+          excludedConnectionIds,
         },
       });
 
@@ -424,6 +427,17 @@ async function executeManagedProviderRequest({
     });
 
     if (retryBudget > 0) {
+      const prevExcluded =
+        queued.request?.metadata?.excludedConnectionIds || [];
+      const updatedExcluded = Array.from(
+        new Set([...prevExcluded, credentials.connectionId]),
+      );
+
+      log.warn(
+        "DISPATCHER",
+        `${provider}/${model}: retrying request=${queued.request.id.slice(0, 8)} on alternate account (excluded: ${updatedExcluded.map((id) => id.slice(0, 8)).join(",")})`,
+      );
+
       return executeManagedProviderRequest({
         body,
         provider,
@@ -438,6 +452,7 @@ async function executeManagedProviderRequest({
         ccFilterNaming,
         requestId: queued.request.id,
         retryBudget: retryBudget - 1,
+        excludedConnectionIds: updatedExcluded,
       });
     }
   } else {

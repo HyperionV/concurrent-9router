@@ -194,6 +194,11 @@ export function createDispatcherCore({
     connectionId,
     activeAttempts,
   ) {
+    const excluded = request?.metadata?.excludedConnectionIds || [];
+    if (Array.isArray(excluded) && excluded.includes(connectionId)) {
+      return false;
+    }
+
     const conversationKey = request?.conversationKey;
     if (!conversationKey) return true;
 
@@ -209,12 +214,12 @@ export function createDispatcherCore({
       conversationKey,
       apiKeyScope,
     );
-    if (
-      affinity &&
-      affinity.connectionId &&
-      affinity.connectionId !== connectionId
-    ) {
-      return false;
+    if (affinity && affinity.connectionId) {
+      if (Array.isArray(excluded) && excluded.includes(affinity.connectionId)) {
+        // Sticky target previously failed on this request: allow failover to alternative connection
+      } else if (affinity.connectionId !== connectionId) {
+        return false;
+      }
     }
 
     return !activeAttempts.some(
