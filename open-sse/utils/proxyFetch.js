@@ -155,20 +155,57 @@ function resolveConnectionProxyUrl(targetUrl, proxyOptions) {
   return normalizeProxyUrl(proxyUrlRaw);
 }
 
+let directAgent = null;
+
 /**
- * Create proxy dispatcher lazily (undici-compatible)
+ * Returns a high-capacity, persistent Undici Agent with HTTP/2 and keep-alive.
  */
-async function getDispatcher(proxyUrl) {
+export async function getDirectDispatcher() {
+  if (isCloud) return null;
+  if (!directAgent) {
+    const { Agent } = await import("undici");
+    directAgent = new Agent({
+      allowH2: true,
+      keepAliveTimeout: 60_000,
+      keepAliveMaxTimeout: 120_000,
+      maxSockets: 256,
+      maxFreeSockets: 64,
+      connect: {
+        timeout: 10_000,
+        keepAlive: true,
+      },
+    });
+  }
+  return directAgent;
+}
+
+/**
+ * Create proxy dispatcher lazily (undici-compatible with HTTP/2 and keep-alive)
+ */
+export async function getDispatcher(proxyUrl) {
   const normalized = normalizeProxyUrl(proxyUrl);
   if (!normalized) return null;
 
   if (!proxyDispatchers.has(normalized)) {
     // Evict oldest entry if max size reached
     if (proxyDispatchers.size >= MEMORY_CONFIG.proxyDispatchersMaxSize) {
-      proxyDispatchers.delete(proxyDispatchers.keys().next().value);
+      const oldestKey = proxyDispatchers.keys().next().value;
+      const oldestAgent = proxyDispatchers.get(oldestKey);
+      oldestAgent?.destroy?.();
+      proxyDispatchers.delete(oldestKey);
     }
     const { ProxyAgent } = await import("undici");
-    proxyDispatchers.set(normalized, new ProxyAgent({ uri: normalized }));
+    proxyDispatchers.set(
+      normalized,
+      new ProxyAgent({
+        uri: normalized,
+        allowH2: true,
+        keepAliveTimeout: 60_000,
+        keepAliveMaxTimeout: 120_000,
+        maxSockets: 128,
+        maxFreeSockets: 32,
+      }),
+    );
   }
 
   return proxyDispatchers.get(normalized);
@@ -298,7 +335,7 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
 
   if (proxyUrl) {
     try {
-      const dispatcher = await getDispatcher(proxyUrl);
+      const dispatcher = options.dispatcher || (await getDispatcher(proxyUrl));
       const response = await originalFetch(url, { ...options, dispatcher });
       response.pathMode = "connection-proxy";
       return response;
@@ -312,13 +349,22 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       console.warn(
         `[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`,
       );
-      const response = await originalFetch(url, options);
+      const directDispatcher =
+        options.dispatcher || (await getDirectDispatcher());
+      const fallbackOptions = directDispatcher
+        ? { ...options, dispatcher: directDispatcher }
+        : options;
+      const response = await originalFetch(url, fallbackOptions);
       response.pathMode = "proxy_failed_direct_fallback";
       return response;
     }
   }
 
-  const response = await originalFetch(url, options);
+  const directDispatcher = options.dispatcher || (await getDirectDispatcher());
+  const fetchOptions = directDispatcher
+    ? { ...options, dispatcher: directDispatcher }
+    : options;
+  const response = await originalFetch(url, fetchOptions);
   response.pathMode = "direct";
   return response;
 }

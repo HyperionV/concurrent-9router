@@ -21,8 +21,9 @@ import {
   isOpenAIResponsesTerminalEvent,
   formatIncompleteOpenAIResponsesStreamFailure,
 } from "./responsesStreamHelpers.js";
+import { createZeroCopyPassthroughStream } from "./zeroCopyStream.js";
 
-export { COLORS, formatSSE };
+export { COLORS, formatSSE, createZeroCopyPassthroughStream };
 
 // sharedEncoder is stateless — safe to share across streams
 const sharedEncoder = new TextEncoder();

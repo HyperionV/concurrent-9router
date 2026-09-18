@@ -125,6 +125,14 @@ export function normalizeUsage(usage) {
   assignNumber("prompt_tokens", usage?.prompt_tokens);
   assignNumber("completion_tokens", usage?.completion_tokens);
   assignNumber("total_tokens", usage?.total_tokens);
+  if (
+    normalized.total_tokens === undefined &&
+    (normalized.prompt_tokens !== undefined ||
+      normalized.completion_tokens !== undefined)
+  ) {
+    normalized.total_tokens =
+      (normalized.prompt_tokens || 0) + (normalized.completion_tokens || 0);
+  }
   assignNumber("cache_read_input_tokens", usage?.cache_read_input_tokens);
   assignNumber("cache_creation_input_tokens", usage?.cache_creation_input_tokens);
   assignNumber("cached_tokens", usage?.cached_tokens);

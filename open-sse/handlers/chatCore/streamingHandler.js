@@ -3,6 +3,7 @@ import { needsTranslation } from "../../translator/index.js";
 import {
   createSSETransformStreamWithLogger,
   createPassthroughStreamWithLogger,
+  createZeroCopyPassthroughStream,
 } from "../../utils/stream.js";
 import { pipeWithDisconnect } from "../../utils/streamHandler.js";
 import { PROVIDERS } from "../../config/providers.js";
@@ -65,6 +66,21 @@ function buildTransformStream({
   if (needsResponsesTranslation) {
     const responsesTarget =
       RESPONSES_SOURCE_TO_TARGET[sourceFormat] || FORMATS.OPENAI;
+    if (responsesTarget === FORMATS.OPENAI_RESPONSES) {
+      return createZeroCopyPassthroughStream({
+        targetFormat: FORMATS.OPENAI_RESPONSES,
+        sourceFormat: FORMATS.OPENAI_RESPONSES,
+        provider,
+        reqLogger,
+        model,
+        connectionId,
+        body,
+        onStreamComplete,
+        apiKey,
+        onFirstProgress,
+        onResponseIdentity,
+      });
+    }
     return createSSETransformStreamWithLogger(
       FORMATS.OPENAI_RESPONSES,
       responsesTarget,
@@ -98,7 +114,9 @@ function buildTransformStream({
     );
   }
 
-  return createPassthroughStreamWithLogger(
+  return createZeroCopyPassthroughStream({
+    targetFormat,
+    sourceFormat,
     provider,
     reqLogger,
     model,
@@ -108,7 +126,7 @@ function buildTransformStream({
     apiKey,
     onFirstProgress,
     onResponseIdentity,
-  );
+  });
 }
 
 /**
