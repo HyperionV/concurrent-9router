@@ -38,10 +38,35 @@ function compareConnections(a, b) {
   return String(a?.id || "").localeCompare(String(b?.id || ""));
 }
 
+export const STARVATION_AGE_MS = 30_000;
+
+export function sortRequestsByPriorityAndQueueTime(requests, now = Date.now()) {
+  return [...requests].sort((a, b) => {
+    const ageA = now - new Date(a?.queuedAt || now).getTime();
+    const ageB = now - new Date(b?.queuedAt || now).getTime();
+
+    const isStarvedA = ageA >= STARVATION_AGE_MS;
+    const isStarvedB = ageB >= STARVATION_AGE_MS;
+
+    const isContinuationA = Boolean(a?.metadata?.isContinuation);
+    const isContinuationB = Boolean(b?.metadata?.isContinuation);
+
+    // Tier 1: Starved requests or Continuation requests
+    // Tier 0: Fresh unstarved Turn-1 requests
+    const tierA = isStarvedA || isContinuationA ? 1 : 0;
+    const tierB = isStarvedB || isContinuationB ? 1 : 0;
+
+    if (tierA !== tierB) {
+      return tierB - tierA; // Higher tier first
+    }
+
+    // Within same tier, preserve FIFO
+    return String(a?.queuedAt || "").localeCompare(String(b?.queuedAt || ""));
+  });
+}
+
 function sortRequestsByQueueTime(requests) {
-  return [...requests].sort((a, b) =>
-    String(a?.queuedAt || "").localeCompare(String(b?.queuedAt || "")),
-  );
+  return sortRequestsByPriorityAndQueueTime(requests);
 }
 
 export function createDispatcherCore({
@@ -489,8 +514,7 @@ export function createDispatcherCore({
     const reclaimed = reclaimActiveLease(requestId, connections);
     if (reclaimed) return reclaimed;
 
-    const slots = resolveSlotsPerConnection();
-    const queuedRequests = sortRequestsByQueueTime(
+    const queuedRequests = sortRequestsByPriorityAndQueueTime(
       listQueuedDispatchRequests(provider, 500),
     );
     const targetRequest = queuedRequests.find(
@@ -498,30 +522,13 @@ export function createDispatcherCore({
     );
     if (!targetRequest) return null;
 
-    const connection = getSortedConnectionsForRequest(
+    const planned = planLeases(
+      queuedRequests,
       connections,
-      targetRequest,
-    ).find((candidateConnection) => {
-      const currentOccupancy =
-        occupancyByConnection[candidateConnection.id] || 0;
-      if (currentOccupancy >= slots) return false;
-      return (
-        connectionCanServeRequest(candidateConnection, targetRequest) &&
-        requestIsEligibleForConnection(
-          targetRequest,
-          candidateConnection.id,
-          activeAttempts,
-        )
-      );
-    });
-    if (!connection) {
-      if (connections.length === 0) {
-        console.warn(
-          `[DISPATCHER] ${provider}: tryLease null — zero connections (check collection filter / isActive)`,
-        );
-      }
-      return null;
-    }
+      activeAttempts,
+    ).find((p) => p.requestId === requestId);
+    if (!planned) return null;
+    const connection = planned.connection;
 
     const attempt = getLatestDispatchAttemptForRequest(requestId);
     if (!attempt || attempt.state !== DISPATCH_ATTEMPT_STATE.QUEUED) {

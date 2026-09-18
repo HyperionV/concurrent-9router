@@ -62,6 +62,19 @@ function resolveTargetFormat(provider) {
   return PROVIDERS[provider]?.format || "openai";
 }
 
+export function detectIsContinuation(body) {
+  if (!body || typeof body !== "object") return false;
+  if (body.previous_response_id || body.previousResponseId) return true;
+  if (Array.isArray(body.messages)) {
+    if (body.messages.length > 2) return true;
+    if (body.messages.some((m) => m?.role === "tool" || m?.role === "assistant")) return true;
+  }
+  if (Array.isArray(body.input) && body.input.length > 1) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Managed admission for Codex, Antigravity, and Grok CLI (isolated pools).
  */
@@ -156,6 +169,7 @@ async function executeManagedProviderRequest({
           retryBudget,
           admission: decision,
           excludedConnectionIds,
+          isContinuation: true,
         },
       })
     : await dispatcher.enqueueRequest({
@@ -172,6 +186,7 @@ async function executeManagedProviderRequest({
           retryBudget,
           admission: decision,
           excludedConnectionIds,
+          isContinuation: detectIsContinuation(body),
         },
       });
 
