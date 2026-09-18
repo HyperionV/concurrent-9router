@@ -157,11 +157,11 @@ export default function ConsoleLogsPage() {
   };
 
   return (
-    <div className="flex flex-col gap-4 p-6 min-h-screen">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
+    <div className="flex-1 w-full h-full min-h-0 flex flex-col gap-2.5 overflow-hidden">
+      {/* Compact Header */}
+      <div className="flex flex-wrap items-center justify-between gap-2 shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <span className="text-xs font-semibold text-text-muted/70 uppercase tracking-wider">
               System
             </span>
@@ -170,28 +170,26 @@ export default function ConsoleLogsPage() {
               Console Logs
             </span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-text-main flex items-center gap-3">
+          <div className="h-4 w-px bg-border" />
+          <h1 className="text-lg font-bold tracking-tight text-text-main flex items-center gap-2.5">
             Console Log Viewer
             {mode === "stream" ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 Live Stream
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                <span className="size-2 rounded-full bg-amber-500" />
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                <span className="size-1.5 rounded-full bg-amber-500" />
                 Snapshot Mode
               </span>
             )}
-            {copyFeedback && (
-              <span className="text-xs font-medium text-emerald-400 animate-fade-in">
-                ✓ Copied to clipboard!
-              </span>
-            )}
           </h1>
-          <p className="text-sm text-text-muted mt-0.5">
-            Real-time streaming and historical snapshot inspection of router stdout and stderr.
-          </p>
+          {copyFeedback && (
+            <span className="text-xs font-medium text-emerald-400 animate-fade-in">
+              ✓ Copied to clipboard!
+            </span>
+          )}
         </div>
       </div>
 

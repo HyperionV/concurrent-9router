@@ -37,6 +37,10 @@ export default function DashboardLayout({ children }) {
   const notifications = useNotificationStore((state) => state.notifications);
   const removeNotification = useNotificationStore((state) => state.removeNotification);
 
+  const isExpandedPage =
+    pathname === "/dashboard/basic-chat" ||
+    pathname.startsWith("/dashboard/console-logs");
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-bg">
       <div className="fixed top-4 right-4 z-[80] flex w-[min(92vw,380px)] flex-col gap-2">
@@ -93,8 +97,22 @@ export default function DashboardLayout({ children }) {
       {/* Main content */}
       <main className="flex flex-col flex-1 h-full min-w-0 relative transition-colors duration-300">
         <Header key={pathname} onMenuClick={() => setSidebarOpen(true)} />
-        <div className={`flex-1 overflow-y-auto custom-scrollbar ${pathname === "/dashboard/basic-chat" ? "" : "p-6 lg:p-10"} ${pathname === "/dashboard/basic-chat" ? "flex flex-col overflow-hidden" : ""}`}>
-          <div className={`${pathname === "/dashboard/basic-chat" ? "flex-1 w-full h-full flex flex-col" : "max-w-7xl mx-auto"}`}>{children}</div>
+        <div
+          className={`flex-1 ${
+            isExpandedPage
+              ? "p-3 sm:p-4 flex flex-col overflow-hidden min-h-0"
+              : "overflow-y-auto custom-scrollbar p-6 lg:p-10"
+          }`}
+        >
+          <div
+            className={`w-full ${
+              isExpandedPage
+                ? "flex-1 h-full flex flex-col min-h-0 overflow-hidden"
+                : "max-w-7xl mx-auto"
+            }`}
+          >
+            {children}
+          </div>
         </div>
       </main>
     </div>

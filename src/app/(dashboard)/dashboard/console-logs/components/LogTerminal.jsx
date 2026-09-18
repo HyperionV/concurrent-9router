@@ -127,7 +127,7 @@ export default function LogTerminal({
   };
 
   return (
-    <div className="flex-1 flex flex-col rounded-xl overflow-hidden border border-border bg-[#0a0d14] shadow-xl min-h-[500px]">
+    <div className="flex-1 min-h-0 w-full flex flex-col rounded-xl overflow-hidden border border-border bg-[#0a0d14] shadow-xl">
       {/* Terminal Title Bar */}
       <div className="flex items-center justify-between px-4 py-2 bg-[#121620] border-b border-white/5 select-none">
         <div className="flex items-center gap-2">
@@ -160,7 +160,7 @@ export default function LogTerminal({
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 p-3 overflow-y-auto overflow-x-auto font-mono text-xs leading-relaxed text-zinc-200 select-text custom-scrollbar"
+        className="flex-1 min-h-0 p-3 overflow-y-auto overflow-x-auto font-mono text-xs leading-relaxed text-zinc-200 select-text custom-scrollbar"
         style={{ scrollBehavior: "smooth" }}
       >
         {loading && entries.length === 0 ? (

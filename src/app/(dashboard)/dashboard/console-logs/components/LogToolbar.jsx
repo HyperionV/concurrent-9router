@@ -55,7 +55,7 @@ export default function LogToolbar({
   };
 
   return (
-    <div className="flex flex-col gap-3 p-4 rounded-xl bg-surface border border-border">
+    <div className="shrink-0 flex flex-col gap-2 p-3 rounded-xl bg-surface border border-border">
       {/* Top row: Presets & Controls */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         {/* Left: Mode toggle & Presets */}
