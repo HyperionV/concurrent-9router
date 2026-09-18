@@ -72,6 +72,11 @@ ecosystem.config.*
 scripts/proxy_results.json
 scripts/proxy_list.txt
 responses_probe.py
+scripts/responses_probe.py
+scripts/realistic_agent_bench.py
+scripts/response_probe/
+scripts/run_test.bat
+scripts/__pycache__/
 tests/*
 !tests/dispatcher/
 !tests/dispatcher/*.mjs
