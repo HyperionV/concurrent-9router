@@ -20,7 +20,7 @@ test("CodexExecutor injects derived prompt_cache_key and aligns session_id heade
   assert.equal(req.headers.session_id, req.transformedBody.prompt_cache_key);
 });
 
-test("CodexExecutor sets prompt_cache_options ttl=30m for gpt-5.6 models", async () => {
+test("CodexExecutor does not set prompt_cache_options (unsupported on responses endpoint)", async () => {
   const executor = new CodexExecutor();
   const body = {
     model: "gpt-5.6-codex",
@@ -34,7 +34,8 @@ test("CodexExecutor sets prompt_cache_options ttl=30m for gpt-5.6 models", async
     credentials: { accessToken: "test-token" },
   });
 
-  assert.deepEqual(req.transformedBody.prompt_cache_options, { ttl: "30m" });
+  assert.equal(req.transformedBody.prompt_cache_options, undefined);
+  assert.match(req.transformedBody.prompt_cache_key, /^pck_[0-9a-f]{16}$/);
 });
 
 test("CodexExecutor preserves explicit prompt_cache_key", async () => {

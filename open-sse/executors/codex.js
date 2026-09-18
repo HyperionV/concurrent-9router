@@ -555,10 +555,6 @@ export class CodexExecutor extends BaseExecutor {
       workingBody.prompt_cache_key = resolvedSessionId;
     }
 
-    if (!workingBody.prompt_cache_options && String(workingBody.model || model).includes("gpt-5.6")) {
-      workingBody.prompt_cache_options = { ttl: "30m" };
-    }
-
     const url = isCompact
       ? `${super.buildUrl(model, stream, 0, credentials)}/compact`
       : super.buildUrl(model, stream, 0, credentials);
