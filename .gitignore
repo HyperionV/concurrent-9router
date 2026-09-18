@@ -86,3 +86,4 @@ tests/*
 setup-9router-vm.sh
 
 scripts/ref_images/
+state.sqlite
