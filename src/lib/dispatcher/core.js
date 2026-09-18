@@ -306,9 +306,13 @@ export function createDispatcherCore({
         const pathScoreDiff =
           pathHealth.rankConnection(b, occB) -
           pathHealth.rankConnection(a, occA);
-        if (pathScoreDiff !== 0) return pathScoreDiff;
+        // 5. Cumulative lease balancing for non-session traffic.
+        const leaseCountDiff =
+          (leaseCountByConnection[a.id] || 0) -
+          (leaseCountByConnection[b.id] || 0);
+        if (leaseCountDiff !== 0) return leaseCountDiff;
 
-        // 5. Configured priority and deterministic ID tie-break.
+        // 6. Configured priority and deterministic ID tie-break.
         return compareConnections(a, b);
       });
   }
@@ -522,13 +526,46 @@ export function createDispatcherCore({
     );
     if (!targetRequest) return null;
 
-    const planned = planLeases(
-      queuedRequests,
+    const now = Date.now();
+    const targetAge = now - new Date(targetRequest?.queuedAt || now).getTime();
+    const targetTier =
+      Boolean(targetRequest?.metadata?.isContinuation) ||
+      targetAge >= STARVATION_AGE_MS
+        ? 1
+        : 0;
+
+    const hasHigherPriorityWaiting = queuedRequests.some((other) => {
+      if (other.id === targetRequest.id) return false;
+      const otherAge = now - new Date(other?.queuedAt || now).getTime();
+      const otherTier =
+        Boolean(other?.metadata?.isContinuation) || otherAge >= STARVATION_AGE_MS
+          ? 1
+          : 0;
+      return otherTier > targetTier;
+    });
+
+    if (hasHigherPriorityWaiting) {
+      return null;
+    }
+
+    const slots = resolveSlotsPerConnection();
+    const connection = getSortedConnectionsForRequest(
       connections,
-      activeAttempts,
-    ).find((p) => p.requestId === requestId);
-    if (!planned) return null;
-    const connection = planned.connection;
+      targetRequest,
+    ).find((candidateConnection) => {
+      const currentOccupancy =
+        occupancyByConnection[candidateConnection.id] || 0;
+      if (currentOccupancy >= slots) return false;
+      return (
+        connectionCanServeRequest(candidateConnection, targetRequest) &&
+        requestIsEligibleForConnection(
+          targetRequest,
+          candidateConnection.id,
+          activeAttempts,
+        )
+      );
+    });
+    if (!connection) return null;
 
     const attempt = getLatestDispatchAttemptForRequest(requestId);
     if (!attempt || attempt.state !== DISPATCH_ATTEMPT_STATE.QUEUED) {
