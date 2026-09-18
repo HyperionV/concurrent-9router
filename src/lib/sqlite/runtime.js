@@ -48,9 +48,10 @@ function getPrimaryKeyColumns(db, tableName) {
 function rebuildDispatchConversationAffinityTable(db) {
   const currentPk = getPrimaryKeyColumns(db, "dispatch_conversation_affinity");
   if (
-    currentPk.length === 2 &&
-    currentPk[0] === "conversation_key" &&
-    currentPk[1] === "api_key_scope"
+    currentPk.length === 3 &&
+    currentPk.includes("conversation_key") &&
+    currentPk.includes("api_key_scope") &&
+    currentPk.includes("provider")
   ) {
     return;
   }
@@ -68,7 +69,7 @@ function rebuildDispatchConversationAffinityTable(db) {
       api_key_id TEXT,
       state TEXT NOT NULL DEFAULT 'active',
       updated_at TEXT NOT NULL,
-      PRIMARY KEY (conversation_key, api_key_scope)
+      PRIMARY KEY (conversation_key, api_key_scope, provider)
     );
 
     INSERT INTO dispatch_conversation_affinity(
@@ -479,7 +480,7 @@ function runMigrations(db) {
       api_key_id TEXT,
       state TEXT NOT NULL DEFAULT 'active',
       updated_at TEXT NOT NULL,
-      PRIMARY KEY (conversation_key, api_key_scope)
+      PRIMARY KEY (conversation_key, api_key_scope, provider)
     );
 
     CREATE TABLE IF NOT EXISTS dispatcher_metrics_1m (

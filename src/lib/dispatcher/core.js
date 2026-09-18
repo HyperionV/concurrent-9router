@@ -238,8 +238,13 @@ export function createDispatcherCore({
     const affinity = getDispatchConversationAffinity(
       conversationKey,
       apiKeyScope,
+      provider,
     );
-    if (affinity && affinity.connectionId) {
+    if (
+      affinity &&
+      affinity.connectionId &&
+      (!affinity.provider || affinity.provider === provider)
+    ) {
       if (Array.isArray(excluded) && excluded.includes(affinity.connectionId)) {
         // Sticky target previously failed on this request: allow failover to alternative connection
       } else if (affinity.connectionId !== connectionId) {
@@ -253,6 +258,7 @@ export function createDispatcherCore({
         (request.conversationKey &&
           getDispatchRequest(attempt.requestId)?.conversationKey ===
             request.conversationKey &&
+          getDispatchRequest(attempt.requestId)?.provider === provider &&
           (getDispatchRequest(attempt.requestId)?.metadata?.admission
             ?.apiKeyScope || "__no_key__") === apiKeyScope &&
           attempt.connectionId !== connectionId),
@@ -277,9 +283,12 @@ export function createDispatcherCore({
     const apiKeyScope =
       request?.metadata?.admission?.apiKeyScope || "__no_key__";
     const affinity = conversationKey
-      ? getDispatchConversationAffinity(conversationKey, apiKeyScope)
+      ? getDispatchConversationAffinity(conversationKey, apiKeyScope, provider)
       : null;
-    const preferredConnectionId = affinity?.connectionId || null;
+    const preferredConnectionId =
+      affinity && (!affinity.provider || affinity.provider === provider)
+        ? affinity.connectionId
+        : null;
 
     return [...connections]
       .filter((connection) => connection?.id)

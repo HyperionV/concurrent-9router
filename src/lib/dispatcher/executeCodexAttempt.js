@@ -102,11 +102,14 @@ export async function maybeHandleManagedCodexRequest({
   const affinity = getConversationAffinity(
     conversationKey,
     apiKeyRecord?.id || null,
+    provider,
   );
   const decision = computeCodexAdmissionDecisionFromSettings({
     settings,
     apiKeyRecord,
-    hasManagedAffinity: affinity?.state === "active",
+    hasManagedAffinity:
+      affinity?.state === "active" &&
+      (!affinity?.provider || affinity?.provider === provider),
     provider,
   });
   if (decision.effectiveBehavior !== "managed") {
@@ -158,6 +161,7 @@ async function executeManagedProviderRequest({
   const affinity = getConversationAffinity(
     conversationKey,
     apiKeyRecord?.id || null,
+    provider,
   );
   const { dispatcher } = getProviderDispatcher(provider);
   const targetFormat = resolveTargetFormat(provider);

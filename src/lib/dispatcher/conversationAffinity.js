@@ -44,11 +44,16 @@ export function isCachePrefixKey(key) {
   return typeof key === "string" && (key.startsWith("pck_") || key.startsWith("pfx_"));
 }
 
-export function getConversationAffinity(conversationKey, apiKeyId = null) {
+export function getConversationAffinity(
+  conversationKey,
+  apiKeyId = null,
+  provider = null,
+) {
   if (!conversationKey) return null;
   return getDispatchConversationAffinity(
     conversationKey,
     getApiKeyScope(apiKeyId),
+    provider,
   );
 }
 

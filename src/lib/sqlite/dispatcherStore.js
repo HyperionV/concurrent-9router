@@ -400,8 +400,7 @@ export function upsertDispatchConversationAffinity(record) {
         ) VALUES (
           @conversationKey, @apiKeyScope, @provider, @modelId, @connectionId, @sessionId, @apiKeyId, @state, @updatedAt
         )
-        ON CONFLICT(conversation_key, api_key_scope) DO UPDATE SET
-          provider = excluded.provider,
+        ON CONFLICT(conversation_key, api_key_scope, provider) DO UPDATE SET
           model_id = excluded.model_id,
           connection_id = excluded.connection_id,
           session_id = excluded.session_id,
@@ -424,13 +423,29 @@ export function upsertDispatchConversationAffinity(record) {
   return getDispatchConversationAffinity(
     record.conversationKey,
     record.apiKeyScope,
+    record.provider,
   );
 }
 
 export function getDispatchConversationAffinity(
   conversationKey,
   apiKeyScope = "__no_key__",
+  provider = null,
 ) {
+  if (provider) {
+    const row = getSqlite()
+      .prepare(
+        `
+          SELECT *
+          FROM dispatch_conversation_affinity
+          WHERE conversation_key = ?
+            AND api_key_scope = ?
+            AND provider = ?
+        `,
+      )
+      .get(conversationKey, apiKeyScope, provider);
+    if (row) return normalizeAffinity(row);
+  }
   const row = getSqlite()
     .prepare(
       `
