@@ -189,6 +189,11 @@ test("client mergeSnapshot preserves historical account metrics when merging liv
       availableSlots: nextConn.availableSlots,
       capacity: nextConn.capacity,
       recentAttempts: nextConn.recentAttempts > 0 ? nextConn.recentAttempts : prevConn.recentAttempts || 0,
+      totalRequests: nextConn.totalRequests > 0 ? nextConn.totalRequests : prevConn.totalRequests || 0,
+      promptTokens: nextConn.promptTokens !== undefined ? nextConn.promptTokens : prevConn.promptTokens || 0,
+      completionTokens: nextConn.completionTokens !== undefined ? nextConn.completionTokens : prevConn.completionTokens || 0,
+      totalTokens: nextConn.totalTokens !== undefined ? nextConn.totalTokens : prevConn.totalTokens || 0,
+      tokensPerModel: Array.isArray(nextConn.tokensPerModel) && nextConn.tokensPerModel.length > 0 ? nextConn.tokensPerModel : prevConn.tokensPerModel || [],
       lastAttemptAt: nextConn.lastAttemptAt || prevConn.lastAttemptAt || null,
       avgTtftMs: nextConn.avgTtftMs > 0 ? nextConn.avgTtftMs : prevConn.avgTtftMs || 0,
       p95TtftMs: nextConn.p95TtftMs > 0 ? nextConn.p95TtftMs : prevConn.p95TtftMs || 0,
@@ -205,5 +210,70 @@ test("client mergeSnapshot preserves historical account metrics when merging liv
   assert.equal(mergedConnections[0].avgTtftMs, 350);
   assert.equal(mergedConnections[0].lastAttemptAt, "2026-09-18T16:00:00.000Z");
   assert.equal(mergedConnections[0].recentTerminalReasonCounts.success, 40);
+});
+
+test("queryDispatcherConnectionStats aggregates lifetime tokens and tokens per model from usage_events", () => {
+  const db = getSqlite();
+  const testProvider = "token-test-" + Date.now();
+  const connId = "conn-token-audit";
+  const now = new Date();
+
+  try {
+    // Insert usage events across multiple models and timestamps
+    const usageStmt = db.prepare(`
+      INSERT INTO usage_events (
+        timestamp, provider, model_id, connection_id, prompt_tokens, completion_tokens, status
+      ) VALUES (?, ?, ?, ?, ?, ?, 'success')
+    `);
+
+    // Model A: 2 requests, 1000 prompt, 200 completion = 1200 tokens
+    usageStmt.run(new Date(now.getTime() - 48 * 3600 * 1000).toISOString(), testProvider, "gpt-5.5-medium", connId, 600, 100);
+    usageStmt.run(new Date(now.getTime() - 24 * 3600 * 1000).toISOString(), testProvider, "gpt-5.5-medium", connId, 400, 100);
+
+    // Model B: 1 request, 500 prompt, 50 completion = 550 tokens
+    usageStmt.run(new Date(now.getTime() - 1000).toISOString(), testProvider, "gpt-5.4-mini", connId, 500, 50);
+
+    // 1. Last active lookup should pick up the latest usage event timestamp
+    const lastActiveMap = queryDispatcherLastActiveByConnection(testProvider);
+    assert.ok(lastActiveMap[connId]);
+
+    // 2. Connection stats check
+    const stats = queryDispatcherConnectionStats({ provider: testProvider, range: "24h" });
+    assert.ok(stats[connId]);
+    assert.equal(stats[connId].totalRequests, 3);
+    assert.equal(stats[connId].promptTokens, 1500);
+    assert.equal(stats[connId].completionTokens, 250);
+    assert.equal(stats[connId].totalTokens, 1750);
+
+    // 3. Tokens per model check
+    assert.ok(Array.isArray(stats[connId].tokensPerModel));
+    assert.equal(stats[connId].tokensPerModel.length, 2);
+    // Ordered by total tokens DESC
+    assert.equal(stats[connId].tokensPerModel[0].modelId, "gpt-5.5-medium");
+    assert.equal(stats[connId].tokensPerModel[0].totalTokens, 1200);
+    assert.equal(stats[connId].tokensPerModel[0].requestCount, 2);
+    assert.equal(stats[connId].tokensPerModel[1].modelId, "gpt-5.4-mini");
+    assert.equal(stats[connId].tokensPerModel[1].totalTokens, 550);
+    assert.equal(stats[connId].tokensPerModel[1].requestCount, 1);
+
+    // 4. Status snapshot propagation check
+    const connectionViews = [{ id: connId, name: "Token Test Connection" }];
+    const snapshot = getDispatcherStatusSnapshot({
+      provider: testProvider,
+      connectionViews,
+      view: "full",
+      range: "24h",
+    });
+
+    const connView = snapshot.connections.find((c) => c.connectionId === connId);
+    assert.ok(connView);
+    assert.equal(connView.totalRequests, 3);
+    assert.equal(connView.promptTokens, 1500);
+    assert.equal(connView.completionTokens, 250);
+    assert.equal(connView.totalTokens, 1750);
+    assert.equal(connView.tokensPerModel.length, 2);
+  } finally {
+    db.prepare("DELETE FROM usage_events WHERE provider = ?").run(testProvider);
+  }
 });
 

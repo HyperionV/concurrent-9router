@@ -305,6 +305,8 @@ function runMigrations(db) {
     CREATE INDEX IF NOT EXISTS usage_events_timestamp_idx ON usage_events(timestamp DESC);
     CREATE INDEX IF NOT EXISTS usage_events_provider_idx ON usage_events(provider, timestamp DESC);
     CREATE INDEX IF NOT EXISTS usage_events_connection_idx ON usage_events(connection_id, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS usage_events_prov_conn_idx ON usage_events(provider, connection_id);
+    CREATE INDEX IF NOT EXISTS usage_events_prov_conn_model_idx ON usage_events(provider, connection_id, model_id);
 
     CREATE TABLE IF NOT EXISTS request_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

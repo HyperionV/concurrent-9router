@@ -268,11 +268,19 @@ function summarizeConnections({
       const occupiedSlots = Number(occupancyByConnection[connection.id] || 0);
       const health = connectionStats[connection.id] || {
         recentAttempts: 0,
+        totalRequests: 0,
         recentTerminalReasonCounts: {},
         lastAttemptAt: null,
         avgTtftMs: 0,
         p95TtftMs: 0,
         avgQueueWaitMs: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        windowPromptTokens: 0,
+        windowCompletionTokens: 0,
+        windowTotalTokens: 0,
+        tokensPerModel: [],
       };
       return {
         connectionId: connection.id,
@@ -286,12 +294,22 @@ function summarizeConnections({
         availableSlots: Math.max(0, slotsPerConnection - occupiedSlots),
         proxyPoolId:
           connection.providerSpecificData?.connectionProxyPoolId || null,
-        recentAttempts: health.recentAttempts,
-        recentTerminalReasonCounts: health.recentTerminalReasonCounts,
-        lastAttemptAt: health.lastAttemptAt,
-        avgTtftMs: health.avgTtftMs,
-        p95TtftMs: health.p95TtftMs,
-        avgQueueWaitMs: health.avgQueueWaitMs,
+        recentAttempts: health.recentAttempts || 0,
+        totalRequests: health.totalRequests ?? health.recentAttempts ?? 0,
+        recentTerminalReasonCounts: health.recentTerminalReasonCounts || {},
+        lastAttemptAt: health.lastAttemptAt || null,
+        avgTtftMs: health.avgTtftMs || 0,
+        p95TtftMs: health.p95TtftMs || 0,
+        avgQueueWaitMs: health.avgQueueWaitMs || 0,
+        promptTokens: health.promptTokens || 0,
+        completionTokens: health.completionTokens || 0,
+        totalTokens: health.totalTokens || 0,
+        windowPromptTokens: health.windowPromptTokens || 0,
+        windowCompletionTokens: health.windowCompletionTokens || 0,
+        windowTotalTokens: health.windowTotalTokens || 0,
+        tokensPerModel: Array.isArray(health.tokensPerModel)
+          ? health.tokensPerModel
+          : [],
       };
     })
     .sort((a, b) => {

@@ -105,6 +105,39 @@ export default function DispatcherPage() {
                   nextConn.recentAttempts > 0
                     ? nextConn.recentAttempts
                     : prevConn.recentAttempts || 0,
+                totalRequests:
+                  nextConn.totalRequests > 0
+                    ? nextConn.totalRequests
+                    : prevConn.totalRequests || 0,
+                promptTokens:
+                  nextConn.promptTokens !== undefined
+                    ? nextConn.promptTokens
+                    : prevConn.promptTokens || 0,
+                completionTokens:
+                  nextConn.completionTokens !== undefined
+                    ? nextConn.completionTokens
+                    : prevConn.completionTokens || 0,
+                totalTokens:
+                  nextConn.totalTokens !== undefined
+                    ? nextConn.totalTokens
+                    : prevConn.totalTokens || 0,
+                windowPromptTokens:
+                  nextConn.windowPromptTokens !== undefined
+                    ? nextConn.windowPromptTokens
+                    : prevConn.windowPromptTokens || 0,
+                windowCompletionTokens:
+                  nextConn.windowCompletionTokens !== undefined
+                    ? nextConn.windowCompletionTokens
+                    : prevConn.windowCompletionTokens || 0,
+                windowTotalTokens:
+                  nextConn.windowTotalTokens !== undefined
+                    ? nextConn.windowTotalTokens
+                    : prevConn.windowTotalTokens || 0,
+                tokensPerModel:
+                  Array.isArray(nextConn.tokensPerModel) &&
+                  nextConn.tokensPerModel.length > 0
+                    ? nextConn.tokensPerModel
+                    : prevConn.tokensPerModel || [],
                 lastAttemptAt:
                   nextConn.lastAttemptAt || prevConn.lastAttemptAt || null,
                 avgTtftMs:

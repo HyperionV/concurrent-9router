@@ -576,6 +576,21 @@ export function queryDispatcherLastActiveByConnection(provider) {
     }
   }
 
+  const usageRows = db.prepare(`
+    SELECT connection_id, MAX(timestamp) AS last_active_at
+    FROM usage_events
+    WHERE provider = ? AND connection_id IS NOT NULL
+    GROUP BY connection_id
+  `).all(provider);
+
+  for (const r of usageRows) {
+    if (r.connection_id && r.last_active_at) {
+      if (!map[r.connection_id] || r.last_active_at > map[r.connection_id]) {
+        map[r.connection_id] = r.last_active_at;
+      }
+    }
+  }
+
   return map;
 }
 
@@ -725,7 +740,86 @@ export function queryDispatcherConnectionStats({
     }
   }
 
-  // Merge token volumes and cache hit rate from usage_events
+  // Query lifetime usage totals per connection
+  const lifetimeUsage = db.prepare(`
+    SELECT connection_id,
+           COUNT(1) AS lifetime_requests,
+           SUM(prompt_tokens) AS lifetime_prompt_tokens,
+           SUM(completion_tokens) AS lifetime_completion_tokens,
+           SUM(prompt_tokens + completion_tokens) AS lifetime_total_tokens,
+           MAX(timestamp) AS last_used_at
+    FROM usage_events
+    WHERE provider = ? AND connection_id IS NOT NULL
+    GROUP BY connection_id
+  `).all(provider);
+
+  // Query per-model tokens and request breakdown per connection
+  const modelUsage = db.prepare(`
+    SELECT connection_id,
+           model_id,
+           COUNT(1) AS request_count,
+           SUM(prompt_tokens) AS prompt_tokens,
+           SUM(completion_tokens) AS completion_tokens,
+           SUM(prompt_tokens + completion_tokens) AS total_tokens
+    FROM usage_events
+    WHERE provider = ? AND connection_id IS NOT NULL
+    GROUP BY connection_id, model_id
+    ORDER BY total_tokens DESC
+  `).all(provider);
+
+  const tokensPerModelByConn = {};
+  for (const m of modelUsage) {
+    if (!tokensPerModelByConn[m.connection_id]) {
+      tokensPerModelByConn[m.connection_id] = [];
+    }
+    tokensPerModelByConn[m.connection_id].push({
+      modelId: m.model_id || "unknown",
+      requestCount: Number(m.request_count) || 0,
+      promptTokens: Number(m.prompt_tokens) || 0,
+      completionTokens: Number(m.completion_tokens) || 0,
+      totalTokens: Number(m.total_tokens) || 0,
+    });
+  }
+
+  // Merge lifetime aggregates into result
+  for (const lu of lifetimeUsage) {
+    const cid = lu.connection_id;
+    const lReqs = Number(lu.lifetime_requests) || 0;
+    const lPrompt = Number(lu.lifetime_prompt_tokens) || 0;
+    const lComp = Number(lu.lifetime_completion_tokens) || 0;
+    const lTotal = Number(lu.lifetime_total_tokens) || (lPrompt + lComp);
+    const lastUsed = lu.last_used_at;
+
+    if (!result[cid]) {
+      result[cid] = {
+        recentAttempts: 0,
+        totalRequests: lReqs,
+        recentTerminalReasonCounts: {},
+        lastAttemptAt: lastUsed || lastActiveMap[cid] || null,
+        avgTtftMs: 0,
+        p95TtftMs: 0,
+        avgQueueWaitMs: 0,
+        promptTokens: lPrompt,
+        completionTokens: lComp,
+        totalTokens: lTotal,
+        windowPromptTokens: 0,
+        windowCompletionTokens: 0,
+        windowTotalTokens: 0,
+        tokensPerModel: tokensPerModelByConn[cid] || [],
+      };
+    } else {
+      result[cid].totalRequests = Math.max(result[cid].totalRequests || 0, lReqs);
+      result[cid].promptTokens = lPrompt;
+      result[cid].completionTokens = lComp;
+      result[cid].totalTokens = lTotal;
+      result[cid].tokensPerModel = tokensPerModelByConn[cid] || [];
+      if (lastUsed && (!result[cid].lastAttemptAt || lastUsed > result[cid].lastAttemptAt)) {
+        result[cid].lastAttemptAt = lastUsed;
+      }
+    }
+  }
+
+  // Merge token volumes and cache hit rate from usage_events for window
   const usageConns = db.prepare(`
     SELECT connection_id,
            COUNT(1) AS request_count,
@@ -746,10 +840,12 @@ export function queryDispatcherConnectionStats({
     const cacheHitRate = (cachedTokens + promptTokens > 0)
       ? Number(((cachedTokens / (promptTokens + cachedTokens)) * 100).toFixed(1))
       : 0;
+    const windowRequests = Number(u.request_count) || 0;
 
     if (!result[cid]) {
       result[cid] = {
-        recentAttempts: Number(u.request_count) || 0,
+        recentAttempts: windowRequests,
+        totalRequests: windowRequests,
         recentTerminalReasonCounts: {},
         lastAttemptAt: lastActiveMap[cid] || null,
         avgTtftMs: 0,
@@ -759,18 +855,49 @@ export function queryDispatcherConnectionStats({
         completionTokens,
         cachedTokens,
         totalTokens,
+        windowPromptTokens: promptTokens,
+        windowCompletionTokens: completionTokens,
+        windowTotalTokens: totalTokens,
         cacheHitRate,
+        tokensPerModel: tokensPerModelByConn[cid] || [],
       };
     } else {
-      result[cid].promptTokens = promptTokens;
-      result[cid].completionTokens = completionTokens;
+      result[cid].windowPromptTokens = promptTokens;
+      result[cid].windowCompletionTokens = completionTokens;
+      result[cid].windowTotalTokens = totalTokens;
       result[cid].cachedTokens = cachedTokens;
-      result[cid].totalTokens = totalTokens;
       result[cid].cacheHitRate = cacheHitRate;
-      if (result[cid].recentAttempts === 0 && u.request_count > 0) {
-        result[cid].recentAttempts = Number(u.request_count) || 0;
+      if (result[cid].recentAttempts === 0 && windowRequests > 0) {
+        result[cid].recentAttempts = windowRequests;
+      }
+      if (!result[cid].promptTokens && promptTokens > 0) {
+        result[cid].promptTokens = promptTokens;
+      }
+      if (!result[cid].completionTokens && completionTokens > 0) {
+        result[cid].completionTokens = completionTokens;
+      }
+      if (!result[cid].totalTokens && totalTokens > 0) {
+        result[cid].totalTokens = totalTokens;
+      }
+      if (!result[cid].tokensPerModel || result[cid].tokensPerModel.length === 0) {
+        result[cid].tokensPerModel = tokensPerModelByConn[cid] || [];
       }
     }
+  }
+
+  // Ensure defaults across all entries
+  for (const cid of Object.keys(result)) {
+    const item = result[cid];
+    if (item.totalRequests === undefined) {
+      item.totalRequests = item.recentAttempts || 0;
+    }
+    if (item.promptTokens === undefined) item.promptTokens = 0;
+    if (item.completionTokens === undefined) item.completionTokens = 0;
+    if (item.totalTokens === undefined) item.totalTokens = item.promptTokens + item.completionTokens;
+    if (item.windowPromptTokens === undefined) item.windowPromptTokens = 0;
+    if (item.windowCompletionTokens === undefined) item.windowCompletionTokens = 0;
+    if (item.windowTotalTokens === undefined) item.windowTotalTokens = 0;
+    if (!item.tokensPerModel) item.tokensPerModel = tokensPerModelByConn[cid] || [];
   }
 
   return result;
