@@ -321,7 +321,7 @@ export default function ProviderDetailPage() {
     try {
       JSON.parse(trimmedAuthJson);
     } catch {
-      setCodexImportError("auth.json must be valid JSON");
+      setCodexImportError("Accounts content must be valid JSON");
       return;
     }
 
@@ -331,12 +331,12 @@ export default function ProviderDetailPage() {
       const res = await fetch("/api/oauth/codex/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ authJson: trimmedAuthJson }),
+        body: JSON.stringify({ content: trimmedAuthJson }),
       });
       const data = await res.json();
 
       if (!res.ok) {
-        setCodexImportError(data.error || "Failed to import auth.json");
+        setCodexImportError(data.error || "Failed to import accounts");
         return;
       }
 
@@ -344,7 +344,7 @@ export default function ProviderDetailPage() {
       setShowCodexImportModal(false);
       resetCodexImport();
     } catch {
-      setCodexImportError("Network error while importing auth.json");
+      setCodexImportError("Network error while importing accounts");
     } finally {
       setCodexImporting(false);
     }
@@ -1277,7 +1277,7 @@ export default function ProviderDetailPage() {
                       icon="upload_file"
                       onClick={() => setShowCodexImportModal(true)}
                     >
-                      Import auth.json
+                      Import Accounts
                     </Button>
                   )}
                 </div>
@@ -1306,7 +1306,7 @@ export default function ProviderDetailPage() {
                       icon="upload_file"
                       onClick={() => setShowCodexImportModal(true)}
                     >
-                      Import auth.json
+                      Import Accounts
                     </Button>
                   )}
                 </div>
@@ -1352,16 +1352,15 @@ export default function ProviderDetailPage() {
       <Modal
         isOpen={showCodexImportModal}
         onClose={closeCodexImportModal}
-        title="Import Codex auth.json"
+        title="Import Codex Accounts (Single or Batch)"
       >
         <div className="flex flex-col gap-4">
           <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-            Paste the full contents of your local Codex auth.json, or upload the
-            file directly. Tokens are stored as a local Codex OAuth connection.
+            Upload or paste your Codex accounts JSON. Supports single <code>auth.json</code> or multi-account order exports (<code>[&#123; access_token, refresh_token, ... &#125;]</code>). Accounts will be saved and deduplicated by email.
           </div>
 
           <label className="flex flex-col gap-2 text-sm font-medium text-text-main">
-            auth.json content
+            Accounts JSON content
             <textarea
               value={codexAuthJson}
               onChange={(event) => {
@@ -1369,7 +1368,7 @@ export default function ProviderDetailPage() {
                 setCodexImportError("");
               }}
               spellCheck={false}
-              placeholder={'{\n  "auth_mode": "chatgpt",\n  "tokens": { ... }\n}'}
+              placeholder={'[\n  {\n    "access_token": "...",\n    "refresh_token": "..."\n  }\n]'}
               className="min-h-48 resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs text-text-main outline-none transition-colors focus:border-primary"
             />
           </label>
@@ -1378,7 +1377,7 @@ export default function ProviderDetailPage() {
             <span className="material-symbols-outlined text-[18px]">
               upload_file
             </span>
-            Upload auth.json
+            Upload JSON file
             <input
               type="file"
               accept="application/json,.json"
