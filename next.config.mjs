@@ -46,6 +46,14 @@ const nextConfig = {
         destination: "/api/v1/responses",
       },
       {
+        source: "/public/:path*",
+        destination: "/api/public/:path*",
+      },
+      {
+        source: "/public",
+        destination: "/api/public",
+      },
+      {
         source: "/v1/:path*",
         destination: "/api/v1/:path*",
       },
