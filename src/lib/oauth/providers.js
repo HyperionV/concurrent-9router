@@ -1437,7 +1437,7 @@ export async function backfillCodexEmails() {
     )
       continue;
 
-    const providerSpecificData = {};
+    const providerSpecificData = { ...(connection.providerSpecificData || {}) };
     if (
       accountInfo.chatgptAccountId &&
       !connection.providerSpecificData?.chatgptAccountId

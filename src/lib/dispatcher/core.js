@@ -311,15 +311,17 @@ export function createDispatcherCore({
           quotaHealth.getSelectionPenalty(b, request);
         if (quotaPenaltyDiff !== 0) return quotaPenaltyDiff;
 
-        // 4. Path health score.
-        const pathScoreDiff =
-          pathHealth.rankConnection(b, occB) -
-          pathHealth.rankConnection(a, occA);
-        // 5. Cumulative lease balancing for non-session traffic.
+        // 4. Cumulative lease balancing for non-session traffic.
         const leaseCountDiff =
           (leaseCountByConnection[a.id] || 0) -
           (leaseCountByConnection[b.id] || 0);
         if (leaseCountDiff !== 0) return leaseCountDiff;
+
+        // 5. Path health score.
+        const pathScoreDiff =
+          pathHealth.rankConnection(b, occB) -
+          pathHealth.rankConnection(a, occA);
+        if (pathScoreDiff !== 0) return pathScoreDiff;
 
         // 6. Configured priority and deterministic ID tie-break.
         return compareConnections(a, b);

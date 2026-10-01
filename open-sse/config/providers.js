@@ -26,16 +26,21 @@ const CLAUDE_API_HEADERS = {
   "Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14"
 };
 
+// Anthropic API version and CLI version
+export const ANTHROPIC_API_VERSION = "2023-06-01";
+export const CLAUDE_CLI_VERSION = "2.1.280";
+
 // Codex CLI version seen by OpenAI backend — single source for identity headers
-export const CODEX_CLI_VERSION = "0.154.0";
+export const CODEX_CLI_VERSION = "0.159.0";
 
 // Grok CLI / cli-chat-proxy identity.
-// Official CLI User-Agent is xai-grok-workspace/<version> (not grok-pager/grok-shell).
-// Keep version in sync with the Grok CLI client that chat-proxy expects.
-export const GROK_CLI_CLIENT_VERSION = "0.2.101";
-export const GROK_CLI_CLIENT_IDENTIFIER = "grok-pager";
+// cli-chat-proxy rejects older identities with HTTP 426. Keep this on a
+// current @xai-official/grok release (1.0.44; minimum 1.0.13).
+export const GROK_CLI_CLIENT_VERSION = "1.0.44";
+export const GROK_CLI_CLIENT_IDENTIFIER = "grok-shell";
 export const GROK_CLI_TOKEN_AUTH = "xai-grok-cli";
-export const GROK_CLI_USER_AGENT = `xai-grok-workspace/${GROK_CLI_CLIENT_VERSION}`;
+export const GROK_CLI_USER_AGENT = `grok-shell/${GROK_CLI_CLIENT_VERSION} (linux; x86_64)`;
+export const GROK_CLI_PAGER_USER_AGENT = `grok-pager/${GROK_CLI_CLIENT_VERSION} grok-shell/${GROK_CLI_CLIENT_VERSION} (linux; x86_64)`;
 export const GROK_CLI_IDENTITY_HEADERS = {
   "User-Agent": GROK_CLI_USER_AGENT,
   "x-xai-token-auth": GROK_CLI_TOKEN_AUTH,
@@ -52,10 +57,10 @@ export const PROVIDERS = {
     baseUrl: "https://api.anthropic.com/v1/messages",
     format: "claude",
     headers: {
-      "Anthropic-Version": "2023-06-01",
+      "Anthropic-Version": ANTHROPIC_API_VERSION,
       "Anthropic-Beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28",
       "Anthropic-Dangerous-Direct-Browser-Access": "true",
-      "User-Agent": "claude-cli/2.1.92 (external, sdk-cli)",
+      "User-Agent": `claude-cli/${CLAUDE_CLI_VERSION} (external, sdk-cli)`,
       "X-App": "cli",
       "X-Stainless-Helper-Method": "stream",
       "X-Stainless-Retry-Count": "0",

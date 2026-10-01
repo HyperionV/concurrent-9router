@@ -88,7 +88,7 @@ export function isNativeGrokCliItemId(id) {
 
 export function supportsGrokCliReasoningEffort(model) {
   const m = String(model || "").toLowerCase();
-  return /^grok-(?:4\.[56]|3)(?:$|-)/.test(m);
+  return /^grok-(?:4\.[5-7]|3)(?:$|-)/.test(m);
 }
 
 export function normalizeGrokCliEffort(value) {
@@ -387,10 +387,10 @@ export class GrokCliExecutor extends BaseExecutor {
       if (v != null && headers[k] === undefined) headers[k] = v;
     }
 
-    // CLI chat-proxy identity (official CLI: xai-grok-workspace/<version>)
+    // CLI chat-proxy identity (official CLI: grok-shell/<version>)
     const clientVersion =
       this.config.clientVersion || headers["x-grok-client-version"] || GROK_CLI_CLIENT_VERSION;
-    headers["User-Agent"] = `xai-grok-workspace/${clientVersion}`;
+    headers["User-Agent"] = `grok-shell/${clientVersion} (linux; x86_64)`;
     headers["x-xai-token-auth"] = this.config.tokenAuth || GROK_CLI_TOKEN_AUTH;
     headers["x-grok-client-identifier"] =
       this.config.clientIdentifier ||

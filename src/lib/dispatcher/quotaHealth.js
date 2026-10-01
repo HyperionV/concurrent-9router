@@ -67,8 +67,16 @@ export function createDispatcherQuotaHealth({
     if (isActiveLimitedState(state, currentTime))
       return Number.POSITIVE_INFINITY;
     if (
+      state?.status === "limited" &&
+      Number.isFinite(state.resetsAtMs) &&
+      state.resetsAtMs <= currentTime
+    ) {
+      return 0;
+    }
+    if (
       state?.status === "danger" ||
-      Number(state?.remainingFraction) <= DANGER_ZONE_REMAINING_FRACTION
+      (Number.isFinite(Number(state?.remainingFraction)) &&
+        Number(state.remainingFraction) <= DANGER_ZONE_REMAINING_FRACTION)
     ) {
       return 1000;
     }

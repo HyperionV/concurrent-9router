@@ -8,8 +8,12 @@ import { buildTtsProviderModels } from "./ttsModels.js";
 export const PROVIDER_MODELS = {
   // OAuth Providers (using alias)
   cc: [
-    // Claude Code — aligned with upstream 9router registry (2026-07)
+    // Claude Code — aligned with upstream 9router registry (2026-10)
+    { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+    { id: "claude-opus-5", name: "Claude Opus 5" },
+    { id: "claude-fable-5-1", name: "Claude Fable 5.1" },
     { id: "claude-fable-5", name: "Claude Fable 5" },
+    { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
     { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
     { id: "claude-opus-4-8", name: "Claude Opus 4.8" },
     { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
@@ -20,9 +24,16 @@ export const PROVIDER_MODELS = {
     { id: "claude-haiku-4-5-20251001", name: "Claude 4.5 Haiku" },
   ],
   cx: [
-    // OpenAI Codex — aligned with upstream 9router registry (2026-07)
-    // Current generation
+    // OpenAI Codex — aligned with upstream 9router registry (2026-10)
+    { id: "gpt-6.1-sol", name: "GPT 6.1 Sol" },
+    { id: "gpt-6-astra", name: "GPT 6.0 Astra" },
+    { id: "gpt-6-astra[1m]", name: "GPT 6.0 Astra (extended context)", upstreamModelId: "gpt-6-astra" },
+    { id: "gpt-6-sol", name: "GPT 6.0 Sol" },
+    { id: "gpt-6-sol[1m]", name: "GPT 6.0 Sol (extended context)", upstreamModelId: "gpt-6-sol" },
+    { id: "gpt-6-luna", name: "GPT 6.0 Luna" },
+    { id: "gpt-6-luna[1m]", name: "GPT 6.0 Luna (extended context)", upstreamModelId: "gpt-6-luna" },
     { id: "gpt-5.6-sol", name: "GPT 5.6 Sol" },
+    { id: "gpt-5.6-sol[1m]", name: "GPT 5.6 Sol (extended context)", upstreamModelId: "gpt-5.6-sol" },
     {
       id: "gpt-5.6-sol-review",
       name: "GPT 5.6 Sol Review",
@@ -30,6 +41,7 @@ export const PROVIDER_MODELS = {
       quotaFamily: "review",
     },
     { id: "gpt-5.6-terra", name: "GPT 5.6 Terra" },
+    { id: "gpt-5.6-terra[1m]", name: "GPT 5.6 Terra (extended context)", upstreamModelId: "gpt-5.6-terra" },
     {
       id: "gpt-5.6-terra-review",
       name: "GPT 5.6 Terra Review",
@@ -37,6 +49,7 @@ export const PROVIDER_MODELS = {
       quotaFamily: "review",
     },
     { id: "gpt-5.6-luna", name: "GPT 5.6 Luna" },
+    { id: "gpt-5.6-luna[1m]", name: "GPT 5.6 Luna (extended context)", upstreamModelId: "gpt-5.6-luna" },
     {
       id: "gpt-5.6-luna-review",
       name: "GPT 5.6 Luna Review",
@@ -50,6 +63,9 @@ export const PROVIDER_MODELS = {
       upstreamModelId: "gpt-5.5",
       quotaFamily: "review",
     },
+    { id: "gpt-daybreak-blue-latest", name: "GPT Daybreak Blue" },
+    { id: "gpt-reserve", name: "GPT Reserve" },
+    { id: "codex-auto-review", name: "Codex Auto Review", upstreamModelId: "codex-auto-review", quotaFamily: "review" },
     { id: "gpt-5.4", name: "GPT 5.4" },
     {
       id: "gpt-5.4-review",
@@ -147,6 +163,28 @@ export const PROVIDER_MODELS = {
   ],
   gcli: [
     // Grok CLI / Grok Build
+    {
+      id: "grok-build",
+      name: "Grok Build",
+      contextLength: 500000,
+      maxOutputTokens: 64000,
+    },
+    { id: "grok-4.7", name: "Grok 4.7" },
+    {
+      id: "grok-4.7-high",
+      name: "Grok 4.7 (High)",
+      upstreamModelId: "grok-4.7",
+    },
+    {
+      id: "grok-4.7-medium",
+      name: "Grok 4.7 (Medium)",
+      upstreamModelId: "grok-4.7",
+    },
+    {
+      id: "grok-4.7-low",
+      name: "Grok 4.7 (Low)",
+      upstreamModelId: "grok-4.7",
+    },
     { id: "grok-4.5", name: "Grok 4.5" },
     {
       id: "grok-4.5-high",
