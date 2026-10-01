@@ -1912,3 +1912,134 @@ export function getRequestDetailRecord(id) {
     db().prepare("SELECT * FROM request_details WHERE id = ?").get(id),
   );
 }
+
+// === Public Models Store ===
+
+function mapPublicModelRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    targetModel: row.target_model,
+    description: row.description || "",
+    provider: row.provider || "",
+    providerDisplay: row.provider_display || "",
+    contextWindow: Number(row.context_window) || 128000,
+    maxOutputTokens: Number(row.max_output_tokens) || 8192,
+    reasoningEfforts: parseJson(row.reasoning_efforts_json, []),
+    defaultEffort: row.default_effort || null,
+    capabilities: parseJson(row.capabilities_json, {
+      reasoning: false,
+      vision: true,
+      tool_calling: true,
+      streaming: true,
+    }),
+    isActive: fromBool(row.is_active),
+    sortOrder: Number(row.sort_order) || 0,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function listPublicModelRecords(onlyActive = false) {
+  const query = onlyActive
+    ? "SELECT * FROM public_models WHERE is_active = 1 ORDER BY sort_order ASC, created_at ASC"
+    : "SELECT * FROM public_models ORDER BY sort_order ASC, created_at ASC";
+  return db().prepare(query).all().map(mapPublicModelRow);
+}
+
+export function getPublicModelRecord(id) {
+  return mapPublicModelRow(
+    db().prepare("SELECT * FROM public_models WHERE id = ?").get(id),
+  );
+}
+
+export function createPublicModelRecord(data) {
+  const id = data.id?.trim() || uuidv4();
+  const now = nowIso();
+  const record = {
+    id,
+    name: data.name?.trim() || id,
+    target_model: data.targetModel?.trim() || data.target_model?.trim() || id,
+    description: data.description?.trim() || "",
+    provider: data.provider?.trim() || "",
+    provider_display: data.providerDisplay?.trim() || data.provider_display?.trim() || "",
+    context_window: Number(data.contextWindow || data.context_window) || 128000,
+    max_output_tokens: Number(data.maxOutputTokens || data.max_output_tokens) || 8192,
+    reasoning_efforts_json: stringifyJson(data.reasoningEfforts || data.reasoning_efforts || []),
+    default_effort: data.defaultEffort || data.default_effort || null,
+    capabilities_json: stringifyJson(data.capabilities || {
+      reasoning: (data.reasoningEfforts || data.reasoning_efforts || []).length > 0,
+      vision: true,
+      tool_calling: true,
+      streaming: true,
+    }),
+    is_active: asBool(data.isActive ?? data.is_active ?? true),
+    sort_order: Number(data.sortOrder ?? data.sort_order ?? 0),
+    created_at: now,
+    updated_at: now,
+  };
+
+  db().prepare(`
+    INSERT INTO public_models(
+      id, name, target_model, description, provider, provider_display,
+      context_window, max_output_tokens, reasoning_efforts_json, default_effort,
+      capabilities_json, is_active, sort_order, created_at, updated_at
+    ) VALUES (
+      @id, @name, @target_model, @description, @provider, @provider_display,
+      @context_window, @max_output_tokens, @reasoning_efforts_json, @default_effort,
+      @capabilities_json, @is_active, @sort_order, @created_at, @updated_at
+    )
+  `).run(record);
+
+  return getPublicModelRecord(id);
+}
+
+export function updatePublicModelRecord(id, updates) {
+  const current = getPublicModelRecord(id);
+  if (!current) return null;
+
+  const now = nowIso();
+  const record = {
+    id,
+    name: (updates.name !== undefined ? updates.name : current.name)?.trim(),
+    target_model: (updates.targetModel !== undefined ? updates.targetModel : updates.target_model !== undefined ? updates.target_model : current.targetModel)?.trim(),
+    description: (updates.description !== undefined ? updates.description : current.description)?.trim(),
+    provider: (updates.provider !== undefined ? updates.provider : current.provider)?.trim(),
+    provider_display: (updates.providerDisplay !== undefined ? updates.providerDisplay : updates.provider_display !== undefined ? updates.provider_display : current.providerDisplay)?.trim(),
+    context_window: Number(updates.contextWindow || updates.context_window || current.contextWindow),
+    max_output_tokens: Number(updates.maxOutputTokens || updates.max_output_tokens || current.maxOutputTokens),
+    reasoning_efforts_json: stringifyJson(updates.reasoningEfforts !== undefined ? updates.reasoningEfforts : updates.reasoning_efforts !== undefined ? updates.reasoning_efforts : current.reasoningEfforts),
+    default_effort: updates.defaultEffort !== undefined ? updates.defaultEffort : updates.default_effort !== undefined ? updates.default_effort : current.defaultEffort,
+    capabilities_json: stringifyJson(updates.capabilities !== undefined ? updates.capabilities : current.capabilities),
+    is_active: asBool(updates.isActive !== undefined ? updates.isActive : updates.is_active !== undefined ? updates.is_active : current.isActive),
+    sort_order: Number(updates.sortOrder !== undefined ? updates.sortOrder : updates.sort_order !== undefined ? updates.sort_order : current.sortOrder),
+    updated_at: now,
+  };
+
+  db().prepare(`
+    UPDATE public_models SET
+      name = @name,
+      target_model = @target_model,
+      description = @description,
+      provider = @provider,
+      provider_display = @provider_display,
+      context_window = @context_window,
+      max_output_tokens = @max_output_tokens,
+      reasoning_efforts_json = @reasoning_efforts_json,
+      default_effort = @default_effort,
+      capabilities_json = @capabilities_json,
+      is_active = @is_active,
+      sort_order = @sort_order,
+      updated_at = @updated_at
+    WHERE id = @id
+  `).run(record);
+
+  return getPublicModelRecord(id);
+}
+
+export function deletePublicModelRecord(id) {
+  const result = db().prepare("DELETE FROM public_models WHERE id = ?").run(id);
+  return result.changes > 0;
+}
+

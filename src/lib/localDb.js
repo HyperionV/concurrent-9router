@@ -50,7 +50,20 @@ import {
   updateConnectionCollectionRecord,
   deleteConnectionCollectionRecord,
   replaceCollectionMemberships,
+  listPublicModelRecords,
+  getPublicModelRecord,
+  createPublicModelRecord,
+  updatePublicModelRecord,
+  deletePublicModelRecord,
 } from "@/lib/sqlite/store.js";
+
+export {
+  listPublicModelRecords,
+  getPublicModelRecord,
+  createPublicModelRecord,
+  updatePublicModelRecord,
+  deletePublicModelRecord,
+};
 
 function normalizeAliasArgs(first, second) {
   const firstLooksLikeModel = typeof first === "string" && first.includes("/");
