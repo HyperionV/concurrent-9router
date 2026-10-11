@@ -11,5 +11,6 @@ export const config = {
     "/api/providers/client",
     "/api/provider-nodes/validate",
     "/api/telegram/:path*",
+    "/api/dispatcher/:path*",
   ],
 };
