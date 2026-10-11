@@ -480,6 +480,19 @@ async function executeManagedProviderRequest({
       return result.response;
     }
 
+    // The client left mid-request: the account did nothing wrong, so no
+    // cooldown and no failover — just free the slot.
+    if (clientSignal?.aborted || result.status === CLIENT_CLOSED_STATUS) {
+      if (!finalized) {
+        finalized = true;
+        await dispatcher.failAttempt(attemptId, {
+          nextState: "cancelled",
+          terminalReason: "client_disconnected",
+        });
+      }
+      return clientClosedResponse(provider);
+    }
+
     if (result.status === 429 || Number.isFinite(Number(result.resetsAtMs))) {
       await dispatcherQuotaHealth.recordOutOfQuota({
         connectionId: credentials.connectionId,
@@ -507,16 +520,16 @@ async function executeManagedProviderRequest({
         resetsAtMs: result.resetsAtMs || null,
       });
 
-      const prevExcluded =
-        queued.request?.metadata?.excludedConnectionIds || [];
+      // Carried in the call, not read back from the queued row: requeueRequest
+      // returns the row as it was before the metadata patch.
       const updatedExcluded = Array.from(
-        new Set([...prevExcluded, credentials.connectionId]),
+        new Set([...excludedConnectionIds, credentials.connectionId]),
       );
       const connections = await dispatcherEntry.getConnections();
       const hasUntriedAccount = connections.some(
         (connection) => !updatedExcluded.includes(connection.id),
       );
-      if (hasUntriedAccount && !clientSignal?.aborted) {
+      if (hasUntriedAccount) {
         log.warn(
           "DISPATCHER",
           `${provider}/${model}: retrying request=${queued.request.id.slice(0, 8)} on alternate account (excluded: ${updatedExcluded.map((id) => id.slice(0, 8)).join(",")})`,

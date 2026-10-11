@@ -233,6 +233,53 @@ test("when no other account remains, the failure returns without another queue w
   );
 });
 
+// Account ids are unique per test: quota health remembers 429s per account id
+// in process memory.
+test("when every account answers 429 the request ends after trying each account once", { timeout: 20_000 }, async () => {
+  await withManagedCodex(
+    ["conn_all429_a", "conn_all429_b", "conn_all429_c"],
+    () => jsonResponse(429, { error: { message: "Rate limit reached" } }),
+    async ({ send, calls }) => {
+      const response = await send();
+      assert.equal(response.status, 429);
+      assert.equal(calls.length, 3);
+      assert.equal(new Set(calls.map((c) => c.connectionId)).size, 3);
+    },
+  );
+});
+
+test("a client that leaves mid-request does not put a healthy account into cooldown", { timeout: 20_000 }, async () => {
+  await withManagedCodex(
+    ["conn_leaver"],
+    (args, index) =>
+      index === 0
+        ? new Promise((_, reject) => {
+            args.signal?.addEventListener("abort", () => {
+              const error = new Error("aborted");
+              error.name = "AbortError";
+              reject(error);
+            });
+          })
+        : jsonResponse(200, { id: "resp_ok", output: [] }),
+    async ({ send, calls, listActiveDispatchAttempts }) => {
+      const client = new AbortController();
+      const pending = send({ signal: client.signal });
+      await sleep(200);
+      client.abort();
+      const abandoned = await pending;
+      assert.equal(abandoned.status, 499);
+      assert.equal(listActiveDispatchAttempts("codex").length, 0);
+
+      // The only account must serve the next request straight away.
+      const startedAt = Date.now();
+      const next = await send();
+      assert.equal(next.status, 200);
+      assert.ok(Date.now() - startedAt < 2000, "account must not be cooling down");
+      assert.equal(calls.length, 2);
+    },
+  );
+});
+
 test("a burst of clients that give up early leaves no ghost work upstream", async () => {
   const UPSTREAM_MS = 300;
   const CLIENT_GIVES_UP_MS = 500;
