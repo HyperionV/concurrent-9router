@@ -376,10 +376,11 @@ export async function handleChatCore({
             log,
             proxyOptions,
           });
-          if (retryResult.response.ok) {
-            providerResponse = retryResult.response;
-            providerUrl = retryResult.url;
-          }
+          // The retry ran with fresh credentials, so its answer (a 429, say)
+          // is the account's real state; the stale 401 must not be classified.
+          providerResponse.body?.cancel().catch(() => {});
+          providerResponse = retryResult.response;
+          providerUrl = retryResult.url;
         } catch {
           log?.warn?.(
             "TOKEN",
