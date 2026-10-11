@@ -297,7 +297,7 @@ export default function ImageDispatcherPage() {
           icon="schedule"
         />
         <StatCard
-          title="Recent terminals"
+          title="Last 50 finished"
           value={snapshot.terminal.count}
           detail={`${snapshot.terminal.byState?.failed || 0} failed, ${snapshot.terminal.byState?.timed_out || 0} timed out`}
           icon="monitoring"

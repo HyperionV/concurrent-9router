@@ -4,6 +4,7 @@ const imageStore = createDispatchLedgerStore({
   requestsTable: "image_dispatch_requests",
   attemptsTable: "image_dispatch_attempts",
   eventsTable: "image_dispatch_events",
+  leaseEntersConnecting: false,
 });
 
 export const insertImageDispatchRequest = imageStore.insertRequest;

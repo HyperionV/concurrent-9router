@@ -45,10 +45,21 @@ function normalizeRequest(row) {
   };
 }
 
+/**
+ * Builds the request/attempt/event ledger shared by the text and image
+ * dispatchers over the given tables.
+ * @param {object} tables
+ * @param {boolean} tables.leaseEntersConnecting when true a lease moves the
+ *   attempt straight to `connecting` and stamps connect_started_at in the same
+ *   write (the text dispatcher: a lease with no connect stamp was killed by the
+ *   watchdog as a ghost); otherwise the attempt rests in `leased` until the
+ *   caller transitions it.
+ */
 export function createDispatchLedgerStore({
   requestsTable,
   attemptsTable,
   eventsTable,
+  leaseEntersConnecting,
 }) {
   if (!requestsTable || !attemptsTable || !eventsTable) {
     throw new Error("dispatch ledger store requires table names");
@@ -216,31 +227,41 @@ export function createDispatchLedgerStore({
     return rows.map(normalizeAttempt);
   }
 
-  function listAttemptsByState(states) {
+  /**
+   * Newest first. `provider` and `limit` are optional.
+   */
+  function listAttemptsByState(states, provider = null, { limit = null } = {}) {
     if (!Array.isArray(states) || states.length === 0) return [];
     const placeholders = states.map(() => "?").join(", ");
+    const providerSql = provider ? "AND provider = ?" : "";
+    const limitSql = Number.isInteger(limit) && limit > 0 ? `LIMIT ${limit}` : "";
+    const params = provider ? [...states, provider] : states;
     const rows = getSqlite()
       .prepare(
         `
           SELECT *
           FROM ${attemptsTable}
           WHERE state IN (${placeholders})
-          ORDER BY queue_entered_at ASC
+            ${providerSql}
+          ORDER BY queue_entered_at DESC
+          ${limitSql}
         `,
       )
-      .all(...states);
+      .all(...params);
     return rows.map(normalizeAttempt);
   }
 
   function leaseAttempt(attemptId, lease) {
+    const leasedAt = lease.leasedAt || nowIso();
     const result = getSqlite()
       .prepare(
         `
           UPDATE ${attemptsTable}
-          SET state = 'leased',
+          SET state = @state,
               connection_id = @connectionId,
               lease_key = @leaseKey,
               leased_at = @leasedAt,
+              connect_started_at = COALESCE(@connectStartedAt, connect_started_at),
               path_mode = @pathMode
           WHERE id = @attemptId
             AND state = 'queued'
@@ -248,9 +269,13 @@ export function createDispatchLedgerStore({
       )
       .run({
         attemptId,
+        state: leaseEntersConnecting ? "connecting" : "leased",
         connectionId: lease.connectionId,
         leaseKey: lease.leaseKey,
-        leasedAt: lease.leasedAt || nowIso(),
+        leasedAt,
+        connectStartedAt: leaseEntersConnecting
+          ? lease.connectStartedAt || leasedAt
+          : null,
         pathMode: lease.pathMode || null,
       });
     return result.changes === 1 ? getAttempt(attemptId) : null;

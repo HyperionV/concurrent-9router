@@ -16,16 +16,14 @@ function summarizeQueued(queuedRequests) {
   };
 }
 
-function summarizeTerminal(terminalAttempts) {
+const RECENT_TERMINAL_LIMIT = 50;
+
+function summarizeTerminal(recentAttempts) {
   const byState = {};
-  for (const attempt of terminalAttempts) {
+  for (const attempt of recentAttempts) {
     byState[attempt.state] = (byState[attempt.state] || 0) + 1;
   }
-  return {
-    count: terminalAttempts.length,
-    byState,
-    recent: terminalAttempts.slice(0, 50),
-  };
+  return { count: recentAttempts.length, byState, recent: recentAttempts };
 }
 
 export async function GET() {
@@ -42,13 +40,12 @@ export async function GET() {
     ]);
     const snapshot = await dispatcher.getStatusSnapshot({ connectionViews });
     const capacityPerConnection = snapshot.capacity.capacityPerConnection;
-    const terminalAttempts = listImageDispatchAttemptsByState([
-      "completed",
-      "failed",
-      "timed_out",
-      "cancelled",
-      "reconciled",
-    ]).filter((attempt) => attempt.provider === "codex");
+    // Newest first, capped in SQL: the ledger holds 24h of attempts.
+    const recentAttempts = listImageDispatchAttemptsByState(
+      ["completed", "failed", "timed_out", "cancelled", "reconciled"],
+      "codex",
+      { limit: RECENT_TERMINAL_LIMIT },
+    );
 
     const selectedCollection =
       collections.find(
@@ -70,7 +67,7 @@ export async function GET() {
       queued: summarizeQueued(snapshot.queuedRequests),
       activeAttempts: snapshot.activeAttempts,
       queuedRequests: snapshot.queuedRequests,
-      terminal: summarizeTerminal(terminalAttempts),
+      terminal: summarizeTerminal(recentAttempts),
       connections: connectionViews.map((connection) => ({
         connectionId: connection.id,
         connectionName:
