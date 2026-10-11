@@ -17,6 +17,12 @@ import {
   parseCodexImageStream,
 } from "./codexImageProtocol.js";
 
+/**
+ * Hard limit on one upstream image generation, matching the image clients'
+ * own read timeout. A hung upstream must end so its dispatcher slot frees.
+ */
+const IMAGE_UPSTREAM_TIMEOUT_MS = 5 * 60 * 1000;
+
 export async function handleImageGenerationCore({
   body,
   modelInfo,
@@ -28,6 +34,7 @@ export async function handleImageGenerationCore({
   onRequestSuccess,
   dispatcherHooks = null,
   abortSignal = null,
+  upstreamTimeoutMs = IMAGE_UPSTREAM_TIMEOUT_MS,
 }) {
   const { provider, model } = modelInfo;
 
@@ -52,6 +59,12 @@ export async function handleImageGenerationCore({
   );
 
   const upstreamController = new AbortController();
+  let upstreamTimedOut = false;
+  const upstreamDeadline = setTimeout(() => {
+    upstreamTimedOut = true;
+    upstreamController.abort();
+  }, upstreamTimeoutMs);
+  upstreamDeadline.unref?.();
   if (abortSignal) {
     if (abortSignal.aborted) upstreamController.abort();
     else {
@@ -71,6 +84,10 @@ export async function handleImageGenerationCore({
       signal: upstreamController.signal,
     });
   } catch (error) {
+    clearTimeout(upstreamDeadline);
+    if (upstreamTimedOut) {
+      return upstreamTimeoutResult();
+    }
     const errMsg = formatProviderError(
       error,
       provider,
@@ -178,6 +195,16 @@ export async function handleImageGenerationCore({
       data: [{ b64_json: b64 }],
     };
   } catch (error) {
+    if (upstreamTimedOut) {
+      if (dispatcherHooks?.onFailure) {
+        await dispatcherHooks.onFailure({
+          status: HTTP_STATUS.GATEWAY_TIMEOUT,
+          error: "Image generation timed out upstream",
+          terminalReason: "upstream_timeout",
+        });
+      }
+      return upstreamTimeoutResult();
+    }
     if (dispatcherHooks?.onFailure) {
       await dispatcherHooks.onFailure({
         status: HTTP_STATUS.BAD_GATEWAY,
@@ -190,6 +217,9 @@ export async function handleImageGenerationCore({
       HTTP_STATUS.BAD_GATEWAY,
       "Invalid response from codex",
     );
+  } finally {
+    // Streaming responses keep the deadline as a backstop for the piped body.
+    if (!streamToClient) clearTimeout(upstreamDeadline);
   }
 
   if (onRequestSuccess) {
@@ -217,4 +247,11 @@ export async function handleImageGenerationCore({
       },
     }),
   };
+}
+
+function upstreamTimeoutResult() {
+  return createErrorResult(
+    HTTP_STATUS.GATEWAY_TIMEOUT,
+    "Image generation timed out upstream",
+  );
 }

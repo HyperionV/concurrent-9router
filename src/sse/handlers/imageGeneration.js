@@ -210,10 +210,6 @@ async function runCodexImageRequest({
     }
 
     const credentials = buildCredentialsFromConnection(lease.connection);
-    const refreshedCredentials = await checkAndRefreshToken(
-      provider,
-      credentials,
-    );
 
     let finalized = false;
     const finalizeFailure = async ({
@@ -239,39 +235,56 @@ async function runCodexImageRequest({
       }
     };
 
-    const result = await handleImageGenerationCore({
-      body,
-      modelInfo: { provider, model },
-      credentials: refreshedCredentials,
-      streamToClient: wantsStream && !binaryOutput,
-      binaryOutput,
-      abortSignal: request.signal,
-      dispatcherHooks: {
-        onConnectStart: () => dispatcher.markAttemptConnecting(lease.attemptId),
-        onStreamStart: () => dispatcher.markAttemptStreamStarted(lease.attemptId),
-        onProgress: () => dispatcher.markAttemptProgress(lease.attemptId),
-        onSuccess: async () => {
-          if (finalized) return;
-          finalized = true;
-          await dispatcher.completeAttempt(lease.attemptId);
+    // Any throw between lease and finalisation must free the image slot.
+    let result;
+    try {
+      const refreshedCredentials = await checkAndRefreshToken(
+        provider,
+        credentials,
+      );
+      result = await handleImageGenerationCore({
+        body,
+        modelInfo: { provider, model },
+        credentials: refreshedCredentials,
+        streamToClient: wantsStream && !binaryOutput,
+        binaryOutput,
+        abortSignal: request.signal,
+        dispatcherHooks: {
+          onConnectStart: () => dispatcher.markAttemptConnecting(lease.attemptId),
+          onStreamStart: () => dispatcher.markAttemptStreamStarted(lease.attemptId),
+          onProgress: () => dispatcher.markAttemptProgress(lease.attemptId),
+          onSuccess: async () => {
+            if (finalized) return;
+            finalized = true;
+            await dispatcher.completeAttempt(lease.attemptId);
+          },
+          onFailure: finalizeFailure,
         },
-        onFailure: finalizeFailure,
-      },
-      onCredentialsRefreshed: async (newCreds) => {
-        await updateProviderCredentials(credentials.connectionId, {
-          accessToken: newCreds.accessToken,
-          refreshToken: newCreds.refreshToken,
-          idToken: newCreds.idToken,
-          email: newCreds.email,
-          providerSpecificData: newCreds.providerSpecificData,
-          testStatus: "active",
+        onCredentialsRefreshed: async (newCreds) => {
+          await updateProviderCredentials(credentials.connectionId, {
+            accessToken: newCreds.accessToken,
+            refreshToken: newCreds.refreshToken,
+            idToken: newCreds.idToken,
+            email: newCreds.email,
+            providerSpecificData: newCreds.providerSpecificData,
+            testStatus: "active",
+          });
+        },
+        onRequestSuccess: async () => {
+          await clearAccountError(credentials.connectionId, credentials, model);
+        },
+        log,
+      });
+    } catch (error) {
+      if (!finalized) {
+        finalized = true;
+        await dispatcher.failAttempt(lease.attemptId, {
+          terminalReason: "internal_error",
+          error: { message: error?.message || String(error) },
         });
-      },
-      onRequestSuccess: async () => {
-        await clearAccountError(credentials.connectionId, credentials, model);
-      },
-      log,
-    });
+      }
+      throw error;
+    }
 
     if (result.success) return result.response;
 

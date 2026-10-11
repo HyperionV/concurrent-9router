@@ -8,6 +8,12 @@ import {
   transitionDispatchAttempt,
   updateDispatchRequestStatus,
 } from "@/lib/sqlite/dispatcherStore.js";
+import {
+  insertImageDispatchAttemptEvent,
+  listActiveImageDispatchAttempts,
+  transitionImageDispatchAttempt,
+  updateImageDispatchRequestStatus,
+} from "@/lib/sqlite/imageDispatcherStore.js";
 import { nowIso } from "@/lib/sqlite/helpers.js";
 import {
   DEFAULT_TERMINAL_REASON,
@@ -41,43 +47,19 @@ export function clearZombieAttemptsOnProcessBoot() {
 
   let total = 0;
   for (const provider of TEXT_DISPATCH_PROVIDERS) {
-    for (const attempt of listActiveDispatchAttempts(provider)) {
-      if (!attempt?.id) continue;
-      const updated = transitionDispatchAttempt(
-        attempt.id,
-        [
-          DISPATCH_ATTEMPT_STATE.LEASED,
-          DISPATCH_ATTEMPT_STATE.CONNECTING,
-          DISPATCH_ATTEMPT_STATE.STREAMING,
-        ],
-        DISPATCH_ATTEMPT_STATE.RECONCILED,
-        {
-          finishedAt: nowIso(),
-          terminalReason: DEFAULT_TERMINAL_REASON.RECONCILED,
-          error: {
-            code: "process_boot_clean",
-            message:
-              "Active attempt from a previous process; cleared so new traffic can lease",
-          },
-        },
-      );
-      if (!updated) continue;
-      total += 1;
-      insertDispatchAttemptEvent({
-        id: randomUUID(),
-        attemptId: attempt.id,
-        eventType: DISPATCH_EVENT_TYPE.RECONCILED,
-        payload: { reason: "process_boot_clean" },
-      });
-      if (attempt.requestId) {
-        updateDispatchRequestStatus(
-          attempt.requestId,
-          DISPATCH_REQUEST_STATUS.CANCELLED,
-          { completedAt: nowIso() },
-        );
-      }
-    }
+    total += reconcileActiveAttempts(listActiveDispatchAttempts(provider), {
+      transition: transitionDispatchAttempt,
+      insertEvent: insertDispatchAttemptEvent,
+      updateRequestStatus: updateDispatchRequestStatus,
+    });
   }
+  // Image occupancy is rebuilt from these rows, so a leftover active image
+  // attempt would hold its account's image slot forever.
+  total += reconcileActiveAttempts(listActiveImageDispatchAttempts(), {
+    transition: transitionImageDispatchAttempt,
+    insertEvent: insertImageDispatchAttemptEvent,
+    updateRequestStatus: updateImageDispatchRequestStatus,
+  });
 
   if (total > 0) {
     console.log(
@@ -94,4 +76,46 @@ export function clearZombieAttemptsOnProcessBoot() {
       error?.message || error,
     );
   }
+}
+
+function reconcileActiveAttempts(
+  attempts,
+  { transition, insertEvent, updateRequestStatus },
+) {
+  let reconciled = 0;
+  for (const attempt of attempts) {
+    if (!attempt?.id) continue;
+    const updated = transition(
+      attempt.id,
+      [
+        DISPATCH_ATTEMPT_STATE.LEASED,
+        DISPATCH_ATTEMPT_STATE.CONNECTING,
+        DISPATCH_ATTEMPT_STATE.STREAMING,
+      ],
+      DISPATCH_ATTEMPT_STATE.RECONCILED,
+      {
+        finishedAt: nowIso(),
+        terminalReason: DEFAULT_TERMINAL_REASON.RECONCILED,
+        error: {
+          code: "process_boot_clean",
+          message:
+            "Active attempt from a previous process; cleared so new traffic can lease",
+        },
+      },
+    );
+    if (!updated) continue;
+    reconciled += 1;
+    insertEvent({
+      id: randomUUID(),
+      attemptId: attempt.id,
+      eventType: DISPATCH_EVENT_TYPE.RECONCILED,
+      payload: { reason: "process_boot_clean" },
+    });
+    if (attempt.requestId) {
+      updateRequestStatus(attempt.requestId, DISPATCH_REQUEST_STATUS.CANCELLED, {
+        completedAt: nowIso(),
+      });
+    }
+  }
+  return reconciled;
 }
