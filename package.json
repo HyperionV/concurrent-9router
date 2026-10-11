@@ -9,7 +9,7 @@
     "start": "node scripts/start-production.mjs",
     "start:standalone": "node scripts/start-production.mjs",
     "start:next": "next start --port 20128",
-    "test:dispatcher": "node --loader ./tests/dispatcher/alias-loader.mjs --test tests/dispatcher/*.test.mjs"
+    "test:dispatcher": "node --import ./tests/dispatcher/isolated-data-dir.mjs --loader ./tests/dispatcher/alias-loader.mjs --test tests/dispatcher/*.test.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
