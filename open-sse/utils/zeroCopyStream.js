@@ -1,48 +1,48 @@
 import { extractUsage } from "./usageTracking.js";
-import { formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
+import {
+  formatIncompleteOpenAIResponsesStreamFailure,
+  isOpenAIResponsesTerminalEvent,
+  responsesTerminalOutcome,
+} from "./responsesStreamHelpers.js";
 import { createToolArgsDeltaRepair } from "./toolArgsDeltaRepair.js";
 import { FORMATS } from "../translator/formats.js";
 
 const sharedEncoder = new TextEncoder();
-const sharedDecoder = new TextDecoder("utf-8", { fatal: false });
-
-const DONE_BYTES = Buffer.from("[DONE]");
-const USAGE_BYTES = Buffer.from('"usage"');
-const RESPONSE_DONE_BYTES = Buffer.from("response.done");
-const RESPONSE_FAILED_BYTES = Buffer.from("response.failed");
+// SSE events end with a blank line; servers may use CRLF line endings.
+const SSE_EVENT_SEPARATOR = /\r?\n\r?\n/;
 
 /**
- * High-performance zero-copy SSE passthrough TransformStream.
- * Directly forwards raw binary chunks (Uint8Array/Buffer) to downstream clients,
- * completely eliminating per-token string decoding, line splitting, and JSON re-serialization.
+ * High-performance SSE passthrough TransformStream.
+ * Forwards the upstream bytes to the client unchanged (Responses streams only
+ * pass through the tool-argument repair). A side copy of the text is parsed
+ * event by event, across network chunk boundaries, to find the response id,
+ * the usage and how the reply ended.
  */
 export function createZeroCopyPassthroughStream(options = {}) {
   const {
     targetFormat = null,
     sourceFormat = null,
-    provider = null,
     reqLogger = null,
-    model = null,
-    connectionId = null,
-    body = null,
     onStreamComplete = null,
     onFirstProgress = null,
     onResponseIdentity = null,
-    apiKey = null,
   } = options;
+
+  const isResponsesPassthrough =
+    sourceFormat === FORMATS.OPENAI_RESPONSES && targetFormat === FORMATS.OPENAI_RESPONSES;
+  // One decoder per stream: a multi-byte character can straddle two chunks.
+  const decoder = new TextDecoder("utf-8", { fatal: false });
 
   let ttftAt = null;
   let firstProgressSeen = false;
   let firstProgressPromise = null;
   let responseIdCaptured = false;
-  let terminalSeen = false;
   let capturedUsage = null;
-  let chunkCount = 0;
+  // "completed", "incomplete" or "failed" once a terminal event arrives.
+  let outcome = null;
+  let pendingText = "";
   let totalBytes = 0;
-  const toolArgsRepair =
-    sourceFormat === FORMATS.OPENAI_RESPONSES && targetFormat === FORMATS.OPENAI_RESPONSES
-      ? createToolArgsDeltaRepair()
-      : null;
+  const toolArgsRepair = isResponsesPassthrough ? createToolArgsDeltaRepair() : null;
 
   function emitFirstProgressOnce() {
     if (firstProgressPromise) return firstProgressPromise;
@@ -54,82 +54,72 @@ export function createZeroCopyPassthroughStream(options = {}) {
     return firstProgressPromise;
   }
 
+  function inspectEvent(rawEvent) {
+    let eventName = null;
+    const dataLines = [];
+    for (const line of rawEvent.split(/\r?\n/)) {
+      if (line.startsWith("event:")) eventName = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+    }
+    const data = dataLines.join("\n");
+    if (!data) return;
+    if (data === "[DONE]") {
+      outcome ??= "completed";
+      return;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      return;
+    }
+
+    if (!responseIdCaptured) {
+      const responseId = parsed?.response?.id || parsed?.id;
+      if (typeof responseId === "string" && responseId) {
+        responseIdCaptured = true;
+        try {
+          onResponseIdentity?.(responseId);
+        } catch {}
+      }
+    }
+
+    const extracted = extractUsage(parsed);
+    if (extracted) capturedUsage = extracted;
+
+    if (isResponsesPassthrough) {
+      if (isOpenAIResponsesTerminalEvent(eventName, parsed)) {
+        outcome = responsesTerminalOutcome(eventName, parsed);
+      }
+    } else if (parsed?.error) {
+      // An OpenAI chat stream reports a failure as an error object.
+      outcome = "failed";
+    }
+  }
+
+  function inspectText(text) {
+    pendingText += text;
+    const events = pendingText.split(SSE_EVENT_SEPARATOR);
+    pendingText = events.pop() || "";
+    for (const event of events) inspectEvent(event);
+  }
+
   return new TransformStream({
     async transform(chunk, controller) {
-      chunkCount++;
       totalBytes += chunk.byteLength || 0;
-      if (!ttftAt) {
-        ttftAt = Date.now();
-      }
+      if (!ttftAt) ttftAt = Date.now();
 
-      // 1. Initial metadata inspection (first 3 chunks only)
-      if (!responseIdCaptured && chunkCount <= 3) {
-        try {
-          const text = sharedDecoder.decode(chunk, { stream: true });
-          const idMatch = text.match(/"id"\s*:\s*"([^"]+)"/);
-          if (idMatch && idMatch[1]) {
-            responseIdCaptured = true;
-            try {
-              onResponseIdentity?.(idMatch[1]);
-            } catch {}
-          }
-        } catch {}
-      }
+      // First progress notification (unblocks dispatcher attempt state)
+      if (!firstProgressSeen) await emitFirstProgressOnce();
 
-      // 2. First progress notification (unblocks dispatcher attempt state)
-      if (!firstProgressSeen) {
-        await emitFirstProgressOnce();
-      }
+      const text = decoder.decode(chunk, { stream: true });
+      inspectText(text);
+      reqLogger?.appendConvertedChunk?.(text);
 
-      // 3. Fast byte check for terminal markers & usage
-      const buf = Buffer.isBuffer(chunk)
-        ? chunk
-        : Buffer.from(
-            chunk.buffer,
-            chunk.byteOffset || 0,
-            chunk.byteLength || chunk.length || 0,
-          );
-
-      const hasDone = buf.includes(DONE_BYTES);
-      const hasUsage = buf.includes(USAGE_BYTES);
-      const hasRespDone = buf.includes(RESPONSE_DONE_BYTES);
-      const hasRespFailed = buf.includes(RESPONSE_FAILED_BYTES);
-
-      if (hasDone || hasRespDone || hasRespFailed) {
-        terminalSeen = true;
-      }
-
-      if (hasUsage || hasRespDone || hasDone) {
-        try {
-          const text = sharedDecoder.decode(chunk, { stream: true });
-          const lines = text.split("\n");
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (trimmed.startsWith("data:") && !trimmed.includes("[DONE]")) {
-              const jsonStr = trimmed.slice(5).trim();
-              if (jsonStr) {
-                const parsed = JSON.parse(jsonStr);
-                const extracted = extractUsage(parsed);
-                if (extracted) {
-                  capturedUsage = extracted;
-                }
-              }
-            }
-          }
-        } catch {}
-      }
-
-      // Optional request logging
-      if (reqLogger?.appendConvertedChunk) {
-        try {
-          const chunkText = sharedDecoder.decode(chunk, { stream: true });
-          reqLogger.appendConvertedChunk(chunkText);
-        } catch {}
-      }
-
-      // 4. Zero-copy forwarding: enqueue the chunk directly without modification.
-      // Responses streams go through the tool-argument repair, which forwards
-      // untouched bytes unless a block holds a function-call-arguments event.
+      // Forward the bytes untouched. Responses streams go through the
+      // tool-argument repair, which forwards untouched bytes unless a block
+      // holds a function-call-arguments event.
       if (!toolArgsRepair) {
         controller.enqueue(chunk);
         return;
@@ -142,15 +132,17 @@ export function createZeroCopyPassthroughStream(options = {}) {
         for (const out of toolArgsRepair.flush()) controller.enqueue(out);
       }
 
-      // Incomplete Responses stream synthesis if upstream disconnected prematurely
-      if (
-        sourceFormat === "openai_responses" &&
-        targetFormat === "openai_responses" &&
-        !terminalSeen
-      ) {
+      // The last event may arrive without a trailing blank line.
+      inspectText(decoder.decode());
+      if (pendingText.trim()) inspectEvent(pendingText);
+
+      // A Responses stream that closed without a terminal event never finished:
+      // tell the client it failed.
+      if (isResponsesPassthrough && !outcome) {
         const failedOutput = formatIncompleteOpenAIResponsesStreamFailure();
         controller.enqueue(sharedEncoder.encode(failedOutput));
         controller.enqueue(sharedEncoder.encode("data: [DONE]\n\n"));
+        outcome = "failed";
       }
 
       try {
@@ -158,6 +150,8 @@ export function createZeroCopyPassthroughStream(options = {}) {
           { content: "", thinking: "", totalBytes },
           capturedUsage,
           ttftAt,
+          // Other formats have no reliable end marker; keep the old default.
+          outcome || "completed",
         );
       } catch (err) {
         console.warn("[ZeroCopyStream] onStreamComplete error:", err.message);

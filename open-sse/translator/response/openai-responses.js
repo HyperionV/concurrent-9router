@@ -364,36 +364,71 @@ function computeFinishReason(state) {
 }
 
 /**
+ * Chat Completions usage from a Responses usage object, keeping cached and
+ * reasoning token counts.
+ */
+function chatUsageFromResponsesUsage(responseUsage) {
+  if (!responseUsage || typeof responseUsage !== "object") return null;
+  const inputTokens = responseUsage.input_tokens || responseUsage.prompt_tokens || 0;
+  const outputTokens = responseUsage.output_tokens || responseUsage.completion_tokens || 0;
+  // input_tokens already includes cached tokens.
+  const cachedTokens =
+    responseUsage.input_tokens_details?.cached_tokens || responseUsage.cache_read_input_tokens || 0;
+  const reasoningTokens = responseUsage.output_tokens_details?.reasoning_tokens || 0;
+
+  const usage = {
+    prompt_tokens: inputTokens,
+    completion_tokens: outputTokens,
+    total_tokens: inputTokens + outputTokens,
+  };
+  if (cachedTokens > 0) usage.prompt_tokens_details = { cached_tokens: cachedTokens };
+  if (reasoningTokens > 0) usage.completion_tokens_details = { reasoning_tokens: reasoningTokens };
+  return usage;
+}
+
+function finishChunk(state, finishReason) {
+  state.finishReasonSent = true;
+  state.finishReason = finishReason; // Mark for usage injection in stream.js
+  const chunk = {
+    id: state.chatId || `chatcmpl-${Date.now()}`,
+    object: "chat.completion.chunk",
+    created: state.created || Math.floor(Date.now() / 1000),
+    model: state.model || "unknown",
+    choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+  };
+  if (state.usage && typeof state.usage === "object") chunk.usage = state.usage;
+  return chunk;
+}
+
+/**
+ * A failed reply ends the stream with an OpenAI stream error object, which
+ * OpenAI clients raise as an error. It is never sent as answer text.
+ */
+function failureChunk(state, error) {
+  state.finishReasonSent = true;
+  state.outcome = "failed";
+  return {
+    error: {
+      message: error?.message || "The upstream model reply failed",
+      type: error?.type || "upstream_error",
+      code: error?.code || null,
+    },
+  };
+}
+
+/**
  * Translate OpenAI Responses API chunk to OpenAI Chat Completions format
  * This is for when Codex returns data and we need to send it to an OpenAI-compatible client
  */
 export function openaiResponsesToOpenAIResponse(chunk, state) {
   if (!chunk) {
-    // Flush: send final chunk with finish_reason
-    if (state.finishReasonSent || !state.started) return null;
-
-    const finishReason = computeFinishReason(state);
-
-    state.finishReasonSent = true;
-    state.finishReason = finishReason;
-
-    const finalChunk = {
-      id: state.chatId || `chatcmpl-${Date.now()}`,
-      object: "chat.completion.chunk",
-      created: state.created || Math.floor(Date.now() / 1000),
-      model: state.model || "unknown",
-      choices: [{
-        index: 0,
-        delta: {},
-        finish_reason: finishReason
-      }]
-    };
-
-    if (state.usage && typeof state.usage === "object") {
-      finalChunk.usage = state.usage;
-    }
-
-    return finalChunk;
+    // Flush: the upstream stream closed. Without a terminal event the reply
+    // never finished, so the client must see an error, not a normal stop.
+    if (state.finishReasonSent) return null;
+    return failureChunk(state, {
+      message: "The upstream stream ended before the reply finished",
+      code: "stream_disconnected",
+    });
   }
 
   // Handle different event types from Responses API
@@ -532,82 +567,31 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
   }
 
   // Response completed / done
-  if (eventType === "response.completed" || eventType === "response.done") {
-    // Extract usage from response.completed event
-    const responseUsage = data.response?.usage;
-    if (responseUsage && typeof responseUsage === "object") {
-      const inputTokens = responseUsage.input_tokens || responseUsage.prompt_tokens || 0;
-      const outputTokens = responseUsage.output_tokens || responseUsage.completion_tokens || 0;
-      // OpenAI Responses API: input_tokens already includes cached_tokens
-      // Cache info is in input_tokens_details.cached_tokens
-      const cacheReadTokens = responseUsage.input_tokens_details?.cached_tokens || responseUsage.cache_read_input_tokens || 0;
-      
-      state.usage = {
-        prompt_tokens: inputTokens,
-        completion_tokens: outputTokens,
-        total_tokens: inputTokens + outputTokens
-      };
-      
-      // Add prompt_tokens_details if cache tokens exist
-      if (cacheReadTokens > 0) {
-        state.usage.prompt_tokens_details = {
-          cached_tokens: cacheReadTokens
-        };
-      }
-    }
-    
-    if (!state.finishReasonSent) {
-      const finishReason = computeFinishReason(state);
+  const terminalStatus =
+    eventType === "response.done" ? data.response?.status : null;
 
-      state.finishReasonSent = true;
-      state.finishReason = finishReason; // Mark for usage injection in stream.js
-      
-      const finalChunk = {
-        id: state.chatId,
-        object: "chat.completion.chunk",
-        created: state.created,
-        model: state.model || "unknown",
-        choices: [{
-          index: 0,
-          delta: {},
-          finish_reason: finishReason
-        }]
-      };
-      
-      // Include usage in final chunk if available
-      if (state.usage && typeof state.usage === "object") {
-        finalChunk.usage = state.usage;
-      }
-      
-      return finalChunk;
-    }
-    return null;
+  // Error events from Responses API (e.g. model_not_found). error and
+  // response.failed can arrive back to back; only the first is reported.
+  if (eventType === "error" || eventType === "response.failed" || terminalStatus === "failed") {
+    if (state.finishReasonSent) return null;
+    state.error = data.error || data.response?.error || null;
+    return failureChunk(state, state.error);
   }
 
-  // Error events from Responses API (e.g. model_not_found)
-  if (eventType === "error" || eventType === "response.failed") {
-    // Avoid emitting duplicate errors (error + response.failed arrive back-to-back)
+  // Cut short (output limit or content filter): a real but partial answer.
+  if (eventType === "response.incomplete" || terminalStatus === "incomplete") {
+    state.usage = chatUsageFromResponsesUsage(data.response?.usage) || state.usage;
     if (state.finishReasonSent) return null;
+    state.outcome = "incomplete";
+    const reason = data.response?.incomplete_details?.reason;
+    return finishChunk(state, reason === "content_filter" ? "content_filter" : "length");
+  }
 
-    const error = data.error || data.response?.error;
-    if (error) {
-      state.error = error;
-      state.finishReasonSent = true;
-
-      // Surface the error as an OpenAI-compatible error chunk
-      return {
-        id: state.chatId || `chatcmpl-${Date.now()}`,
-        object: "chat.completion.chunk",
-        created: state.created || Math.floor(Date.now() / 1000),
-        model: state.model || "unknown",
-        choices: [{
-          index: 0,
-          delta: { content: `[Error] ${error.message || JSON.stringify(error)}` },
-          finish_reason: "stop"
-        }]
-      };
-    }
-    return null;
+  if (eventType === "response.completed" || eventType === "response.done") {
+    state.usage = chatUsageFromResponsesUsage(data.response?.usage) || state.usage;
+    if (state.finishReasonSent) return null;
+    state.outcome = "completed";
+    return finishChunk(state, computeFinishReason(state));
   }
 
   // Reasoning summary / reasoning text delta → emit as reasoning_content for client thinking display

@@ -229,9 +229,6 @@ export async function handleStreamingResponse({
       } else if (dispatcherHooks?.onProgress) {
         await dispatcherHooks.onProgress();
       }
-      if (onRequestSuccess) {
-        await onRequestSuccess();
-      }
       return;
     }
     if (!dispatcherHooks?.onProgress) return;
@@ -249,11 +246,23 @@ export async function handleStreamingResponse({
     touchDispatcherProgress().catch(() => {});
   };
 
-  const wrappedStreamComplete = async (contentObj, usage, ttftAt) => {
+  // The account's error state is cleared, and the attempt completed, only when
+  // the reply really finished; a failed reply fails the attempt instead.
+  const wrappedStreamComplete = async (contentObj, usage, ttftAt, outcome = "completed") => {
     if (!successMarked) {
       await onFirstProgress();
     }
-    onStreamComplete?.(contentObj, usage, ttftAt);
+    onStreamComplete?.(contentObj, usage, ttftAt, outcome);
+    if (outcome === "failed") {
+      await dispatcherHooks?.onFailed?.({
+        status: 502,
+        error: { message: "upstream reply failed", code: "upstream_reply_failed" },
+      });
+      return;
+    }
+    if (onRequestSuccess) {
+      await onRequestSuccess();
+    }
     if (dispatcherHooks?.onCompleted) {
       await dispatcherHooks.onCompleted();
     }
@@ -353,7 +362,7 @@ export function buildOnStreamComplete({
     streamDetailId ||
     `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
-  const onStreamComplete = (contentObj, usage, ttftAt) => {
+  const onStreamComplete = (contentObj, usage, ttftAt, outcome = "completed") => {
     const latency = {
       ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
       total: Date.now() - requestStartTime,
@@ -378,7 +387,7 @@ export function buildOnStreamComplete({
             thinking: safeThinking,
             type: "streaming",
           },
-          status: "success",
+          status: outcome === "failed" ? "error" : "success",
         },
         { id: detailId },
       ),

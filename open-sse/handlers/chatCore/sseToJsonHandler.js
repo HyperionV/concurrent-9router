@@ -10,6 +10,34 @@ import {
 } from "./requestDetail.js";
 import { saveRequestDetail, appendRequestLog } from "@/lib/usageDb.js";
 
+/**
+ * HTTP status for a reply that failed inside a 200 stream: rate limits stay
+ * 429 and request problems stay 400, so the caller can tell them apart from
+ * an upstream fault (502).
+ */
+function statusForFailedReply(error) {
+  const code = `${error?.code || ""} ${error?.type || ""}`.toLowerCase();
+  if (/rate_limit|quota|usage_limit/.test(code)) return HTTP_STATUS.RATE_LIMITED;
+  if (/invalid|context_length/.test(code)) return HTTP_STATUS.BAD_REQUEST;
+  return HTTP_STATUS.BAD_GATEWAY;
+}
+
+/** Chat Completions usage from Responses usage, keeping cached and reasoning tokens. */
+function chatUsage(usage = {}) {
+  const promptTokens = usage.input_tokens || 0;
+  const completionTokens = usage.output_tokens || 0;
+  const result = {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: promptTokens + completionTokens,
+  };
+  const cachedTokens = usage.input_tokens_details?.cached_tokens || 0;
+  const reasoningTokens = usage.output_tokens_details?.reasoning_tokens || 0;
+  if (cachedTokens > 0) result.prompt_tokens_details = { cached_tokens: cachedTokens };
+  if (reasoningTokens > 0) result.completion_tokens_details = { reasoning_tokens: reasoningTokens };
+  return result;
+}
+
 /** Providers that speak OpenAI Responses SSE (codex, grok-cli, …). */
 export function isResponsesProvider(provider) {
   return PROVIDERS[provider]?.format === FORMATS.OPENAI_RESPONSES;
@@ -194,6 +222,14 @@ export async function handleForcedSSEToJson({
       const jsonResponse = await convertResponsesStreamToJson(
         providerResponse.body,
       );
+      if (jsonResponse.status === "failed") {
+        const error = jsonResponse.error || {};
+        appendLog({ tokens: jsonResponse.usage, status: "upstream reply failed" });
+        return createErrorResult(
+          statusForFailedReply(error),
+          error.message || "The upstream model reply failed",
+        );
+      }
       if (
         dispatcherHooks?.onResponseIdentity &&
         typeof jsonResponse?.id === "string" &&
@@ -320,22 +356,23 @@ export async function handleForcedSSEToJson({
           message.reasoning_content = reasoningContent;
         }
         if (hasToolCalls) message.tool_calls = toolCalls;
-        const finishReason = hasToolCalls
-          ? "tool_calls"
-          : jsonResponse.status === "completed"
-            ? "stop"
-            : jsonResponse.status || "stop";
+        // Only "completed" and "incomplete" reach here; failures returned above.
+        const incompleteReason = jsonResponse.incomplete_details?.reason;
+        const finishReason =
+          jsonResponse.status === "incomplete"
+            ? incompleteReason === "content_filter"
+              ? "content_filter"
+              : "length"
+            : hasToolCalls
+              ? "tool_calls"
+              : "stop";
         finalResp = {
           id: jsonResponse.id || `chatcmpl-${Date.now()}`,
           object: "chat.completion",
           created: jsonResponse.created_at || Math.floor(Date.now() / 1000),
           model: jsonResponse.model || model,
           choices: [{ index: 0, message, finish_reason: finishReason }],
-          usage: {
-            prompt_tokens: inTokens,
-            completion_tokens: outTokens,
-            total_tokens: inTokens + outTokens,
-          },
+          usage: chatUsage(usage),
         };
       }
 

@@ -66,6 +66,13 @@ function stopTextBlock(state, results) {
 
 // Convert OpenAI stream chunk to Claude format
 export function openaiToClaudeResponse(chunk, state) {
+  // An OpenAI stream error becomes Anthropic's streaming error event.
+  if (chunk?.error) {
+    return {
+      type: "error",
+      error: { type: "api_error", message: chunk.error.message || "Upstream reply failed" },
+    };
+  }
   if (!chunk || !chunk.choices?.[0]) return null;
 
   const results = [];

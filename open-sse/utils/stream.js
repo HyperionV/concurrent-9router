@@ -6,7 +6,6 @@ import {
   hasValidUsage,
   estimateUsage,
   logUsage,
-  addBufferToUsage,
   filterUsageForFormat,
   COLORS,
 } from "./usageTracking.js";
@@ -19,6 +18,7 @@ import {
 import {
   getOpenAIResponsesEventName,
   isOpenAIResponsesTerminalEvent,
+  responsesTerminalOutcome,
   formatIncompleteOpenAIResponsesStreamFailure,
 } from "./responsesStreamHelpers.js";
 import { createZeroCopyPassthroughStream } from "./zeroCopyStream.js";
@@ -90,6 +90,8 @@ export function createSSEStream(options = {}) {
   let openAIResponsesTerminalSeen = false;
   let openAIResponsesDoneSent = false;
   let clientDoneSent = false;
+  // How a passthrough reply ended: "completed", "incomplete" or "failed".
+  let passthroughOutcome = "completed";
 
   function emitFirstProgressOnce() {
     if (firstProgressPromise) return firstProgressPromise;
@@ -200,6 +202,7 @@ export function createSSEStream(options = {}) {
               if (extracted) {
                 usage = extracted;
               }
+              if (parsed.error) passthroughOutcome = "failed";
 
               const isFinishChunk = parsed.choices?.[0]?.finish_reason;
               if (isFinishChunk && !hasValidUsage(parsed.usage)) {
@@ -211,11 +214,6 @@ export function createSSEStream(options = {}) {
                 parsed.usage = filterUsageForFormat(estimated, FORMATS.OPENAI);
                 output = `data: ${JSON.stringify(parsed)}\n`;
                 usage = estimated;
-                injectedUsage = true;
-              } else if (isFinishChunk && usage) {
-                const buffered = addBufferToUsage(usage);
-                parsed.usage = filterUsageForFormat(buffered, FORMATS.OPENAI);
-                output = `data: ${JSON.stringify(parsed)}\n`;
                 injectedUsage = true;
               } else if (idFixed || fieldsInjected) {
                 output = `data: ${JSON.stringify(parsed)}\n`;
@@ -256,6 +254,7 @@ export function createSSEStream(options = {}) {
           isOpenAIResponsesTerminalEvent(openAIResponsesEventName, parsed)
         ) {
           openAIResponsesTerminalSeen = true;
+          passthroughOutcome = responsesTerminalOutcome(openAIResponsesEventName, parsed);
         }
 
         // For Ollama: done=true is the final chunk with finish_reason/usage, must translate
@@ -267,6 +266,7 @@ export function createSSEStream(options = {}) {
             reqLogger?.appendConvertedChunk?.(failedOutput);
             controller.enqueue(sharedEncoder.encode(failedOutput));
             openAIResponsesTerminalSeen = true;
+            passthroughOutcome = "failed";
           }
 
           const output = "data: [DONE]\n\n";
@@ -387,26 +387,18 @@ export function createSSEStream(options = {}) {
               continue; // Skip this empty chunk
             }
 
-            // Inject estimated usage if finish chunk has no valid usage
+            // A finish chunk keeps the usage the translator gave it; without
+            // one it gets the extracted usage, or an estimate as a last resort.
             const isFinishChunk =
               item.type === "message_delta" || item.choices?.[0]?.finish_reason;
-            if (
-              state.finishReason &&
-              isFinishChunk &&
-              !hasValidUsage(item.usage) &&
-              totalContentLength > 0
-            ) {
-              const estimated = estimateUsage(
-                body,
-                totalContentLength,
-                sourceFormat,
-              );
-              item.usage = filterUsageForFormat(estimated, sourceFormat); // Filter + already has buffer
-              state.usage = estimated;
-            } else if (state.finishReason && isFinishChunk && state.usage) {
-              // Add buffer and filter usage for client (but keep original in state.usage for logging)
-              const buffered = addBufferToUsage(state.usage);
-              item.usage = filterUsageForFormat(buffered, sourceFormat);
+            if (state.finishReason && isFinishChunk && !hasValidUsage(item.usage)) {
+              if (state.usage) {
+                item.usage = filterUsageForFormat(state.usage, sourceFormat);
+              } else if (totalContentLength > 0) {
+                const estimated = estimateUsage(body, totalContentLength, sourceFormat);
+                item.usage = filterUsageForFormat(estimated, sourceFormat);
+                state.usage = estimated;
+              }
             }
 
             const output = formatSSE(item, sourceFormat);
@@ -465,6 +457,7 @@ export function createSSEStream(options = {}) {
               },
               usage,
               ttftAt,
+              passthroughOutcome,
             );
           }
           return;
@@ -528,6 +521,7 @@ export function createSSEStream(options = {}) {
           reqLogger?.appendConvertedChunk?.(failedOutput);
           controller.enqueue(sharedEncoder.encode(failedOutput));
           openAIResponsesTerminalSeen = true;
+          passthroughOutcome = "failed";
         }
 
         const isClientExpectingDone =
@@ -567,6 +561,11 @@ export function createSSEStream(options = {}) {
           }).catch(() => {});
         }
 
+        // The Responses-to-chat translator records how the reply ended; other
+        // upstream formats do not, and keep the "completed" default.
+        const outcome = keepsOpenAIResponsesFormat
+          ? passthroughOutcome
+          : state?.outcome || "completed";
         if (onStreamComplete) {
           onStreamComplete(
             {
@@ -575,6 +574,7 @@ export function createSSEStream(options = {}) {
             },
             state?.usage,
             ttftAt,
+            outcome,
           );
         }
       } catch (error) {
