@@ -1185,7 +1185,7 @@ function mergeGrokBillingPayloads(...payloads) {
   return merged;
 }
 
-async function getGrokCliUsage(accessToken, providerSpecificData = {}) {
+export async function getGrokCliUsage(accessToken, providerSpecificData = {}) {
   if (!accessToken) {
     return { message: "Grok CLI access token not available." };
   }

@@ -8,6 +8,14 @@ function clampScore(score) {
   return Math.max(MIN_SCORE, Math.min(MAX_SCORE, score));
 }
 
+export function resolvePathMode(connection) {
+  return connection?.providerSpecificData?.vercelRelayUrl
+    ? "vercel-relay"
+    : connection?.providerSpecificData?.connectionProxyEnabled
+      ? "connection-proxy"
+      : "direct";
+}
+
 function pathKey(connectionId, pathMode) {
   return `${connectionId || "unknown"}::${pathMode || "unknown"}`;
 }
@@ -15,7 +23,7 @@ function pathKey(connectionId, pathMode) {
 export function createPathHealthTracker() {
   const scores = new Map();
 
-  function getPathScore(connectionId, pathMode = "default") {
+  function getPathScore(connectionId, pathMode) {
     const key = pathKey(connectionId, pathMode);
     return scores.get(key) ?? DEFAULT_PATH_SCORE;
   }
@@ -36,10 +44,7 @@ export function createPathHealthTracker() {
   }
 
   function rankConnection(connection, occupancy = 0) {
-    const baseScore = getPathScore(
-      connection?.id,
-      connection?.pathMode || "default",
-    );
+    const baseScore = getPathScore(connection?.id, resolvePathMode(connection));
     const priority = Number(connection?.priority ?? 999);
     return baseScore - occupancy * 10 - priority;
   }

@@ -14,7 +14,10 @@ import {
   updateDispatchRequestStatus,
 } from "@/lib/sqlite/dispatcherStore.js";
 import { nowIso } from "@/lib/sqlite/helpers.js";
-import { createPathHealthTracker } from "@/lib/dispatcher/pathHealth.js";
+import {
+  createPathHealthTracker,
+  resolvePathMode,
+} from "@/lib/dispatcher/pathHealth.js";
 import { dispatcherQuotaHealth } from "@/lib/dispatcher/quotaHealth.js";
 import { createTimeoutPolicy } from "@/lib/dispatcher/timeoutPolicy.js";
 import {
@@ -63,10 +66,6 @@ export function sortRequestsByPriorityAndQueueTime(requests, now = Date.now()) {
     // Within same tier, preserve FIFO
     return String(a?.queuedAt || "").localeCompare(String(b?.queuedAt || ""));
   });
-}
-
-function sortRequestsByQueueTime(requests) {
-  return sortRequestsByPriorityAndQueueTime(requests);
 }
 
 export function createDispatcherCore({
@@ -120,10 +119,6 @@ export function createDispatcherCore({
     const activeAttempts = listActiveDispatchAttempts(provider);
     rebuildOccupancy(activeAttempts);
     return activeAttempts;
-  }
-
-  async function syncOccupancy() {
-    return readActiveAttempts();
   }
 
   async function enqueueRequest({
@@ -285,10 +280,6 @@ export function createDispatcherCore({
     );
   }
 
-  function getSortedConnections(connections) {
-    return getSortedConnectionsForRequest(connections, null);
-  }
-
   function getSortedConnectionsForRequest(connections, request) {
     const conversationKey = request?.conversationKey;
     const apiKeyScope =
@@ -337,121 +328,6 @@ export function createDispatcherCore({
         // 6. Configured priority and deterministic ID tie-break.
         return compareConnections(a, b);
       });
-  }
-
-  function planLeases(queuedRequests, connections, activeAttempts) {
-    const leasePlan = [];
-    const leasedRequestIds = new Set();
-
-    for (const queuedRequest of queuedRequests) {
-      if (leasedRequestIds.has(queuedRequest.id)) continue;
-
-      const connection = getSortedConnectionsForRequest(
-        connections,
-        queuedRequest,
-      ).find((candidateConnection) => {
-        const currentOccupancy =
-          (occupancyByConnection[candidateConnection.id] || 0) +
-          leasePlan.filter(
-            (plannedLease) =>
-              plannedLease.connection.id === candidateConnection.id,
-          ).length;
-        if (currentOccupancy >= resolveSlotsPerConnection()) return false;
-        return (
-          connectionCanServeRequest(candidateConnection, queuedRequest) &&
-          requestIsEligibleForConnection(
-            queuedRequest,
-            candidateConnection.id,
-            activeAttempts,
-            connections,
-          )
-        );
-      });
-      if (!connection) continue;
-
-      leasedRequestIds.add(queuedRequest.id);
-      leasePlan.push({ requestId: queuedRequest.id, connection });
-    }
-
-    return leasePlan;
-  }
-
-  async function tryLeaseAvailableWork() {
-    const [connections, activeAttempts] = await Promise.all([
-      getConnections(),
-      syncOccupancy(),
-    ]);
-    const queuedRequests = sortRequestsByQueueTime(
-      listQueuedDispatchRequests(provider, 500),
-    );
-    const leases = [];
-
-    for (const plannedLease of planLeases(
-      queuedRequests,
-      connections,
-      activeAttempts,
-    )) {
-      const request = queuedRequests.find(
-        (candidate) => candidate.id === plannedLease.requestId,
-      );
-      const connection = plannedLease.connection;
-      const attempt = getLatestDispatchAttemptForRequest(request.id);
-      if (!attempt || attempt.state !== DISPATCH_ATTEMPT_STATE.QUEUED) {
-        continue;
-      }
-
-      const leasedAt = nowIso();
-      const leaseKey = buildLeaseKey(connection.id);
-      const leased = leaseDispatchAttempt(attempt.id, {
-        connectionId: connection.id,
-        leaseKey,
-        leasedAt,
-        pathMode: connection?.providerSpecificData?.vercelRelayUrl
-          ? "vercel-relay"
-          : connection?.providerSpecificData?.connectionProxyEnabled
-            ? "connection-proxy"
-            : "direct",
-      });
-      if (!leased) {
-        continue;
-      }
-
-      updateDispatchRequestStatus(request.id, DISPATCH_REQUEST_STATUS.RUNNING);
-      occupancyByConnection[connection.id] =
-        (occupancyByConnection[connection.id] || 0) + 1;
-      leaseCountByConnection[connection.id] =
-        (leaseCountByConnection[connection.id] || 0) + 1;
-
-      insertDispatchAttemptEvent({
-        id: randomUUID(),
-        attemptId: leased.id,
-        eventType: DISPATCH_EVENT_TYPE.LEASED,
-        payload: {
-          connectionId: connection.id,
-          leaseKey,
-        },
-      });
-      insertDispatchAttemptEvent({
-        id: randomUUID(),
-        attemptId: leased.id,
-        eventType: DISPATCH_EVENT_TYPE.CONNECT_STARTED,
-        payload: {
-          at: leased.connectStartedAt || leasedAt,
-          source: "try_lease_available",
-        },
-      });
-
-      leases.push({
-        requestId: request.id,
-        attemptId: leased.id,
-        connectionId: connection.id,
-        connection,
-        request,
-        attempt: leased,
-      });
-    }
-
-    return leases;
   }
 
   /**
@@ -600,11 +476,7 @@ export function createDispatcherCore({
 
     const leasedAt = nowIso();
     const leaseKey = buildLeaseKey(connection.id);
-    const pathMode = connection?.providerSpecificData?.vercelRelayUrl
-      ? "vercel-relay"
-      : connection?.providerSpecificData?.connectionProxyEnabled
-        ? "connection-proxy"
-        : "direct";
+    const pathMode = resolvePathMode(connection);
     const leased = leaseDispatchAttempt(attempt.id, {
       connectionId: connection.id,
       leaseKey,
@@ -657,6 +529,14 @@ export function createDispatcherCore({
     updateDispatchRequestStatus(attempt.requestId, requestState, {
       completedAt: nowIso(),
     });
+  }
+
+  // Only attempts that reached a connection have a path to score. A timeout
+  // after the lease is the one failure that says the route itself is bad;
+  // provider errors and client disconnects say nothing about the route.
+  function recordPathOutcomeForAttempt(attempt, outcome) {
+    if (!attempt.connectionId || !attempt.pathMode) return;
+    pathHealth.recordPathOutcome(attempt.connectionId, attempt.pathMode, outcome);
   }
 
   function releaseConnectionOccupancy(connectionId) {
@@ -770,6 +650,7 @@ export function createDispatcherCore({
     if (!attempt) return null;
 
     dispatcherMetricsAggregator.recordAttemptCompletion(attempt);
+    recordPathOutcomeForAttempt(attempt, "success");
     releaseConnectionOccupancy(attempt.connectionId);
     finalizeRequestForAttempt(attempt, DISPATCH_ATTEMPT_STATE.COMPLETED);
     insertDispatchAttemptEvent({
@@ -809,6 +690,9 @@ export function createDispatcherCore({
     if (!attempt) return null;
 
     dispatcherMetricsAggregator.recordAttemptCompletion(attempt);
+    if (nextState === DISPATCH_ATTEMPT_STATE.TIMED_OUT) {
+      recordPathOutcomeForAttempt(attempt, "failed");
+    }
     releaseConnectionOccupancy(attempt.connectionId);
     finalizeRequestForAttempt(attempt, nextState);
     insertDispatchAttemptEvent({
@@ -841,7 +725,6 @@ export function createDispatcherCore({
   return {
     enqueueRequest,
     requeueRequest,
-    tryLeaseAvailableWork,
     tryLeaseRequest,
     markAttemptConnecting,
     markAttemptStreamStarted,

@@ -12,6 +12,7 @@ import {
   updateImageDispatchRequestStatus,
 } from "@/lib/sqlite/imageDispatcherStore.js";
 import { nowIso } from "@/lib/sqlite/helpers.js";
+import { resolvePathMode } from "@/lib/dispatcher/pathHealth.js";
 import {
   DEFAULT_TERMINAL_REASON,
   DISPATCH_ATTEMPT_STATE,
@@ -33,14 +34,6 @@ function compareConnections(a, b) {
   const priorityDiff = Number(a?.priority ?? 999) - Number(b?.priority ?? 999);
   if (priorityDiff !== 0) return priorityDiff;
   return String(a?.id || "").localeCompare(String(b?.id || ""));
-}
-
-function resolvePathMode(connection) {
-  return connection?.providerSpecificData?.vercelRelayUrl
-    ? "vercel-relay"
-    : connection?.providerSpecificData?.connectionProxyEnabled
-      ? "connection-proxy"
-      : "direct";
 }
 
 export function createImageDispatcherCore({
@@ -224,18 +217,6 @@ export function createImageDispatcherCore({
     );
     leaseQueue = nextLease.catch(() => null);
     return nextLease;
-  }
-
-  async function tryLeaseAvailableWork() {
-    const queuedRequests = sortRequestsByQueueTime(
-      listQueuedImageDispatchRequests(provider, 500),
-    );
-    const leases = [];
-    for (const request of queuedRequests) {
-      const lease = await tryLeaseRequest(request.id);
-      if (lease) leases.push(lease);
-    }
-    return leases;
   }
 
   function releaseConnectionOccupancy(connectionId) {
@@ -433,7 +414,6 @@ export function createImageDispatcherCore({
 
   return {
     enqueueRequest,
-    tryLeaseAvailableWork,
     tryLeaseRequest,
     markAttemptConnecting,
     markAttemptStreamStarted,

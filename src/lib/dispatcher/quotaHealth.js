@@ -4,17 +4,18 @@ const NORMAL_QUOTA_TTL_MS = 5 * 60 * 1000;
 const DANGER_ZONE_QUOTA_TTL_MS = 30 * 1000;
 const DANGER_ZONE_REMAINING_FRACTION = 0.05;
 const QUOTA_NAMESPACE = "dispatcherQuotaHealth";
+const ALL_MODELS = "__all";
 
 function normalizeModelId(modelId) {
   return typeof modelId === "string" && modelId.trim()
     ? modelId.trim()
-    : "__all";
+    : ALL_MODELS;
 }
 
 function getQuotaState(connection, modelId) {
   const rawConnection = connection?._connection || connection;
   const quota = rawConnection?.providerSpecificData?.[QUOTA_NAMESPACE] || {};
-  return quota[normalizeModelId(modelId)] || quota.__all || null;
+  return quota[normalizeModelId(modelId)] || quota[ALL_MODELS] || null;
 }
 
 function cloneProviderSpecificData(connection) {
@@ -52,6 +53,7 @@ export function createDispatcherQuotaHealth({
     if (!connectionId) return null;
     return (
       memory.get(cacheKey(connectionId, modelId)) ||
+      memory.get(cacheKey(connectionId, ALL_MODELS)) ||
       getQuotaState(connection, modelId)
     );
   }
