@@ -36,14 +36,28 @@ const LEASE_POLL_INTERVAL_MS = 100;
 const LEASE_POLL_INITIAL_MS = 25;
 const LEASE_POLL_INITIAL_COUNT = 4;
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+const CLIENT_CLOSED_STATUS = 499;
+
+function sleepUnlessAborted(ms, signal) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
-export async function waitForLease(dispatcher, requestId, timeoutMs) {
+/**
+ * Poll for a lease until granted, the deadline passes, or the client
+ * disconnects (`signal` aborts). Returns the lease or null.
+ */
+export async function waitForLease(dispatcher, requestId, timeoutMs, signal = null) {
   const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
   let attempt = 0;
-  while (Date.now() <= deadline) {
+  while (Date.now() <= deadline && !signal?.aborted) {
     const lease = await dispatcher.tryLeaseRequest(requestId);
     if (lease) return lease;
     const remaining = deadline - Date.now();
@@ -53,9 +67,16 @@ export async function waitForLease(dispatcher, requestId, timeoutMs) {
         ? LEASE_POLL_INITIAL_MS
         : LEASE_POLL_INTERVAL_MS;
     attempt++;
-    await sleep(Math.min(interval, remaining));
+    await sleepUnlessAborted(Math.min(interval, remaining), signal);
   }
   return null;
+}
+
+function clientClosedResponse(provider) {
+  return createErrorResult(
+    CLIENT_CLOSED_STATUS,
+    `${provider} request cancelled: client disconnected`,
+  ).response;
 }
 
 function resolveTargetFormat(provider) {
@@ -134,7 +155,6 @@ export async function maybeHandleManagedCodexRequest({
     providerThinking,
     ccFilterNaming,
     requestId: null,
-    retryBudget: 1,
   });
 }
 
@@ -151,9 +171,9 @@ async function executeManagedProviderRequest({
   providerThinking,
   ccFilterNaming,
   requestId = null,
-  retryBudget = 1,
   excludedConnectionIds = [],
 }) {
+  const clientSignal = request?.signal || null;
   const conversationKey = resolveConversationKey({
     body,
     clientRawRequest,
@@ -163,14 +183,14 @@ async function executeManagedProviderRequest({
     apiKeyRecord?.id || null,
     provider,
   );
-  const { dispatcher } = getProviderDispatcher(provider);
+  const dispatcherEntry = getProviderDispatcher(provider);
+  const { dispatcher } = dispatcherEntry;
   const targetFormat = resolveTargetFormat(provider);
 
   const queued = requestId
     ? await dispatcher.requeueRequest(requestId, {
         metadataPatch: {
           routeModel: modelStr,
-          retryBudget,
           admission: decision,
           excludedConnectionIds,
           isContinuation: true,
@@ -187,7 +207,6 @@ async function executeManagedProviderRequest({
         conversationKey,
         metadata: {
           routeModel: modelStr,
-          retryBudget,
           admission: decision,
           excludedConnectionIds,
           isContinuation: detectIsContinuation(body),
@@ -210,7 +229,19 @@ async function executeManagedProviderRequest({
     queued.request.id,
     dispatcher.timeoutPolicy?.waitingLimitMs ??
       dispatcher.timeoutPolicy?.queueTtlMs,
+    clientSignal,
   );
+  if (!lease && clientSignal?.aborted) {
+    await dispatcher.failAttempt(queued.attempt.id, {
+      nextState: "cancelled",
+      terminalReason: "client_disconnected",
+    });
+    log.info(
+      "DISPATCHER",
+      `${provider}/${model}: client left while queued, cancelled request=${queued.request.id.slice(0, 8)}…`,
+    );
+    return clientClosedResponse(provider);
+  }
   if (!lease) {
     await dispatcher.failAttempt(queued.attempt.id, {
       nextState: "timed_out",
@@ -250,256 +281,283 @@ async function executeManagedProviderRequest({
     `${provider}/${model}: LEASE_OK attempt=${attemptId.slice(0, 8)}… conn=${String(lease.connectionId || "").slice(0, 8)}… state=${lease.attempt?.state || "?"}`,
   );
 
-  // Idempotent if lease SQL already set connecting.
-  await dispatcher.markAttemptConnecting(attemptId, {
-    pathMode: lease.pathMode || null,
-  });
-
-  log.info(
-    "DISPATCHER",
-    `${provider}/${model}: CONNECT_OK attempt=${attemptId.slice(0, 8)}… loading connection`,
-  );
-
-  const rawConnection = await getProviderConnectionById(lease.connectionId);
-  if (!rawConnection || rawConnection.isActive !== true) {
+  if (clientSignal?.aborted) {
     await dispatcher.failAttempt(attemptId, {
-      nextState: "failed",
-      terminalReason: "connection_missing",
-      error: { connectionId: lease.connectionId },
+      nextState: "cancelled",
+      terminalReason: "client_disconnected",
     });
-    return createErrorResult(
-      HTTP_STATUS.SERVICE_UNAVAILABLE,
-      `Managed ${provider} connection unavailable`,
-    ).response;
+    return clientClosedResponse(provider);
   }
 
-  let credentials = await buildManagedCredentials(rawConnection);
-  if (affinity?.state === "active" && affinity?.sessionId) {
-    credentials = {
-      ...credentials,
-      providerSpecificData: {
-        ...(credentials.providerSpecificData || {}),
-        dispatchSessionId: affinity.sessionId,
-      },
-    };
-  }
-  log.info(
-    "DISPATCHER",
-    `${provider}/${model}: credentials loaded, refreshing token if needed`,
-  );
-  credentials = await checkAndRefreshToken(provider, credentials);
-  if (credentials?.refreshUnrecoverable) {
-    await dispatcher.failAttempt(attemptId, {
-      nextState: "failed",
-      terminalReason: "auth_refresh_unrecoverable",
-      error: {
-        connectionId: lease.connectionId,
-        code: credentials.refreshErrorCode || "unrecoverable_refresh_error",
-      },
+  // Any throw between lease and finalisation must free the slot. failAttempt
+  // only moves active attempts, so it is a no-op once the attempt finished.
+  try {
+    // Idempotent if lease SQL already set connecting.
+    await dispatcher.markAttemptConnecting(attemptId, {
+      pathMode: lease.pathMode || null,
     });
-    log.warn(
+
+    log.info(
       "DISPATCHER",
-      `${provider}/${model}: abort after unrecoverable token refresh (no upstream)`,
+      `${provider}/${model}: CONNECT_OK attempt=${attemptId.slice(0, 8)}… loading connection`,
     );
-    return createErrorResult(
-      HTTP_STATUS.SERVICE_UNAVAILABLE,
-      `Managed ${provider} connection requires re-authentication`,
-    ).response;
-  }
-  log.info(
-    "DISPATCHER",
-    `${provider}/${model}: token ready, entering handleChatCore`,
-  );
 
-  let finalized = false;
-  const finalizeSuccess = async (terminalReason = "success") => {
-    if (finalized) return;
-    finalized = true;
-    if (conversationKey && lease?.connectionId) {
-      try {
+    const rawConnection = await getProviderConnectionById(lease.connectionId);
+    if (!rawConnection || rawConnection.isActive !== true) {
+      await dispatcher.failAttempt(attemptId, {
+        nextState: "failed",
+        terminalReason: "connection_missing",
+        error: { connectionId: lease.connectionId },
+      });
+      return createErrorResult(
+        HTTP_STATUS.SERVICE_UNAVAILABLE,
+        `Managed ${provider} connection unavailable`,
+      ).response;
+    }
+
+    let credentials = await buildManagedCredentials(rawConnection);
+    if (affinity?.state === "active" && affinity?.sessionId) {
+      credentials = {
+        ...credentials,
+        providerSpecificData: {
+          ...(credentials.providerSpecificData || {}),
+          dispatchSessionId: affinity.sessionId,
+        },
+      };
+    }
+    log.info(
+      "DISPATCHER",
+      `${provider}/${model}: credentials loaded, refreshing token if needed`,
+    );
+    credentials = await checkAndRefreshToken(provider, credentials);
+    if (credentials?.refreshUnrecoverable) {
+      await dispatcher.failAttempt(attemptId, {
+        nextState: "failed",
+        terminalReason: "auth_refresh_unrecoverable",
+        error: {
+          connectionId: lease.connectionId,
+          code: credentials.refreshErrorCode || "unrecoverable_refresh_error",
+        },
+      });
+      log.warn(
+        "DISPATCHER",
+        `${provider}/${model}: abort after unrecoverable token refresh (no upstream)`,
+      );
+      return createErrorResult(
+        HTTP_STATUS.SERVICE_UNAVAILABLE,
+        `Managed ${provider} connection requires re-authentication`,
+      ).response;
+    }
+    log.info(
+      "DISPATCHER",
+      `${provider}/${model}: token ready, entering handleChatCore`,
+    );
+
+    let finalized = false;
+    const finalizeSuccess = async (terminalReason = "success") => {
+      if (finalized) return;
+      finalized = true;
+      if (conversationKey && lease?.connectionId) {
+        try {
+          persistConversationAffinity({
+            conversationKey,
+            provider,
+            modelId: model,
+            connectionId: lease.connectionId,
+            sessionId: credentials?.providerSpecificData?.dispatchSessionId || null,
+            apiKeyId: apiKeyRecord?.id || null,
+          });
+        } catch (err) {
+          log.warn("DISPATCHER", `failed to persist conversation affinity: ${err.message}`);
+        }
+      }
+      await dispatcher.completeAttempt(attemptId, { terminalReason });
+    };
+    const finalizeFailure = async (terminalReason, errorPayload = {}) => {
+      if (finalized) return;
+      finalized = true;
+      await dispatcher.failAttempt(attemptId, {
+        nextState: "failed",
+        terminalReason,
+        error: errorPayload,
+      });
+    };
+
+    let persistedContinuationKey = null;
+    const dispatcherHooks = {
+      onConnectStarted: async ({ pathMode = null } = {}) => {
+        await dispatcher.markAttemptConnecting(attemptId, { pathMode });
+      },
+      onStreamStarted: async () => {
+        await dispatcher.markAttemptStreamStarted(attemptId);
+      },
+      onFirstProgress: async () => {
+        await dispatcher.markAttemptProgress(attemptId);
+      },
+      onProgress: async () => {
+        await dispatcher.markAttemptProgress(attemptId);
+      },
+      onResponseIdentity: async (responseId) => {
+        if (typeof responseId !== "string" || responseId.trim() === "") {
+          return;
+        }
+        const continuationKey = responseId.trim();
+        if (persistedContinuationKey === continuationKey) {
+          return;
+        }
         persistConversationAffinity({
-          conversationKey,
+          conversationKey: continuationKey,
           provider,
           modelId: model,
           connectionId: lease.connectionId,
           sessionId: credentials?.providerSpecificData?.dispatchSessionId || null,
           apiKeyId: apiKeyRecord?.id || null,
         });
-      } catch (err) {
-        log.warn("DISPATCHER", `failed to persist conversation affinity: ${err.message}`);
-      }
-    }
-    await dispatcher.completeAttempt(attemptId, { terminalReason });
-  };
-  const finalizeFailure = async (terminalReason, errorPayload = {}) => {
-    if (finalized) return;
-    finalized = true;
-    await dispatcher.failAttempt(attemptId, {
-      nextState: "failed",
-      terminalReason,
-      error: errorPayload,
-    });
-  };
+        persistedContinuationKey = continuationKey;
+      },
+      onCompleted: async () => {
+        await finalizeSuccess("success");
+      },
+      // Streaming non-SSE / pipe failures — release the slot even if the outer
+      // result path is slow or missed.
+      onFailed: async ({ status = null, error = null } = {}) => {
+        await finalizeFailure("upstream_error", {
+          status,
+          message:
+            typeof error === "string"
+              ? error
+              : error?.message || error?.code || "upstream_failed",
+        });
+      },
+    };
 
-  let persistedContinuationKey = null;
-  const dispatcherHooks = {
-    onConnectStarted: async ({ pathMode = null } = {}) => {
-      await dispatcher.markAttemptConnecting(attemptId, { pathMode });
-    },
-    onStreamStarted: async () => {
-      await dispatcher.markAttemptStreamStarted(attemptId);
-    },
-    onFirstProgress: async () => {
-      await dispatcher.markAttemptProgress(attemptId);
-    },
-    onProgress: async () => {
-      await dispatcher.markAttemptProgress(attemptId);
-    },
-    onResponseIdentity: async (responseId) => {
-      if (typeof responseId !== "string" || responseId.trim() === "") {
-        return;
-      }
-      const continuationKey = responseId.trim();
-      if (persistedContinuationKey === continuationKey) {
-        return;
-      }
-      persistConversationAffinity({
-        conversationKey: continuationKey,
-        provider,
-        modelId: model,
-        connectionId: lease.connectionId,
-        sessionId: credentials?.providerSpecificData?.dispatchSessionId || null,
-        apiKeyId: apiKeyRecord?.id || null,
-      });
-      persistedContinuationKey = continuationKey;
-    },
-    onCompleted: async () => {
-      await finalizeSuccess("success");
-    },
-    // Streaming non-SSE / pipe failures — release the slot even if the outer
-    // result path is slow or missed.
-    onFailed: async ({ status = null, error = null } = {}) => {
-      await finalizeFailure("upstream_error", {
-        status,
-        message:
-          typeof error === "string"
-            ? error
-            : error?.message || error?.code || "upstream_failed",
-      });
-    },
-  };
-
-  const result = await handleChatCore({
-    body: { ...body, model: `${provider}/${model}` },
-    modelInfo: { provider, model },
-    credentials,
-    log,
-    clientRawRequest,
-    connectionId: credentials.connectionId,
-    userAgent: request?.headers?.get("user-agent") || "",
-    apiKey,
-    ccFilterNaming: !!ccFilterNaming,
-    providerThinking,
-    routingDecision: decision,
-    sourceFormatOverride: request?.url
-      ? detectFormatByEndpoint(new URL(request.url).pathname, body)
-      : null,
-    dispatcherHooks,
-    onCredentialsRefreshed: async (newCreds) => {
-      await updateProviderCredentials(credentials.connectionId, {
-        accessToken: newCreds.accessToken,
-        refreshToken: newCreds.refreshToken,
-        idToken: newCreds.idToken,
-        email: newCreds.email,
-        providerSpecificData: newCreds.providerSpecificData,
-        testStatus: "active",
-      });
-    },
-    onRequestSuccess: async () => {
-      await clearAccountError(credentials.connectionId, credentials, model);
-    },
-    onDisconnect: async () => {
-      await finalizeSuccess("client_disconnect");
-    },
-  });
-
-  if (result.success) {
-    const contentType =
-      result.response?.headers?.get?.("Content-Type") || "";
-    if (contentType.includes("application/json")) {
-      await finalizeSuccess("success");
-    }
-    return result.response;
-  }
-
-  if (result.status === 429 || Number.isFinite(Number(result.resetsAtMs))) {
-    await dispatcherQuotaHealth.recordOutOfQuota({
+    const result = await handleChatCore({
+      body: { ...body, model: `${provider}/${model}` },
+      modelInfo: { provider, model },
+      credentials,
+      log,
+      clientRawRequest,
       connectionId: credentials.connectionId,
-      modelId: model,
-      resetsAtMs: result.resetsAtMs,
-      status: result.status,
-      error: result.error,
-      providerSpecificData: credentials.providerSpecificData || {},
+      userAgent: request?.headers?.get("user-agent") || "",
+      apiKey,
+      ccFilterNaming: !!ccFilterNaming,
+      providerThinking,
+      routingDecision: decision,
+      sourceFormatOverride: request?.url
+        ? detectFormatByEndpoint(new URL(request.url).pathname, body)
+        : null,
+      dispatcherHooks,
+      clientSignal,
+      onCredentialsRefreshed: async (newCreds) => {
+        await updateProviderCredentials(credentials.connectionId, {
+          accessToken: newCreds.accessToken,
+          refreshToken: newCreds.refreshToken,
+          idToken: newCreds.idToken,
+          email: newCreds.email,
+          providerSpecificData: newCreds.providerSpecificData,
+          testStatus: "active",
+        });
+      },
+      onRequestSuccess: async () => {
+        await clearAccountError(credentials.connectionId, credentials, model);
+      },
+      onDisconnect: async () => {
+        if (finalized) return;
+        finalized = true;
+        await dispatcher.failAttempt(attemptId, {
+          nextState: "cancelled",
+          terminalReason: "client_disconnected",
+        });
+      },
     });
-  }
 
-  const { shouldFallback } = await markAccountUnavailable(
-    credentials.connectionId,
-    result.status,
-    result.error,
-    provider,
-    model,
-    result.resetsAtMs,
-  );
+    if (result.success) {
+      const contentType =
+        result.response?.headers?.get?.("Content-Type") || "";
+      if (contentType.includes("application/json")) {
+        await finalizeSuccess("success");
+      }
+      return result.response;
+    }
 
-  if (shouldFallback) {
-    await finalizeFailure("fallback_requested", {
-      status: result.status,
-      message: result.error,
-      resetsAtMs: result.resetsAtMs || null,
-    });
+    if (result.status === 429 || Number.isFinite(Number(result.resetsAtMs))) {
+      await dispatcherQuotaHealth.recordOutOfQuota({
+        connectionId: credentials.connectionId,
+        modelId: model,
+        resetsAtMs: result.resetsAtMs,
+        status: result.status,
+        error: result.error,
+        providerSpecificData: credentials.providerSpecificData || {},
+      });
+    }
 
-    if (retryBudget > 0) {
+    const { shouldFallback } = await markAccountUnavailable(
+      credentials.connectionId,
+      result.status,
+      result.error,
+      provider,
+      model,
+      result.resetsAtMs,
+    );
+
+    if (shouldFallback) {
+      await finalizeFailure("fallback_requested", {
+        status: result.status,
+        message: result.error,
+        resetsAtMs: result.resetsAtMs || null,
+      });
+
       const prevExcluded =
         queued.request?.metadata?.excludedConnectionIds || [];
       const updatedExcluded = Array.from(
         new Set([...prevExcluded, credentials.connectionId]),
       );
-
-      log.warn(
-        "DISPATCHER",
-        `${provider}/${model}: retrying request=${queued.request.id.slice(0, 8)} on alternate account (excluded: ${updatedExcluded.map((id) => id.slice(0, 8)).join(",")})`,
+      const connections = await dispatcherEntry.getConnections();
+      const hasUntriedAccount = connections.some(
+        (connection) => !updatedExcluded.includes(connection.id),
       );
+      if (hasUntriedAccount && !clientSignal?.aborted) {
+        log.warn(
+          "DISPATCHER",
+          `${provider}/${model}: retrying request=${queued.request.id.slice(0, 8)} on alternate account (excluded: ${updatedExcluded.map((id) => id.slice(0, 8)).join(",")})`,
+        );
 
-      return executeManagedProviderRequest({
-        body,
-        provider,
-        model,
-        modelStr,
-        request,
-        clientRawRequest,
-        apiKey,
-        apiKeyRecord,
-        decision,
-        providerThinking,
-        ccFilterNaming,
-        requestId: queued.request.id,
-        retryBudget: retryBudget - 1,
-        excludedConnectionIds: updatedExcluded,
+        return executeManagedProviderRequest({
+          body,
+          provider,
+          model,
+          modelStr,
+          request,
+          clientRawRequest,
+          apiKey,
+          apiKeyRecord,
+          decision,
+          providerThinking,
+          ccFilterNaming,
+          requestId: queued.request.id,
+          excludedConnectionIds: updatedExcluded,
+        });
+      }
+    } else {
+      await finalizeFailure("upstream_error", {
+        status: result.status,
+        message: result.error,
       });
     }
-  } else {
-    await finalizeFailure("upstream_error", {
-      status: result.status,
-      message: result.error,
-    });
-  }
 
-  return (
-    result.response ||
-    createErrorResult(
-      result.status || HTTP_STATUS.BAD_GATEWAY,
-      result.error || `${provider} upstream error`,
-    ).response
-  );
+    return (
+      result.response ||
+      createErrorResult(
+        result.status || HTTP_STATUS.BAD_GATEWAY,
+        result.error || `${provider} upstream error`,
+      ).response
+    );
+  } catch (error) {
+    await dispatcher.failAttempt(attemptId, {
+      nextState: "failed",
+      terminalReason: "internal_error",
+      error: { message: error?.message || String(error) },
+    });
+    throw error;
+  }
 }

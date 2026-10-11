@@ -51,6 +51,7 @@ import {
  * @param {object} options.modelInfo - { provider, model }
  * @param {object} options.credentials - Provider credentials
  * @param {string} options.sourceFormatOverride - Override detected source format (e.g. "openai-responses")
+ * @param {AbortSignal} [options.clientSignal] - Fires when the client disconnects; stops the upstream call
  */
 export async function handleChatCore({
   body,
@@ -69,6 +70,7 @@ export async function handleChatCore({
   providerThinking,
   dispatcherHooks = null,
   routingDecision = null,
+  clientSignal = null,
 }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
@@ -205,11 +207,23 @@ export async function handleChatCore({
       trackPendingRequest(model, provider, connectionId, false);
       if (onDisconnect) onDisconnect(reason);
     },
-    onError: () => trackPendingRequest(model, provider, connectionId, false),
+    onError: (error) => {
+      trackPendingRequest(model, provider, connectionId, false);
+      // Upstream broke or stalled mid-stream: release the dispatcher slot now
+      // instead of holding it until the idle timeout.
+      dispatcherHooks?.onFailed?.({ error })?.catch?.(() => {});
+    },
     log,
     provider,
     model,
   });
+
+  if (clientSignal) {
+    const onClientAbort = () =>
+      streamController.handleDisconnect("client_disconnected");
+    if (clientSignal.aborted) onClientAbort();
+    else clientSignal.addEventListener("abort", onClientAbort, { once: true });
+  }
 
   const proxyOptions = {
     connectionProxyEnabled:
