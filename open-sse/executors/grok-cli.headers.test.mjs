@@ -24,18 +24,18 @@ import {
 import { DefaultExecutor } from "./default.js";
 import { BaseExecutor } from "./base.js";
 
-test("grok-cli registry pins official CLI identity at 1.0.44", () => {
+test("grok-cli registry pins official CLI identity at 1.0.51", () => {
   const cfg = PROVIDERS["grok-cli"];
-  assert.equal(GROK_CLI_CLIENT_VERSION, "1.0.44");
-  assert.equal(cfg.clientVersion, "1.0.44");
+  assert.equal(GROK_CLI_CLIENT_VERSION, "1.0.51");
+  assert.equal(cfg.clientVersion, "1.0.51");
   assert.equal(cfg.tokenAuth, GROK_CLI_TOKEN_AUTH);
-  assert.equal(cfg.headers["User-Agent"], "grok-shell/1.0.44 (linux; x86_64)");
-  assert.equal(cfg.headers["x-grok-client-version"], "1.0.44");
+  assert.equal(cfg.headers["User-Agent"], "grok-shell/1.0.51 (linux; x86_64)");
+  assert.equal(cfg.headers["x-grok-client-version"], "1.0.51");
   assert.equal(cfg.headers["x-xai-token-auth"], "xai-grok-cli");
-  assert.equal(GROK_CLI_USER_AGENT, "grok-shell/1.0.44 (linux; x86_64)");
+  assert.equal(GROK_CLI_USER_AGENT, "grok-shell/1.0.51 (linux; x86_64)");
   assert.equal(
     GROK_CLI_IDENTITY_HEADERS["User-Agent"],
-    "grok-shell/1.0.44 (linux; x86_64)",
+    "grok-shell/1.0.51 (linux; x86_64)",
   );
 });
 
@@ -54,9 +54,9 @@ test("GrokCliExecutor buildHeaders sends CLI User-Agent with token-auth", () => 
     true,
   );
 
-  assert.equal(headers["User-Agent"], "grok-shell/1.0.44 (linux; x86_64)");
+  assert.equal(headers["User-Agent"], "grok-shell/1.0.51 (linux; x86_64)");
   assert.equal(headers["x-xai-token-auth"], "xai-grok-cli");
-  assert.equal(headers["x-grok-client-version"], "1.0.44");
+  assert.equal(headers["x-grok-client-version"], "1.0.51");
   assert.equal(headers["x-grok-client-identifier"], "grok-shell");
   assert.equal(headers.Authorization, "Bearer tok_oauth");
   assert.equal(headers["x-email"], "u@example.com");
@@ -75,7 +75,7 @@ test("direct xai API-key path does not get CLI chat-proxy identity headers", () 
   const headers = executor.buildHeaders({ apiKey: "xai-key-test" }, true);
 
   assert.equal(headers.Authorization, "Bearer xai-key-test");
-  assert.notEqual(headers["User-Agent"], "grok-shell/1.0.44 (linux; x86_64)");
+  assert.notEqual(headers["User-Agent"], "grok-shell/1.0.51 (linux; x86_64)");
   assert.equal(headers["x-xai-token-auth"], undefined);
   assert.equal(headers["x-grok-client-version"], undefined);
 });

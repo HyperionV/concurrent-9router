@@ -17,6 +17,13 @@ import {
 import { getModelUpstreamId } from "../config/providerModels.js";
 import { stripCodexUnsupportedPatterns } from "../utils/codexToolSchema.js";
 import { deriveStablePrefixCacheKey } from "../utils/cacheKeyDerivation.js";
+import {
+  dropUnresolvableToolChoice,
+  hasServerItemId,
+  isStoredItemReference,
+  readFunctionTool,
+  splitEffortSuffix,
+} from "./responsesRequestShaping.js";
 
 // SSE error patterns inside 200-OK bodies. Some retry same account first; capacity rotates accounts.
 const CODEX_SSE_RETRY_PATTERNS = [
@@ -49,7 +56,6 @@ const CODEX_MODEL_CAPACITY_MESSAGE =
 // Keep legacy name for any external references
 const CODEX_SSE_OVERLOADED_PATTERNS = CODEX_SSE_RETRY_PATTERNS;
 const SESSION_TTL_MS = 60 * 60 * 1000;
-const SERVER_ID_PATTERN = /^(rs|fc|resp|msg)_/;
 const CODEX_HOSTED_TOOL_TYPES = new Set([
   "image_generation",
   "web_search",
@@ -252,12 +258,8 @@ function stripStoredItemReferences(body) {
   delete body.previous_response_id;
   if (!Array.isArray(body.input)) return;
   body.input = body.input.filter((item) => {
-    if (typeof item === "string" && SERVER_ID_PATTERN.test(item)) return false;
-    if (item && typeof item === "object" && !Array.isArray(item)) {
-      if (item.type === "item_reference") return false;
-      if (typeof item.id === "string" && SERVER_ID_PATTERN.test(item.id))
-        delete item.id;
-    }
+    if (isStoredItemReference(item)) return false;
+    if (hasServerItemId(item)) delete item.id;
     return true;
   });
 }
@@ -292,36 +294,9 @@ function normalizeCodexTools(body) {
       if (!type || tool.function || typeof tool.name === "string") return false;
       return CODEX_HOSTED_TOOL_TYPES.has(type);
     }
-    const fn =
-      tool.function &&
-      typeof tool.function === "object" &&
-      !Array.isArray(tool.function)
-        ? tool.function
-        : null;
-    const rawName =
-      typeof tool.name === "string"
-        ? tool.name
-        : typeof fn?.name === "string"
-          ? fn.name
-          : "";
-    const name = rawName.trim().slice(0, 128);
+    const { name: fullName, description, parameters } = readFunctionTool(tool);
+    const name = fullName.slice(0, 128);
     if (!name) return false;
-    const description =
-      typeof tool.description === "string"
-        ? tool.description
-        : typeof fn?.description === "string"
-          ? fn.description
-          : "";
-    const parameters =
-      tool.parameters &&
-      typeof tool.parameters === "object" &&
-      !Array.isArray(tool.parameters)
-        ? tool.parameters
-        : fn?.parameters &&
-            typeof fn.parameters === "object" &&
-            !Array.isArray(fn.parameters)
-          ? fn.parameters
-          : { type: "object", properties: {} };
     for (const key of Object.keys(tool)) delete tool[key];
     tool.type = "function";
     tool.name = name;
@@ -331,19 +306,7 @@ function normalizeCodexTools(body) {
     return true;
   });
 
-  if (
-    body.tool_choice &&
-    typeof body.tool_choice === "object" &&
-    !Array.isArray(body.tool_choice)
-  ) {
-    if (body.tool_choice.type === "function") {
-      const name =
-        typeof body.tool_choice.name === "string"
-          ? body.tool_choice.name.trim()
-          : "";
-      if (!name || !validNames.has(name)) delete body.tool_choice;
-    }
-  }
+  dropUnresolvableToolChoice(body, validNames);
 }
 
 setInterval(
@@ -473,24 +436,17 @@ export class CodexExecutor extends BaseExecutor {
     workingBody.store = false;
 
     // Map review / virtual models to upstream id first
-    let requestModel =
+    const requestModel =
       getModelUpstreamId("cx", model) ||
       getModelUpstreamId("codex", model) ||
       model;
 
     // Extract thinking level from model name suffix
     // e.g., gpt-5.3-codex-high → high, gpt-5.3-codex → medium (default)
-    const effortLevels = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
-    let modelEffort = null;
-    for (const level of effortLevels) {
-      if (requestModel.endsWith(`-${level}`)) {
-        modelEffort = level;
-        // Strip suffix from model name for actual API call
-        requestModel = requestModel.slice(0, -(level.length + 1));
-        break;
-      }
-    }
-    workingBody.model = requestModel;
+    // The suffix is stripped from the model name sent upstream.
+    const { model: upstreamModel, effort: modelEffort } =
+      splitEffortSuffix(requestModel);
+    workingBody.model = upstreamModel;
 
     // Priority: explicit reasoning.effort > reasoning_effort param > model suffix > default
     if (!workingBody.reasoning) {

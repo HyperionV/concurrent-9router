@@ -1,4 +1,4 @@
-import { PROVIDERS } from "../config/providers.js";
+import { PROVIDERS, GROK_CLI_USER_AGENT } from "../config/providers.js";
 import {
   OAUTH_ENDPOINTS,
   GITHUB_COPILOT,
@@ -377,9 +377,7 @@ export async function refreshGrokCliToken(refreshToken, log) {
             headers: {
               "Content-Type": "application/x-www-form-urlencoded",
               Accept: "application/json",
-              "User-Agent":
-                PROVIDERS["grok-cli"]?.headers?.["User-Agent"] ||
-                "grok-shell/1.0.44 (linux; x86_64)",
+              "User-Agent": GROK_CLI_USER_AGENT,
             },
             body: new URLSearchParams({
               grant_type: "refresh_token",

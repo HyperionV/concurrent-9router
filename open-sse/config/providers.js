@@ -35,8 +35,8 @@ export const CODEX_CLI_VERSION = "0.159.0";
 
 // Grok CLI / cli-chat-proxy identity.
 // cli-chat-proxy rejects older identities with HTTP 426. Keep this on a
-// current @xai-official/grok release (1.0.44; minimum 1.0.13).
-export const GROK_CLI_CLIENT_VERSION = "1.0.44";
+// current @xai-official/grok release (1.0.51; minimum 1.0.13).
+export const GROK_CLI_CLIENT_VERSION = "1.0.51";
 export const GROK_CLI_CLIENT_IDENTIFIER = "grok-shell";
 export const GROK_CLI_TOKEN_AUTH = "xai-grok-cli";
 export const GROK_CLI_USER_AGENT = `grok-shell/${GROK_CLI_CLIENT_VERSION} (linux; x86_64)`;

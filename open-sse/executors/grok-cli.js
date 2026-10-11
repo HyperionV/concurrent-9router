@@ -18,6 +18,13 @@ import { deriveSessionId } from "../utils/sessionManager.js";
 import { getConsistentMachineId } from "../../src/shared/utils/machineId.js";
 import { deriveStablePrefixCacheKey } from "../utils/cacheKeyDerivation.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
+import {
+  dropUnresolvableToolChoice,
+  hasServerItemId,
+  isStoredItemReference,
+  readFunctionTool,
+  splitEffortSuffix,
+} from "./responsesRequestShaping.js";
 
 function resolveSessionId({ body, connectionId, workspaceId, scope }) {
   const fromBody =
@@ -32,9 +39,6 @@ function resolveSessionId({ body, connectionId, workspaceId, scope }) {
     connectionId ? `${scope || "grok-cli"}:${connectionId}` : scope || "grok-cli",
   );
 }
-
-// Server-generated item id prefixes that /responses cannot resolve when store=false
-const SERVER_ID_PATTERN = /^(rs|fc|resp|msg)_/;
 
 // Hosted tool types executed server-side by Grok CLI backend
 const HOSTED_TOOL_TYPES = new Set([
@@ -67,17 +71,6 @@ const RESPONSES_API_ALLOWLIST = new Set([
   "metadata",
   "prompt_cache_key",
 ]);
-
-const EFFORT_LEVELS = [
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-  "ultra",
-];
 
 export const GROK_CLI_NATIVE_ITEM_ID =
   /^(?:rs|msg|fc)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -252,9 +245,8 @@ export function normalizeGrokCliInput(body) {
 function stripStoredItemReferences(body) {
   if (!Array.isArray(body.input)) return;
   body.input = body.input.filter((item) => {
-    if (typeof item === "string" && SERVER_ID_PATTERN.test(item)) return false;
+    if (isStoredItemReference(item)) return false;
     if (item && typeof item === "object" && !Array.isArray(item)) {
-      if (item.type === "item_reference") return false;
       // Preserve native Grok reasoning items with encrypted content; discard foreign ciphertext
       if (item.type === "reasoning") {
         if (
@@ -265,10 +257,8 @@ function stripStoredItemReferences(body) {
         }
         return true;
       }
-      if (typeof item.id === "string" && SERVER_ID_PATTERN.test(item.id)) {
-        if (!isNativeGrokCliItemId(item.id)) {
-          delete item.id;
-        }
+      if (hasServerItemId(item) && !isNativeGrokCliItemId(item.id)) {
+        delete item.id;
       }
     }
     return true;
@@ -305,27 +295,8 @@ function normalizeGrokCliTools(body) {
       return HOSTED_TOOL_TYPES.has(type);
     }
 
-    const fn =
-      tool.function && typeof tool.function === "object" && !Array.isArray(tool.function)
-        ? tool.function
-        : null;
-    const rawName =
-      typeof tool.name === "string" ? tool.name : typeof fn?.name === "string" ? fn.name : "";
-    const name = rawName.trim();
+    const { name, description, parameters } = readFunctionTool(tool);
     if (!name) return false;
-
-    const description =
-      typeof tool.description === "string"
-        ? tool.description
-        : typeof fn?.description === "string"
-          ? fn.description
-          : "";
-    const parameters =
-      tool.parameters && typeof tool.parameters === "object" && !Array.isArray(tool.parameters)
-        ? tool.parameters
-        : fn?.parameters && typeof fn.parameters === "object" && !Array.isArray(fn.parameters)
-          ? fn.parameters
-          : { type: "object", properties: {} };
 
     for (const k of Object.keys(tool)) delete tool[k];
     tool.type = "function";
@@ -336,20 +307,7 @@ function normalizeGrokCliTools(body) {
     return true;
   });
 
-  if (body.tool_choice && typeof body.tool_choice === "object" && !Array.isArray(body.tool_choice)) {
-    if (body.tool_choice.type === "function") {
-      const n = typeof body.tool_choice.name === "string" ? body.tool_choice.name.trim() : "";
-      if (!n || !validNames.has(n)) delete body.tool_choice;
-    }
-  }
-}
-
-function resolveEffortFromModel(modelId) {
-  if (!modelId || typeof modelId !== "string") return null;
-  for (const level of EFFORT_LEVELS) {
-    if (modelId.endsWith(`-${level}`)) return level;
-  }
-  return null;
+  dropUnresolvableToolChoice(body, validNames);
 }
 
 /**
@@ -524,12 +482,8 @@ export class GrokCliExecutor extends BaseExecutor {
     body.store = false;
 
     // Resolve upstream model id (strip effort suffix virtual models)
-    let modelEffort = resolveEffortFromModel(body.model || model);
-    let resolvedModel = body.model || model;
-    if (modelEffort) {
-      resolvedModel = resolvedModel.replace(new RegExp(`-${modelEffort}$`), "");
-    }
-    resolvedModel = getModelUpstreamId("gcli", resolvedModel) || resolvedModel;
+    const { model: baseModel, effort: modelEffort } = splitEffortSuffix(body.model || model);
+    let resolvedModel = getModelUpstreamId("gcli", baseModel) || baseModel;
     // Also try provider id key
     if (resolvedModel === (body.model || model)) {
       resolvedModel = getModelUpstreamId("grok-cli", resolvedModel) || resolvedModel;
@@ -579,23 +533,8 @@ export class GrokCliExecutor extends BaseExecutor {
       body.include = include;
     }
 
-    // Drop Chat Completions leftovers that Responses rejects
-    delete body.messages;
-    delete body.max_tokens;
-    delete body.max_completion_tokens;
-    delete body.n;
-    delete body.seed;
-    delete body.logprobs;
-    delete body.top_logprobs;
-    delete body.frequency_penalty;
-    delete body.presence_penalty;
-    delete body.logit_bias;
-    delete body.user;
-    delete body.stream_options;
-    delete body.prompt_cache_retention;
-    delete body.safety_identifier;
-    delete body.previous_response_id; // store=false → cannot resolve
-
+    // Chat Completions leftovers (max_tokens, n, user, previous_response_id, ...)
+    // are not on the allowlist, so this drops them too.
     for (const k of Object.keys(body)) {
       if (!RESPONSES_API_ALLOWLIST.has(k)) delete body[k];
     }
