@@ -103,6 +103,31 @@ test("parseCodexBatch isolates faulty items without cascading failure", () => {
   assert.match(result.errors[0], /Missing refresh_token/);
 });
 
+test("parseCodexBatch accepts camelCase connection export format", () => {
+  const payload = Buffer.from(JSON.stringify({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct-camel" },
+    "https://api.openai.com/profile": { email: "camel@test.com" },
+    exp: 1800000000,
+  })).toString("base64url");
+  const exported = JSON.stringify({
+    accessToken: `h.${payload}.s`,
+    refreshToken: "rt.1.camel",
+    idToken: "h.eyJlbWFpbCI6ImNhbWVsQHRlc3QuY29tIn0.s",
+    expiresAt: "2027-01-15T08:00:00.000Z",
+    expiresIn: 864000,
+    providerSpecificData: { chatgptAccountId: "acct-camel", chatgptPlanType: "plus" },
+  });
+
+  const result = parseCodexBatch(exported);
+  assert.deepEqual(result.errors, []);
+  const [account] = result.accounts;
+  assert.equal(account.email, "camel@test.com");
+  assert.equal(account.refreshToken, "rt.1.camel");
+  assert.equal(account.providerSpecificData.chatgptAccountId, "acct-camel");
+  assert.equal(account.providerSpecificData.planType, "plus");
+  assert.equal(account.expiresAt, new Date(1800000000 * 1000).toISOString());
+});
+
 test("parseCodexBatch supports wrapped objects like { accounts: [...] }", () => {
   const wrapped = {
     accounts: [

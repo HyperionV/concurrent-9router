@@ -26,6 +26,11 @@ function getOpenAiProfileClaims(payload) {
   return payload?.["https://api.openai.com/profile"] || {};
 }
 
+function readTrimmedString(source, snakeKey, camelKey) {
+  const value = source[snakeKey] ?? source[camelKey];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 function getExpiresAt(accessTokenPayload, rawExpiresIn) {
   if (Number.isFinite(accessTokenPayload?.exp)) {
     return new Date(accessTokenPayload.exp * 1000).toISOString();
@@ -53,9 +58,11 @@ export function parseCodexAccountItem(item) {
 
   // Detect token container: either item.tokens or item itself
   const tokens = item.tokens && typeof item.tokens === "object" ? item.tokens : item;
+  // Connection exports use camelCase keys and nest account data in providerSpecificData.
+  const exportedData = item.providerSpecificData || {};
 
-  const accessToken = typeof tokens.access_token === "string" ? tokens.access_token.trim() : null;
-  const refreshToken = typeof tokens.refresh_token === "string" ? tokens.refresh_token.trim() : null;
+  const accessToken = readTrimmedString(tokens, "access_token", "accessToken");
+  const refreshToken = readTrimmedString(tokens, "refresh_token", "refreshToken");
 
   if (!accessToken) {
     throw new Error("Missing access_token");
@@ -64,10 +71,10 @@ export function parseCodexAccountItem(item) {
     throw new Error("Missing refresh_token");
   }
 
-  const idToken =
-    typeof tokens.id_token === "string" && tokens.id_token.trim()
-      ? tokens.id_token.trim()
-      : null;
+  const idToken = readTrimmedString(tokens, "id_token", "idToken");
+  const chatgptAccountId =
+    readTrimmedString(item, "chatgpt_account_id", "chatgptAccountId") ||
+    readTrimmedString(exportedData, "chatgptAccountId", "accountId");
 
   const accessTokenPayload = decodeJwtPayload(accessToken);
   const idTokenPayload = decodeJwtPayload(idToken);
@@ -85,7 +92,7 @@ export function parseCodexAccountItem(item) {
 
   const accountId =
     authClaims.chatgpt_account_id ||
-    item.chatgpt_account_id?.trim() ||
+    chatgptAccountId ||
     tokens.account_id ||
     authClaims.chatgpt_account_user_id ||
     null;
@@ -93,7 +100,10 @@ export function parseCodexAccountItem(item) {
   const oaiDid = item.oai_did?.trim() || tokens.oai_did?.trim() || null;
   const phone = item.phone?.trim() || null;
   const impersonate = item.impersonate?.trim() || null;
-  const planType = authClaims.chatgpt_plan_type || (item.plus_1m_free ? "plus" : null);
+  const planType =
+    authClaims.chatgpt_plan_type ||
+    exportedData.chatgptPlanType ||
+    (item.plus_1m_free ? "plus" : null);
 
   const providerSpecificData = {
     accountId,
@@ -106,7 +116,7 @@ export function parseCodexAccountItem(item) {
   if (oaiDid) providerSpecificData.oaiDid = oaiDid;
   if (phone) providerSpecificData.phone = phone;
   if (impersonate) providerSpecificData.impersonate = impersonate;
-  if (item.chatgpt_account_id) providerSpecificData.chatgptAccountId = item.chatgpt_account_id;
+  if (chatgptAccountId) providerSpecificData.chatgptAccountId = chatgptAccountId;
 
   return {
     provider: "codex",
@@ -115,7 +125,10 @@ export function parseCodexAccountItem(item) {
     refreshToken,
     idToken,
     email,
-    expiresAt: getExpiresAt(accessTokenPayload, item.expires_in || tokens.expires_in),
+    expiresAt: getExpiresAt(
+      accessTokenPayload,
+      item.expires_in || tokens.expires_in || item.expiresIn
+    ),
     providerSpecificData,
   };
 }
