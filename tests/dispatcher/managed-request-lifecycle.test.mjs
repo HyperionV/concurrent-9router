@@ -232,3 +232,33 @@ test("when no other account remains, the failure returns without another queue w
     },
   );
 });
+
+test("a burst of clients that give up early leaves no ghost work upstream", async () => {
+  const UPSTREAM_MS = 300;
+  const CLIENT_GIVES_UP_MS = 500;
+  await withManagedCodex(
+    ["conn_a", "conn_b", "conn_c"],
+    async (args) => {
+      await sleep(UPSTREAM_MS);
+      if (args.signal?.aborted) throw Object.assign(new Error("aborted"), { name: "AbortError" });
+      return jsonResponse(200, { id: "resp_ok", output: [] });
+    },
+    async ({ send, calls, listActiveDispatchAttempts }) => {
+      // 20 clients on 3 single-slot accounts, each giving up after 500 ms.
+      const results = await Promise.all(
+        Array.from({ length: 20 }, () => {
+          const client = new AbortController();
+          setTimeout(() => client.abort(), CLIENT_GIVES_UP_MS);
+          return send({ signal: client.signal });
+        }),
+      );
+      await sleep(UPSTREAM_MS * 3);
+
+      // Only requests that got a slot before their client left reached upstream:
+      // two rounds of three, not twenty.
+      assert.ok(calls.length <= 6, `upstream saw ${calls.length} calls`);
+      assert.equal(results.filter((r) => r.status === 499).length >= 14, true);
+      assert.equal(listActiveDispatchAttempts("codex").length, 0);
+    },
+  );
+});
