@@ -186,3 +186,31 @@ test("re-importing a newer auth.json replaces the tokens of the same account", a
   assert.equal(matches.length, 1, "the same account must not be imported twice");
   assert.equal(matches[0].refreshToken, "refresh_new");
 });
+
+test("recording a usage limit keeps the account's stored settings and other models' limits, and saves no conversation session", async () => {
+  const { createProviderConnectionRecord } = await import("@/lib/sqlite/store.js");
+  const { getProviderConnectionById } = await import("@/lib/localDb.js");
+  const { createDispatcherQuotaHealth } = await import("@/lib/dispatcher/quotaHealth.js");
+  createProviderConnectionRecord({
+    id: "conn_quota_merge",
+    provider: "codex",
+    authType: "oauth",
+    email: "quota@example.com",
+    isActive: true,
+    accessToken: "access",
+    refreshToken: "refresh",
+    providerSpecificData: { chatgptAccountId: "acct_q", proxyPoolId: "pool_eu" },
+  });
+  const quotaHealth = createDispatcherQuotaHealth({ memory: new Map() });
+
+  // What a request holds: an older copy of the settings plus its conversation's session.
+  const requestCopy = { chatgptAccountId: "acct_q", dispatchSessionId: "sess_one_conversation" };
+  await quotaHealth.recordOutOfQuota({ connectionId: "conn_quota_merge", modelId: "gpt-5-codex", providerSpecificData: requestCopy });
+  await quotaHealth.recordOutOfQuota({ connectionId: "conn_quota_merge", modelId: "gpt-5-mini", providerSpecificData: requestCopy });
+
+  const stored = (await getProviderConnectionById("conn_quota_merge")).providerSpecificData;
+  assert.equal(stored.proxyPoolId, "pool_eu");
+  assert.equal(stored.dispatchSessionId, undefined);
+  assert.ok(stored.dispatcherQuotaHealth["gpt-5-codex"], "the first model's limit survives the second write");
+  assert.ok(stored.dispatcherQuotaHealth["gpt-5-mini"]);
+});

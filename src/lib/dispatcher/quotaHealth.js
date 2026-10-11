@@ -1,4 +1,4 @@
-import { updateProviderConnection } from "@/lib/localDb.js";
+import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb.js";
 
 const NORMAL_QUOTA_TTL_MS = 5 * 60 * 1000;
 const DANGER_ZONE_QUOTA_TTL_MS = 30 * 1000;
@@ -38,6 +38,7 @@ function buildModelLockKey(modelId) {
 export function createDispatcherQuotaHealth({
   now = Date.now,
   updateConnection = updateProviderConnection,
+  getConnection = getProviderConnectionById,
   /** Injected map for tests; production singleton uses process-global memory. */
   memory: memoryOverride = null,
 } = {}) {
@@ -45,6 +46,23 @@ export function createDispatcherQuotaHealth({
 
   function cacheKey(connectionId, modelId) {
     return `${connectionId}:${normalizeModelId(modelId)}`;
+  }
+
+  /**
+   * The account's settings with one model's quota state replaced. Built from
+   * what is stored now, not the caller's copy: that copy may be older than
+   * another request's write, and carries the conversation's session id.
+   */
+  async function settingsWithQuotaState(connectionId, callerCopy, modelId, state) {
+    const stored = (await getConnection?.(connectionId))?.providerSpecificData;
+    const { dispatchSessionId, ...settings } = stored || callerCopy || {};
+    return {
+      ...settings,
+      [QUOTA_NAMESPACE]: {
+        ...(settings[QUOTA_NAMESPACE] || {}),
+        [modelId]: state,
+      },
+    };
   }
 
   function readState(connection, request = {}) {
@@ -120,13 +138,12 @@ export function createDispatcherQuotaHealth({
     memory.set(cacheKey(connectionId, normalizedModelId), state);
     if (persist && typeof updateConnection === "function") {
       await updateConnection(connectionId, {
-        providerSpecificData: {
-          ...providerSpecificData,
-          [QUOTA_NAMESPACE]: {
-            ...(providerSpecificData[QUOTA_NAMESPACE] || {}),
-            [normalizedModelId]: state,
-          },
-        },
+        providerSpecificData: await settingsWithQuotaState(
+          connectionId,
+          providerSpecificData,
+          normalizedModelId,
+          state,
+        ),
       });
     }
     return state;
@@ -168,13 +185,12 @@ export function createDispatcherQuotaHealth({
             : "usage_limit_reached",
         errorCode: status,
         lastErrorAt: new Date(currentTime).toISOString(),
-        providerSpecificData: {
-          ...providerSpecificData,
-          [QUOTA_NAMESPACE]: {
-            ...(providerSpecificData[QUOTA_NAMESPACE] || {}),
-            [normalizedModelId]: state,
-          },
-        },
+        providerSpecificData: await settingsWithQuotaState(
+          connectionId,
+          providerSpecificData,
+          normalizedModelId,
+          state,
+        ),
       });
     }
     return state;
