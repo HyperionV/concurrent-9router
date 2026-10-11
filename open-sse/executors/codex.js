@@ -654,12 +654,22 @@ export class CodexExecutor extends BaseExecutor {
           break;
         }
       }
-    } catch {
+    } catch (readError) {
+      // The upstream broke inside the peek window. Hand downstream a body that
+      // replays what arrived and then fails the same way, so the stream handler
+      // sees a broken stream instead of a body this reader still holds locked.
+      reader.releaseLock();
+      const brokenBody = new ReadableStream({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(chunk);
+          controller.error(readError);
+        },
+      });
       return {
         matched: null,
         message: null,
         accountFallback: false,
-        replacementBody: null,
+        replacementBody: brokenBody,
         cancel: null,
       };
     }
