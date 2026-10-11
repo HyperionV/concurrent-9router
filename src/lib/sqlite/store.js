@@ -881,13 +881,40 @@ export function reorderProviderConnectionPriorities(provider) {
   rows.forEach((row, index) => stmt.run(index + 1, row.id));
 }
 
+/**
+ * Data for adding an account that already exists (a re-import or a repeat
+ * sign-in): its stored settings are kept, and its tokens are replaced only by
+ * tokens that expire later. The router rotates refresh tokens, so an older
+ * export carries a refresh token that no longer works.
+ */
+function mergeIntoExistingConnection(existing, data) {
+  const merged = {
+    ...data,
+    providerSpecificData: {
+      ...(existing.providerSpecificData || {}),
+      ...(data.providerSpecificData || {}),
+    },
+  };
+  const existingExpiry = Date.parse(existing.expiresAt || "");
+  const incomingExpiry = Date.parse(data.expiresAt || "");
+  if (existingExpiry > incomingExpiry || (existingExpiry && !incomingExpiry)) {
+    delete merged.accessToken;
+    delete merged.refreshToken;
+    delete merged.idToken;
+    delete merged.expiresAt;
+  }
+  return merged;
+}
+
 export function createProviderConnectionRecord(data) {
   const now = nowIso();
+  const email = data.email?.toLowerCase();
   const existing = listProviderConnections({ provider: data.provider }).find(
     (connection) => {
-      if (data.authType === "oauth" && data.email) {
+      if (data.authType === "oauth" && email) {
         return (
-          connection.authType === "oauth" && connection.email === data.email
+          connection.authType === "oauth" &&
+          connection.email?.toLowerCase() === email
         );
       }
       if (data.authType === "apikey" && data.name) {
@@ -899,7 +926,10 @@ export function createProviderConnectionRecord(data) {
     },
   );
   if (existing) {
-    return updateProviderConnectionRecord(existing.id, data);
+    return updateProviderConnectionRecord(
+      existing.id,
+      mergeIntoExistingConnection(existing, data),
+    );
   }
 
   let name = data.name || null;

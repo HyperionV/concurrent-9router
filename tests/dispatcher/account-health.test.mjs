@@ -105,3 +105,84 @@ test("an image request that hits a rate limit marks the account once, not twice"
     globalThis.fetch = originalFetch;
   }
 });
+
+function fakeJwt(payload) {
+  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${encode({ alg: "none" })}.${encode(payload)}.sig`;
+}
+
+// What the import route does with the pasted accounts (the route module
+// itself needs the Next.js runtime).
+async function importCodexAccounts(accounts) {
+  const { parseCodexBatch } = await import("@/lib/oauth/codexAuthJson.js");
+  const { createProviderConnection } = await import("@/lib/localDb.js");
+  const parsed = parseCodexBatch(accounts);
+  for (const account of parsed.accounts) {
+    await createProviderConnection({ ...account, testStatus: "active" });
+  }
+  return parsed;
+}
+
+test("re-importing an older auth.json keeps the tokens the router already rotated, and the account's settings", async () => {
+  const { createProviderConnectionRecord } = await import("@/lib/sqlite/store.js");
+  const { getProviderConnectionById } = await import("@/lib/localDb.js");
+  const now = Math.floor(Date.now() / 1000);
+  createProviderConnectionRecord({
+    id: "conn_reimport",
+    provider: "codex",
+    authType: "oauth",
+    email: "analyst@example.com",
+    isActive: true,
+    accessToken: fakeJwt({ email: "analyst@example.com", exp: now + 10 * 86_400 }),
+    refreshToken: "refresh_rotated_by_router",
+    expiresAt: new Date((now + 10 * 86_400) * 1000).toISOString(),
+    providerSpecificData: { chatgptAccountId: "acct_1", proxyPoolId: "pool_eu" },
+  });
+
+  const imported = await importCodexAccounts([
+    {
+      email: "analyst@example.com",
+      access_token: fakeJwt({ email: "analyst@example.com", exp: now + 2 * 86_400 }),
+      refresh_token: "refresh_from_old_export",
+      chatgpt_account_id: "acct_1",
+    },
+  ]);
+
+  assert.equal(imported.accounts.length, 1);
+  const account = await getProviderConnectionById("conn_reimport");
+  assert.equal(account.refreshToken, "refresh_rotated_by_router");
+  assert.equal(account.providerSpecificData.proxyPoolId, "pool_eu");
+});
+
+test("re-importing a newer auth.json replaces the tokens of the same account", async () => {
+  const { createProviderConnectionRecord, listProviderConnections } = await import(
+    "@/lib/sqlite/store.js"
+  );
+  const now = Math.floor(Date.now() / 1000);
+  createProviderConnectionRecord({
+    id: "conn_reimport_newer",
+    provider: "codex",
+    authType: "oauth",
+    email: "lead@example.com",
+    isActive: true,
+    accessToken: fakeJwt({ email: "lead@example.com", exp: now + 86_400 }),
+    refreshToken: "refresh_old",
+    expiresAt: new Date((now + 86_400) * 1000).toISOString(),
+    providerSpecificData: { chatgptAccountId: "acct_2" },
+  });
+
+  await importCodexAccounts([
+    {
+      email: "Lead@Example.com",
+      access_token: fakeJwt({ email: "lead@example.com", exp: now + 9 * 86_400 }),
+      refresh_token: "refresh_new",
+      chatgpt_account_id: "acct_2",
+    },
+  ]);
+
+  const matches = listProviderConnections({ provider: "codex" }).filter(
+    (connection) => connection.email?.toLowerCase() === "lead@example.com",
+  );
+  assert.equal(matches.length, 1, "the same account must not be imported twice");
+  assert.equal(matches[0].refreshToken, "refresh_new");
+});
