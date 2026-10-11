@@ -177,14 +177,6 @@ test("a 429 that follows a successful token refresh is reported as a rate limit 
 
 test("when every account answers 429 the request ends with that 429 after trying each account once", {
   timeout: 20_000,
-  todo:
-    "BUG src/lib/dispatcher/executeCodexAttempt.js (failover branch): prevExcluded is read from queued.request.metadata, " +
-    "but requeueRequest returns the request row as it was BEFORE the exclusion patch, so each retry forgets every " +
-    "account excluded earlier and keeps only the newest one. " +
-    "Input: 3 accounts, upstream answers 429 'Rate limit reached' on every call. " +
-    "Expected: 3 upstream calls (one per account), then the client gets 429. " +
-    "Actual: the request cycles through the accounts again, each time waiting a fresh queue period for the cooldown " +
-    "to end, so it never finishes until the client gives up (more than 3 upstream calls, no response).",
 }, async () => {
   await withManagedCodex(
     ["all429_a", "all429_b", "all429_c"],
@@ -222,12 +214,6 @@ test("a client that disconnects while its request is running ends the attempt as
 
 test("a client that disconnects mid-request does not put a healthy account into cooldown", {
   timeout: 20_000,
-  todo:
-    "BUG src/lib/dispatcher/executeCodexAttempt.js: after handleChatCore returns the 499 'Request aborted' result, " +
-    "the failure path runs markAccountUnavailable(connectionId, 499, ...). " +
-    "Input: a client aborts while the upstream call is in flight. " +
-    "Expected: account untouched. Actual: account gets testStatus=unavailable, errorCode=499 and a 30 second " +
-    "modelLock_gpt-5-codex, so a burst of impatient clients locks every account and queues everyone else.",
 }, async () => {
   await withManagedCodex(["abort_lock_a"], hangUntilAborted, async ({ send, getConnection }) => {
     const client = new AbortController();
