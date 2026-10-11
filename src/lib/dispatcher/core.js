@@ -116,10 +116,14 @@ export function createDispatcherCore({
     }
   }
 
-  async function syncOccupancy() {
+  function readActiveAttempts() {
     const activeAttempts = listActiveDispatchAttempts(provider);
     rebuildOccupancy(activeAttempts);
     return activeAttempts;
+  }
+
+  async function syncOccupancy() {
+    return readActiveAttempts();
   }
 
   async function enqueueRequest({
@@ -218,6 +222,7 @@ export function createDispatcherCore({
     request,
     connectionId,
     activeAttempts,
+    connections,
   ) {
     const excluded = request?.metadata?.excludedConnectionIds || [];
     if (Array.isArray(excluded) && excluded.includes(connectionId)) {
@@ -245,8 +250,14 @@ export function createDispatcherCore({
       affinity.connectionId &&
       (!affinity.provider || affinity.provider === provider)
     ) {
+      const pinned = connections.find(
+        (connection) => connection.id === affinity.connectionId,
+      );
       if (Array.isArray(excluded) && excluded.includes(affinity.connectionId)) {
         // Sticky target previously failed on this request: allow failover to alternative connection
+      } else if (!pinned || !connectionCanServeRequest(pinned, request)) {
+        // Sticky target is gone, disabled, locked or out of quota: waiting for
+        // it would strand the conversation, so let any account serve it.
       } else if (affinity.connectionId !== connectionId) {
         return false;
       }
@@ -352,6 +363,7 @@ export function createDispatcherCore({
             queuedRequest,
             candidateConnection.id,
             activeAttempts,
+            connections,
           )
         );
       });
@@ -520,10 +532,11 @@ export function createDispatcherCore({
     // Occupancy is rebuilt from SQLite each call (source of truth across
     // webpack module copies). Do not use a process-global async lock here —
     // it deadlocked all concurrent admits (5× waiting, 0× LEASE_OK).
-    const [connections, activeAttempts] = await Promise.all([
-      getConnections(),
-      syncOccupancy(),
-    ]);
+    const connections = await getConnections();
+    // Read active attempts only after the last await: from here to the lease
+    // write everything is synchronous, so a concurrent lease of the same
+    // conversation is always visible and the two cannot split across accounts.
+    const activeAttempts = readActiveAttempts();
 
     // Reclaim first: already-admitted attempts are not in the queued list.
     const reclaimed = reclaimActiveLease(requestId, connections);
@@ -573,6 +586,7 @@ export function createDispatcherCore({
           targetRequest,
           candidateConnection.id,
           activeAttempts,
+          connections,
         )
       );
     });
