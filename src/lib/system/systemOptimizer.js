@@ -90,17 +90,10 @@ export async function runSystemOptimization({
 
       const ledgerResult = pruneDispatchLedger({
         retainAttemptsSince: cutoffDate,
+        retainAffinitySince: cutoffDate,
       });
-      audit.database.prunedAttempts = ledgerResult?.changes || 0;
-
-      // Clean up stale conversation affinities older than retention window
-      try {
-        const affinityStmt = db.prepare(
-          "DELETE FROM dispatch_conversation_affinity WHERE updated_at < ?"
-        );
-        const affinityResult = affinityStmt.run(cutoffDate);
-        audit.database.prunedAffinities = affinityResult?.changes || 0;
-      } catch {}
+      audit.database.prunedAttempts = ledgerResult.deletedAttempts;
+      audit.database.prunedAffinities = ledgerResult.deletedAffinity;
 
       audit.database.totalPruned =
         audit.database.prunedAttempts + audit.database.prunedAffinities;

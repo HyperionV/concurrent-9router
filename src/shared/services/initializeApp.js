@@ -1,10 +1,9 @@
 import { cleanupProviderConnections, getSettings } from "@/lib/localDb";
 import { pruneDispatchLedger } from "@/lib/sqlite/dispatcherStore.js";
 import { dispatcherMetricsAggregator } from "@/lib/dispatcher/metricsAggregator.js";
-import {
-  rollupHourlyDispatcherMetrics,
-  pruneDispatcherMetricsBuckets,
-} from "@/lib/sqlite/dispatcherMetricsStore.js";
+import { pruneImageDispatchLedger } from "@/lib/sqlite/imageDispatcherStore.js";
+import { rollupHourlyDispatcherMetrics } from "@/lib/sqlite/dispatcherMetrics/rollup.js";
+import { pruneDispatcherMetricsBuckets } from "@/lib/sqlite/dispatcherMetrics/writes.js";
 import {
   enableTunnel,
   isTunnelManuallyDisabled,
@@ -286,9 +285,8 @@ function startDispatcherRetention() {
       // Flush any pending in-memory buffer before downsampling
       dispatcherMetricsAggregator.flushToSqlite();
 
-      // Downsample completed hours into 1-hour rollups
-      const downsampleCutoff = new Date(now - 60 * 60 * 1000).toISOString();
-      rollupHourlyDispatcherMetrics(downsampleCutoff);
+      // Fold finished hours into hourly buckets (incremental from the watermark)
+      rollupHourlyDispatcherMetrics({ nowMs: now });
 
       // Prune time-series bucket tables (7 days for 1m, 90 days for 1h)
       pruneDispatcherMetricsBuckets({
@@ -300,7 +298,7 @@ function startDispatcherRetention() {
         ).toISOString(),
       });
 
-      // Prune raw attempt rows (retaining 24h of detailed attempts for debugging)
+      // Prune raw attempt rows, text and image (24h of detailed attempts kept)
       const retentionResult = pruneDispatchLedger({
         retainAttemptsSince: new Date(
           now - DISPATCHER_ATTEMPT_RETENTION_MS,
@@ -310,17 +308,26 @@ function startDispatcherRetention() {
         ).toISOString(),
       });
 
+      const imageRetentionResult = pruneImageDispatchLedger({
+        retainAttemptsSince: new Date(
+          now - DISPATCHER_ATTEMPT_RETENTION_MS,
+        ).toISOString(),
+      });
+
       const totalDeleted =
         retentionResult.deletedEvents +
         retentionResult.deletedAttempts +
         retentionResult.deletedRequests +
-        retentionResult.deletedAffinity;
+        retentionResult.deletedAffinity +
+        imageRetentionResult.deletedEvents +
+        imageRetentionResult.deletedAttempts +
+        imageRetentionResult.deletedRequests;
 
       if (totalDeleted > 0) {
-        console.log(
-          "[DispatcherRetention] Pruned dispatcher ledger rows",
-          retentionResult,
-        );
+        console.log("[DispatcherRetention] Pruned dispatcher ledger rows", {
+          text: retentionResult,
+          image: imageRetentionResult,
+        });
       }
     } catch (error) {
       console.log("[DispatcherRetention] Prune failed:", error.message);

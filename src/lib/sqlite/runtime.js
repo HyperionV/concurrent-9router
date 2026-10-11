@@ -642,6 +642,28 @@ function runMigrations(db) {
       VALUES ('0003_rate_limit_disable', datetime('now'))
     `,
   ).run();
+
+  // Migration 0004: dispatcher metrics count client cancellations apart from
+  // failures, keep an end-to-end duration histogram, and roll up hourly
+  // buckets incrementally from a stored watermark.
+  for (const table of ["dispatcher_metrics_1m", "dispatcher_metrics_1h"]) {
+    ensureColumn(db, table, "cancelled_count", "INTEGER NOT NULL DEFAULT 0");
+    ensureColumn(db, table, "duration_hist_json", "TEXT NOT NULL DEFAULT '[]'");
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dispatcher_metrics_rollup_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      rolled_until TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_disp_metrics_1m_bucket
+      ON dispatcher_metrics_1m(bucket_start);
+    CREATE INDEX IF NOT EXISTS dispatch_attempts_provider_queue_idx
+      ON dispatch_attempts(provider, queue_entered_at DESC);
+    CREATE INDEX IF NOT EXISTS image_dispatch_attempts_provider_queue_idx
+      ON image_dispatch_attempts(provider, queue_entered_at DESC);
+    INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+    VALUES ('0004_dispatcher_metrics_rollup', datetime('now'));
+  `);
 }
 
 function seedDefaults(db) {
