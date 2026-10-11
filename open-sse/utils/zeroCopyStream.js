@@ -1,5 +1,7 @@
 import { extractUsage } from "./usageTracking.js";
 import { formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
+import { createToolArgsDeltaRepair } from "./toolArgsDeltaRepair.js";
+import { FORMATS } from "../translator/formats.js";
 
 const sharedEncoder = new TextEncoder();
 const sharedDecoder = new TextDecoder("utf-8", { fatal: false });
@@ -37,6 +39,10 @@ export function createZeroCopyPassthroughStream(options = {}) {
   let capturedUsage = null;
   let chunkCount = 0;
   let totalBytes = 0;
+  const toolArgsRepair =
+    sourceFormat === FORMATS.OPENAI_RESPONSES && targetFormat === FORMATS.OPENAI_RESPONSES
+      ? createToolArgsDeltaRepair()
+      : null;
 
   function emitFirstProgressOnce() {
     if (firstProgressPromise) return firstProgressPromise;
@@ -121,11 +127,21 @@ export function createZeroCopyPassthroughStream(options = {}) {
         } catch {}
       }
 
-      // 4. Zero-copy forwarding: enqueue the chunk directly without modification
-      controller.enqueue(chunk);
+      // 4. Zero-copy forwarding: enqueue the chunk directly without modification.
+      // Responses streams go through the tool-argument repair, which forwards
+      // untouched bytes unless a block holds a function-call-arguments event.
+      if (!toolArgsRepair) {
+        controller.enqueue(chunk);
+        return;
+      }
+      for (const out of toolArgsRepair.push(chunk)) controller.enqueue(out);
     },
 
     flush(controller) {
+      if (toolArgsRepair) {
+        for (const out of toolArgsRepair.flush()) controller.enqueue(out);
+      }
+
       // Incomplete Responses stream synthesis if upstream disconnected prematurely
       if (
         sourceFormat === "openai_responses" &&
