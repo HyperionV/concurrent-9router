@@ -120,6 +120,7 @@ export async function withManagedCodex(connectionIds, respond, run) {
         request: new Request("https://router.test/v1/chat/completions", {
           method: "POST",
           signal,
+          headers,
         }),
         clientRawRequest: {
           endpoint: "/v1/chat/completions",

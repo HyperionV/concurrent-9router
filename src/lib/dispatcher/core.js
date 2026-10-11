@@ -27,6 +27,12 @@ import {
   DISPATCH_REQUEST_STATUS,
 } from "@/lib/dispatcher/types.js";
 import { isCachePrefixKey } from "@/lib/dispatcher/conversationAffinity.js";
+import {
+  MAX_QUEUED_PER_PROVIDER,
+  PRIORITY_CLASS,
+  batchSlotCeiling,
+  priorityClassOf,
+} from "@/lib/dispatcher/priorityQueue.js";
 import { isModelLockActive } from "open-sse/services/accountFallback.js";
 import { isConnectionRateLimitDisabled } from "@/lib/connectionHealth.js";
 import { dispatcherMetricsAggregator } from "@/lib/dispatcher/metricsAggregator.js";
@@ -42,30 +48,44 @@ function compareConnections(a, b) {
 }
 
 export const STARVATION_AGE_MS = 30_000;
+// A queued request that has neither arrived nor polled within this long is
+// not waiting any more (its client left or its process died), so it holds
+// nobody back.
+const WAITER_STALE_MS = 2_000;
 
+// Last poll per queued request, shared across module copies like the slot map.
+function waiterSeenAt() {
+  globalThis.__dispatcherWaiterSeenAt ??= new Map();
+  return globalThis.__dispatcherWaiterSeenAt;
+}
+
+function forgetStaleWaiters(now) {
+  const seen = waiterSeenAt();
+  if (seen.size < 1000) return;
+  for (const [requestId, at] of seen) {
+    if (now - at > 60_000) seen.delete(requestId);
+  }
+}
+
+/**
+ * Rank of a queued request: interactive above batch; within a class,
+ * continuations and requests waiting longer than STARVATION_AGE_MS above
+ * fresh first turns. Requests of equal rank are not ordered among themselves.
+ */
+export function requestRank(request, now = Date.now()) {
+  const classRank = priorityClassOf(request) === PRIORITY_CLASS.INTERACTIVE ? 2 : 0;
+  const age = now - new Date(request?.queuedAt || now).getTime();
+  const tier = request?.metadata?.isContinuation || age >= STARVATION_AGE_MS ? 1 : 0;
+  return classRank + tier;
+}
+
+/** Queue order for display and sweeps: higher rank first, then first come. */
 export function sortRequestsByPriorityAndQueueTime(requests, now = Date.now()) {
-  return [...requests].sort((a, b) => {
-    const ageA = now - new Date(a?.queuedAt || now).getTime();
-    const ageB = now - new Date(b?.queuedAt || now).getTime();
-
-    const isStarvedA = ageA >= STARVATION_AGE_MS;
-    const isStarvedB = ageB >= STARVATION_AGE_MS;
-
-    const isContinuationA = Boolean(a?.metadata?.isContinuation);
-    const isContinuationB = Boolean(b?.metadata?.isContinuation);
-
-    // Tier 1: Starved requests or Continuation requests
-    // Tier 0: Fresh unstarved Turn-1 requests
-    const tierA = isStarvedA || isContinuationA ? 1 : 0;
-    const tierB = isStarvedB || isContinuationB ? 1 : 0;
-
-    if (tierA !== tierB) {
-      return tierB - tierA; // Higher tier first
-    }
-
-    // Within same tier, preserve FIFO
-    return String(a?.queuedAt || "").localeCompare(String(b?.queuedAt || ""));
-  });
+  return [...requests].sort(
+    (a, b) =>
+      requestRank(b, now) - requestRank(a, now) ||
+      String(a?.queuedAt || "").localeCompare(String(b?.queuedAt || "")),
+  );
 }
 
 export function createDispatcherCore({
@@ -418,55 +438,67 @@ export function createDispatcherCore({
     const reclaimed = reclaimActiveLease(requestId, connections);
     if (reclaimed) return reclaimed;
 
-    const queuedRequests = sortRequestsByPriorityAndQueueTime(
-      listQueuedDispatchRequests(provider, 500),
+    const now = Date.now();
+    waiterSeenAt().set(requestId, now);
+    forgetStaleWaiters(now);
+
+    const queuedRequests = listQueuedDispatchRequests(
+      provider,
+      MAX_QUEUED_PER_PROVIDER,
     );
     const targetRequest = queuedRequests.find(
       (request) => request.id === requestId,
     );
     if (!targetRequest) return null;
 
-    const now = Date.now();
-    const targetAge = now - new Date(targetRequest?.queuedAt || now).getTime();
-    const targetTier =
-      Boolean(targetRequest?.metadata?.isContinuation) ||
-      targetAge >= STARVATION_AGE_MS
-        ? 1
-        : 0;
-
-    const hasHigherPriorityWaiting = queuedRequests.some((other) => {
-      if (other.id === targetRequest.id) return false;
-      const otherAge = now - new Date(other?.queuedAt || now).getTime();
-      const otherTier =
-        Boolean(other?.metadata?.isContinuation) || otherAge >= STARVATION_AGE_MS
-          ? 1
-          : 0;
-      return otherTier > targetTier;
-    });
-
-    if (hasHigherPriorityWaiting) {
-      return null;
-    }
-
     const slots = resolveSlotsPerConnection();
-    const connection = getSortedConnectionsForRequest(
-      connections,
-      targetRequest,
-    ).find((candidateConnection) => {
-      const currentOccupancy =
-        occupancyByConnection[candidateConnection.id] || 0;
-      if (currentOccupancy >= slots) return false;
+    const batchCeiling = batchSlotCeiling(slots * connections.length);
+    const activeBatchCount = activeAttempts.filter(
+      (attempt) =>
+        priorityClassOf(getDispatchRequest(attempt.requestId)) ===
+        PRIORITY_CLASS.BATCH,
+    ).length;
+
+    // The account this request would run on now, or null when it cannot run:
+    // no free slot it may use, or batch work already holds its share.
+    const connectionFor = (request) => {
+      if (
+        priorityClassOf(request) === PRIORITY_CLASS.BATCH &&
+        activeBatchCount >= batchCeiling
+      ) {
+        return null;
+      }
       return (
-        connectionCanServeRequest(candidateConnection, targetRequest) &&
-        requestIsEligibleForConnection(
-          targetRequest,
-          candidateConnection.id,
-          activeAttempts,
-          connections,
-        )
+        getSortedConnectionsForRequest(connections, request).find(
+          (candidateConnection) =>
+            (occupancyByConnection[candidateConnection.id] || 0) < slots &&
+            connectionCanServeRequest(candidateConnection, request) &&
+            requestIsEligibleForConnection(
+              request,
+              candidateConnection.id,
+              activeAttempts,
+              connections,
+            ),
+        ) || null
       );
-    });
+    };
+
+    const connection = connectionFor(targetRequest);
     if (!connection) return null;
+
+    // Step aside for a higher-ranked request that is still waiting and could
+    // run now. One that cannot run anywhere (its accounts are locked, or batch
+    // is at its share) holds nobody back.
+    const seen = waiterSeenAt();
+    const targetRank = requestRank(targetRequest, now);
+    const higherCanRun = queuedRequests.some(
+      (other) =>
+        requestRank(other, now) > targetRank &&
+        now - Math.max(seen.get(other.id) || 0, Date.parse(other.queuedAt) || 0) <=
+          WAITER_STALE_MS &&
+        connectionFor(other) !== null,
+    );
+    if (higherCanRun) return null;
 
     const attempt = getLatestDispatchAttemptForRequest(requestId);
     if (!attempt || attempt.state !== DISPATCH_ATTEMPT_STATE.QUEUED) {
@@ -490,6 +522,7 @@ export function createDispatcherCore({
     }
 
     updateDispatchRequestStatus(requestId, DISPATCH_REQUEST_STATUS.RUNNING);
+    waiterSeenAt().delete(requestId);
     occupancyByConnection[connection.id] =
       (occupancyByConnection[connection.id] || 0) + 1;
     leaseCountByConnection[connection.id] =

@@ -14,6 +14,7 @@ import {
   DISPATCH_ATTEMPT_STATE,
   DISPATCH_EVENT_TYPE,
 } from "@/lib/dispatcher/types.js";
+import { queueWaitLimitMs } from "@/lib/dispatcher/priorityQueue.js";
 
 export function createDispatcherWatchdog({
   provider = "codex",
@@ -25,6 +26,8 @@ export function createDispatcherWatchdog({
   }
 
   const policy = createTimeoutPolicy(timeoutPolicy);
+  const hasExplicitQueueLimit =
+    timeoutPolicy.waitingLimitMs != null || timeoutPolicy.queueTtlMs != null;
 
   async function runSweep(now = Date.now()) {
     const timedOut = [];
@@ -35,7 +38,12 @@ export function createDispatcherWatchdog({
       const pseudoAttempt = {
         queueEnteredAt: request.queuedAt,
       };
-      const timeoutKind = classifyAttemptTimeout(pseudoAttempt, policy, now);
+      // A queued request may wait as long as its class allows, unless the
+      // watchdog was given an explicit queue limit.
+      const queuePolicy = hasExplicitQueueLimit
+        ? policy
+        : { ...policy, waitingLimitMs: queueWaitLimitMs(request) };
+      const timeoutKind = classifyAttemptTimeout(pseudoAttempt, queuePolicy, now);
       if (timeoutKind !== "queue_expired") continue;
 
       const queuedAttempt = getLatestDispatchAttemptForRequest(request.id);

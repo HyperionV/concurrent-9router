@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 const MINUTE_MS = 60_000;
 const iso = (ms) => new Date(ms).toISOString();
 
-async function freshDispatcherWithWatchdog() {
+async function freshDispatcherWithWatchdog(timeoutPolicy = {}) {
   const { closeSqlite } = await import("@/lib/sqlite/runtime.js");
   closeSqlite();
   const { clearDispatchTables } = await import("@/lib/sqlite/dispatcherStore.js");
@@ -20,7 +20,10 @@ async function freshDispatcherWithWatchdog() {
     getConnections: async () => [{ id: "limits_a", priority: 1, providerSpecificData: {} }],
     getSlotsPerConnection: () => 1,
   });
-  return { dispatcher, watchdog: createDispatcherWatchdog({ provider: "codex", dispatcher }) };
+  return {
+    dispatcher,
+    watchdog: createDispatcherWatchdog({ provider: "codex", dispatcher, timeoutPolicy }),
+  };
 }
 
 /** Lease the only slot and report stream progress as of `progressAt`. */
@@ -61,7 +64,11 @@ test("a request still waiting for a slot after the queue limit is expired, a run
   const { getDispatchAttempt, getDispatchRequest } = await import(
     "@/lib/sqlite/dispatcherStore.js"
   );
-  const { dispatcher, watchdog } = await freshDispatcherWithWatchdog();
+  // A queue limit shorter than the running stream's attempt deadline, so only
+  // the rule under test can end either attempt.
+  const { dispatcher, watchdog } = await freshDispatcherWithWatchdog({
+    waitingLimitMs: QUEUE_WAITING_LIMIT_MS,
+  });
 
   const startedAt = Date.now();
   const lease = await startStreamingWithProgress(dispatcher, startedAt);

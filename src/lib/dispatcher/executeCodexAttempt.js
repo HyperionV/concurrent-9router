@@ -25,6 +25,13 @@ import * as log from "@/sse/utils/logger.js";
 import { createErrorResult } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { PROVIDERS } from "open-sse/config/providers.js";
+import { listQueuedDispatchRequests } from "@/lib/sqlite/dispatcherStore.js";
+import {
+  MAX_QUEUED_PER_PROVIDER,
+  PRIORITY_HEADER,
+  priorityClassFromHeader,
+  queueWaitLimitMs,
+} from "@/lib/dispatcher/priorityQueue.js";
 
 /**
  * origin/main lease wait — adaptive polling tryLeaseRequest.
@@ -187,6 +194,20 @@ async function executeManagedProviderRequest({
   const { dispatcher } = dispatcherEntry;
   const targetFormat = resolveTargetFormat(provider);
 
+  // Safety valve only: normal overload waits in the queue instead.
+  if (
+    !requestId &&
+    listQueuedDispatchRequests(provider, MAX_QUEUED_PER_PROVIDER).length >=
+      MAX_QUEUED_PER_PROVIDER
+  ) {
+    const response = createErrorResult(
+      HTTP_STATUS.SERVICE_UNAVAILABLE,
+      `${provider} queue is full; retry shortly`,
+    ).response;
+    response.headers.set("Retry-After", "30");
+    return response;
+  }
+
   const queued = requestId
     ? await dispatcher.requeueRequest(requestId, {
         metadataPatch: {
@@ -210,6 +231,9 @@ async function executeManagedProviderRequest({
           admission: decision,
           excludedConnectionIds,
           isContinuation: detectIsContinuation(body),
+          priorityClass: priorityClassFromHeader(
+            request?.headers?.get?.(PRIORITY_HEADER),
+          ),
         },
       });
 
@@ -224,11 +248,14 @@ async function executeManagedProviderRequest({
     "DISPATCHER",
     `${provider}/${model}: waiting for lease request=${queued.request.id.slice(0, 8)}…`,
   );
+  // The waiting limit depends on the class and counts from the first enqueue,
+  // so a failover retry does not get a fresh wait.
+  const waitingLimitMs = queueWaitLimitMs(queued.request);
+  const waitedMs = Date.now() - new Date(queued.request.queuedAt || Date.now()).getTime();
   const lease = await waitForLease(
     dispatcher,
     queued.request.id,
-    dispatcher.timeoutPolicy?.waitingLimitMs ??
-      dispatcher.timeoutPolicy?.queueTtlMs,
+    Math.max(0, waitingLimitMs - waitedMs),
     clientSignal,
   );
   if (!lease && clientSignal?.aborted) {
@@ -249,9 +276,7 @@ async function executeManagedProviderRequest({
       timeoutKind: "queue_expired",
       error: {
         code: "dispatcher_queue_expired",
-        waitingLimitMs:
-          dispatcher.timeoutPolicy?.waitingLimitMs ??
-          dispatcher.timeoutPolicy?.queueTtlMs,
+        waitingLimitMs,
       },
     });
     log.warn(

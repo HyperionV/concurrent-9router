@@ -503,9 +503,12 @@ test("dispatcher survives 5 accounts with 40 concurrent long-lived requests and 
     }
 
     for (let index = 0; index < 40; index += 1) {
+      // People's chats: interactive may use every slot; the periodic
+      // arrivals below are batch and wait for theirs.
       const queued = await dispatcher.enqueueRequest({
         modelId: "gpt-5-codex",
         requestKind: "dispatcher-long-lived",
+        metadata: { priorityClass: "interactive" },
       });
       clock.at(0, async () => {
         await leaseRequest({
