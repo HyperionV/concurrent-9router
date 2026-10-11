@@ -244,9 +244,18 @@ export async function getProviderCredentials(
   }
 }
 
+// The request itself was wrong: every account would answer the same, so the
+// error goes back to the client and no account is blamed.
+const REQUEST_ERROR_STATUSES = new Set([400, 404, 413, 422]);
+// A 401/403 deactivates the account only when the body says its credentials
+// are bad; anything else (a challenge page, a proxy error) is a cooldown.
+const AUTH_FAILURE_PATTERN =
+  /invalid_token|token_revoked|token_expired|token_invalidated|invalid_api_key|refresh_token_reused|account_deactivated|account_suspended|authentication token|token (has been |is )?(expired|invalidated|revoked)|deactivated|suspended/i;
+
 /**
  * Mark account+model as unavailable — locks modelLock_${model} in DB.
- * All errors (429, 401, 5xx, etc.) lock per model, not per account.
+ * All account errors (429, 401, 5xx, etc.) lock per model, not per account.
+ * Request errors (400, 404, 413, 422) leave the account alone.
  * @param {string} connectionId
  * @param {number} status - HTTP status code from upstream
  * @param {string} errorText
@@ -263,6 +272,8 @@ export async function markAccountUnavailable(
   resetsAtMs = null,
 ) {
   if (!connectionId || connectionId === "noauth")
+    return { shouldFallback: false, cooldownMs: 0 };
+  if (REQUEST_ERROR_STATUSES.has(status))
     return { shouldFallback: false, cooldownMs: 0 };
   const connections = await getProviderConnections({ provider });
   const conn = connections.find((c) => c.id === connectionId);
@@ -293,7 +304,7 @@ export async function markAccountUnavailable(
     backoffLevel: newBackoffLevel ?? backoffLevel,
   };
 
-  if (status === 401 || status === 403) {
+  if ((status === 401 || status === 403) && AUTH_FAILURE_PATTERN.test(reason)) {
     updates.isActive = false;
   }
 

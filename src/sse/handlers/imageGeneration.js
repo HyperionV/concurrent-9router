@@ -212,6 +212,9 @@ async function runCodexImageRequest({
     const credentials = buildCredentialsFromConnection(lease.connection);
 
     let finalized = false;
+    // The account is marked once per failed attempt; this records whether
+    // that marking asked for another account.
+    let failureVerdict = { shouldFallback: false };
     const finalizeFailure = async ({
       status = HTTP_STATUS.BAD_GATEWAY,
       error = "Image request failed",
@@ -224,7 +227,7 @@ async function runCodexImageRequest({
         error: { status, message: error },
       });
       if (shouldMarkUnavailableForImageFailure(status, terminalReason)) {
-        await markAccountUnavailable(
+        failureVerdict = await markAccountUnavailable(
           credentials.connectionId,
           status,
           error,
@@ -288,22 +291,14 @@ async function runCodexImageRequest({
 
     if (result.success) return result.response;
 
+    // No-op when the image core already reported this failure.
     await finalizeFailure({
       status: result.status,
       error: result.error,
       terminalReason: "provider_error",
     });
 
-    const { shouldFallback } = await markAccountUnavailable(
-      credentials.connectionId,
-      result.status,
-      result.error,
-      provider,
-      model,
-      null,
-    );
-
-    if (shouldFallback) {
+    if (failureVerdict.shouldFallback) {
       log.warn(
         "AUTH",
         `Image account ${credentials.connectionName} unavailable (${result.status}), trying fallback`,

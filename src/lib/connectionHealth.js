@@ -133,16 +133,15 @@ export function isUsageLimitError(errorMessage) {
   if (!errorMessage) return false;
   const lowerMsg = errorMessage.toLowerCase();
 
-  // Match patterns like:
-  // "You've used all the included free usage for model grok-4.6 for now"
-  // "usage_limit_reached"
-  // "rate_limit_exceeded"
+  // Only an exhausted allowance, e.g.
+  // "You've used all the included free usage for model grok-4.6 for now" or
+  // "usage_limit_reached". A passing rate limit ("rate_limit_exceeded",
+  // "try again in 1s") is a short cooldown, not a day-long disable.
   const usageLimitPatterns = [
     "used all the included",
-    "usage_limit",
-    "rate_limit",
-    "quota",
-    "limit exceeded",
+    "usage_limit_reached",
+    "usage limit reached",
+    "hit your usage limit",
     "free usage",
   ];
 

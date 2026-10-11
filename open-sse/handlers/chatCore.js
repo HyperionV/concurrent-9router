@@ -425,17 +425,19 @@ export async function handleChatCore({
       }),
     ).catch(() => {});
 
-    // Auto-disable connection for 429 usage limit errors (24 hours)
+    // An exhausted usage allowance disables the connection until the upstream's
+    // reset time when it gave one, otherwise for 24 hours.
     if (
       statusCode === HTTP_STATUS.RATE_LIMITED &&
       connectionId &&
       supportsRateLimitDisable(provider) &&
       isUsageLimitError(message)
     ) {
-      autoDisableForRateLimit(connectionId);
+      const untilReset = Number(resetsAtMs) - Date.now();
+      autoDisableForRateLimit(connectionId, untilReset > 0 ? untilReset : undefined);
       const reEnableTime = getRateLimitDisableHumanReadable(connectionId);
       console.log(
-        `${COLORS.yellow}[RATE_LIMIT_DISABLE] ${provider} | connection=${connectionId} | ${message} | auto-disabled for 24h${reEnableTime ? ` (${reEnableTime})` : ""}${COLORS.reset}`,
+        `${COLORS.yellow}[RATE_LIMIT_DISABLE] ${provider} | connection=${connectionId} | ${message} | auto-disabled${reEnableTime ? ` (${reEnableTime})` : ""}${COLORS.reset}`,
       );
     }
 
