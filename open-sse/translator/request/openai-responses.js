@@ -215,6 +215,16 @@ function normalizeToolParameters(params) {
   return params;
 }
 
+/** Text of a system or developer message, given as a string or as text parts. */
+function textOfInstruction(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => (typeof part === "string" ? part : part?.text || ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
 /**
  * Convert OpenAI Chat Completions to OpenAI Responses API format
  */
@@ -234,18 +244,14 @@ export function openaiToOpenAIResponsesRequest(
     store: false,
   };
 
-  // Extract system message as instructions
-  let hasSystemMessage = false;
+  // Every system and developer message becomes part of the instructions.
+  const instructionParts = [];
   const messages = body.messages || [];
 
   for (const msg of messages) {
-    if (msg.role === "system") {
-      // Use first system message as instructions
-      if (!hasSystemMessage) {
-        result.instructions =
-          typeof msg.content === "string" ? msg.content : "";
-        hasSystemMessage = true;
-      }
+    if (msg.role === "system" || msg.role === "developer") {
+      const text = textOfInstruction(msg.content);
+      if (text) instructionParts.push(text);
       continue; // Skip system messages in input
     }
 
@@ -333,10 +339,8 @@ export function openaiToOpenAIResponsesRequest(
     }
   }
 
-  // If no system message, leave instructions empty (will be filled by executor)
-  if (!hasSystemMessage) {
-    result.instructions = "";
-  }
+  // Without a system message, instructions stay empty (filled by the executor).
+  result.instructions = instructionParts.join("\n\n");
 
   // Convert tools format
   if (body.tools && Array.isArray(body.tools)) {
@@ -356,6 +360,19 @@ export function openaiToOpenAIResponsesRequest(
 
   const textFormat = normalizeResponsesTextFormat(body.response_format);
   if (textFormat) result.text = textFormat;
+
+  // Chat names a function choice { type, function: { name } }; Responses uses { type, name }.
+  if (typeof body.tool_choice === "string") {
+    result.tool_choice = body.tool_choice;
+  } else if (body.tool_choice?.type === "function") {
+    const name = body.tool_choice.function?.name || body.tool_choice.name;
+    if (name) result.tool_choice = { type: "function", name };
+  }
+  if (body.parallel_tool_calls !== undefined) {
+    result.parallel_tool_calls = body.parallel_tool_calls;
+  }
+  // The executor turns reasoning_effort into reasoning.effort.
+  if (body.reasoning_effort !== undefined) result.reasoning_effort = body.reasoning_effort;
 
   // Pass through other relevant fields
   if (body.temperature !== undefined) result.temperature = body.temperature;
