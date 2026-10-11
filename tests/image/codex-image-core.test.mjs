@@ -438,7 +438,8 @@ test("codex image protocol parses SSE into final base64 image", async () => {
   });
 
   const result = await parseCodexImageStream(response, null);
-  assert.equal(result, "cHJvdG9jb2w=");
+  assert.equal(result.imageB64, "cHJvdG9jb2w=");
+  assert.equal(result.failure, null);
 });
 
 test("codex image protocol builds headers from credentials", async () => {
@@ -582,4 +583,69 @@ test("codex image edit parser accepts mask uploads", async () => {
   assert.equal(parsed.body.images.length, 1);
   assert.match(parsed.body.images[0], /^data:image\/png;base64,/);
   assert.match(parsed.body.mask, /^data:image\/png;base64,/);
+});
+
+function imageStreamResponse(...events) {
+  return new Response(events.join(""), {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
+function sseEvent(type, data) {
+  return `event: ${type}
+data: ${JSON.stringify({ type, ...data })}
+
+`;
+}
+
+async function generateImage(streamResponse) {
+  globalThis.fetch = async () => streamResponse;
+  const { handleImageGenerationCore } =
+    await import("open-sse/handlers/imageGenerationCore.js");
+  return handleImageGenerationCore({
+    body: { prompt: "draw a router" },
+    modelInfo: { provider: "codex", model: "gpt-5.4-image" },
+    credentials: { accessToken: "access-token" },
+  });
+}
+
+test("an image the model refuses to draw is a 400 carrying the model's reason", async () => {
+  const result = await generateImage(
+    imageStreamResponse(
+      sseEvent("response.output_text.delta", { delta: "I can't create images of real people." }),
+      sseEvent("response.completed", { response: { status: "completed" } }),
+    ),
+  );
+
+  assert.equal(result.success, false);
+  assert.equal(result.status, 400);
+  assert.equal(result.error, "I can't create images of real people.");
+});
+
+test("an image blocked by the safety system is a 400 with the upstream message", async () => {
+  const result = await generateImage(
+    imageStreamResponse(
+      sseEvent("response.failed", {
+        response: {
+          status: "failed",
+          error: { code: "moderation_blocked", message: "Your request was rejected by the safety system." },
+        },
+      }),
+    ),
+  );
+
+  assert.equal(result.status, 400);
+  assert.equal(result.error, "Your request was rejected by the safety system.");
+});
+
+test("an image request over the account's usage limit is a 429", async () => {
+  const result = await generateImage(
+    imageStreamResponse(
+      sseEvent("error", { error: { code: "usage_limit_reached", message: "You've hit your usage limit." } }),
+    ),
+  );
+
+  assert.equal(result.status, 429);
+  assert.equal(result.error, "You've hit your usage limit.");
 });

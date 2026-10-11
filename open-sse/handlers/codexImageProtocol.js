@@ -7,6 +7,8 @@ const CODEX_VERSION = "0.129.0";
 const CODEX_ORIGINATOR = "codex_cli_rs";
 const CODEX_MODEL_SUFFIX = "-image";
 const CODEX_REF_DETAIL = "high";
+// SSE events end with a blank line; servers may use CRLF line endings.
+const SSE_EVENT_SEPARATOR = /\r?\n\r?\n/;
 const NO_IMAGE_MESSAGE =
   "Codex did not return an image. Account may not be entitled (Plus/Pro required).";
 
@@ -118,11 +120,31 @@ export function buildCodexImageRequest(model, body) {
   };
 }
 
+/**
+ * Status for an image reply that ended without an image: a safety refusal is
+ * the caller's request (400), a usage limit is 429, anything else is an
+ * upstream fault (502).
+ */
+function statusForImageError(error) {
+  const code = `${error?.code || ""} ${error?.type || ""}`.toLowerCase();
+  if (/content_policy|moderation|safety/.test(code)) return HTTP_STATUS.BAD_REQUEST;
+  if (/rate_limit|quota|usage_limit/.test(code)) return HTTP_STATUS.RATE_LIMITED;
+  return HTTP_STATUS.BAD_GATEWAY;
+}
+
+/**
+ * Read a Codex image stream.
+ * Returns `{ imageB64, failure }`: `failure` ({ status, message }) is set
+ * whenever no image arrived, carrying the upstream's own reason when it gave one.
+ */
 export async function parseCodexImageStream(response, log, callbacks = {}) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let imageB64 = null;
+  let upstreamError = null;
+  // The model's own words when it answers instead of drawing (a refusal).
+  let replyText = "";
   let lastEvent = null;
   let bytesReceived = 0;
   let lastProgressLogMs = 0;
@@ -172,6 +194,19 @@ export async function parseCodexImageStream(response, log, callbacks = {}) {
         }
       } catch {}
     }
+
+    if (eventName === "response.output_text.delta" && dataStr) {
+      try {
+        replyText += JSON.parse(dataStr)?.delta || "";
+      } catch {}
+    }
+
+    if ((eventName === "error" || eventName === "response.failed") && dataStr && !upstreamError) {
+      try {
+        const data = JSON.parse(dataStr);
+        upstreamError = data?.error || data?.response?.error || {};
+      } catch {}
+    }
   };
 
   while (true) {
@@ -180,17 +215,36 @@ export async function parseCodexImageStream(response, log, callbacks = {}) {
     bytesReceived += value?.byteLength || 0;
     buffer += decoder.decode(value, { stream: true });
 
-    let sepIdx;
-    while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
-      const block = buffer.slice(0, sepIdx);
-      buffer = buffer.slice(sepIdx + 2);
+    let separator;
+    while ((separator = SSE_EVENT_SEPARATOR.exec(buffer))) {
+      const block = buffer.slice(0, separator.index);
+      buffer = buffer.slice(separator.index + separator[0].length);
       await processBlock(block);
     }
   }
   buffer += decoder.decode();
   if (buffer.trim()) await processBlock(buffer);
 
-  return imageB64;
+  if (imageB64) return { imageB64, failure: null };
+  if (upstreamError) {
+    return {
+      imageB64: null,
+      failure: {
+        status: statusForImageError(upstreamError),
+        message: upstreamError.message || NO_IMAGE_MESSAGE,
+      },
+    };
+  }
+  if (replyText.trim()) {
+    return {
+      imageB64: null,
+      failure: { status: HTTP_STATUS.BAD_REQUEST, message: replyText.trim() },
+    };
+  }
+  return {
+    imageB64: null,
+    failure: { status: HTTP_STATUS.BAD_GATEWAY, message: NO_IMAGE_MESSAGE },
+  };
 }
 
 export function buildCodexSseResponse(
@@ -208,7 +262,7 @@ export function buildCodexSseResponse(
       };
 
       try {
-        const b64 = await parseCodexImageStream(providerResponse, log, {
+        const { imageB64, failure } = await parseCodexImageStream(providerResponse, log, {
           onProgress: async (info) => {
             if (onProgress) await onProgress(info);
             send("progress", info);
@@ -219,20 +273,20 @@ export function buildCodexSseResponse(
           },
         });
 
-        if (!b64) {
+        if (failure) {
           if (onFailure) {
             await onFailure({
-              status: HTTP_STATUS.BAD_GATEWAY,
-              error: NO_IMAGE_MESSAGE,
+              status: failure.status,
+              error: failure.message,
               terminalReason: "no_image",
             });
           }
-          send("error", { message: NO_IMAGE_MESSAGE });
+          send("error", { message: failure.message, status: failure.status });
         } else {
           if (onSuccess) await onSuccess();
           send("done", {
             created: Math.floor(Date.now() / 1000),
-            data: [{ b64_json: b64 }],
+            data: [{ b64_json: imageB64 }],
           });
         }
       } catch (err) {
@@ -299,10 +353,6 @@ export function buildCodexBinaryResponse(normalized, body) {
       "Access-Control-Allow-Origin": "*",
     },
   });
-}
-
-export function getCodexNoImageMessage() {
-  return NO_IMAGE_MESSAGE;
 }
 
 export function getCodexResponsesUrl() {

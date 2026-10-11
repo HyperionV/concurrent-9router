@@ -11,7 +11,6 @@ import {
   buildCodexImageHeaders,
   buildCodexImageRequest,
   buildCodexSseResponse,
-  getCodexNoImageMessage,
   getCodexResponsesUrl,
   normalizeCodexImageResponse,
   parseCodexImageStream,
@@ -170,7 +169,7 @@ export async function handleImageGenerationCore({
     }
 
     if (dispatcherHooks?.onStreamStart) await dispatcherHooks.onStreamStart();
-    const b64 = await parseCodexImageStream(providerResponse, log, {
+    const { imageB64, failure } = await parseCodexImageStream(providerResponse, log, {
       onProgress: dispatcherHooks?.onProgress,
       onPartialImage: async () => {
         if (dispatcherHooks?.onProgress) {
@@ -178,21 +177,20 @@ export async function handleImageGenerationCore({
         }
       },
     });
-    if (!b64) {
-      const noImageMessage = getCodexNoImageMessage();
+    if (failure) {
       if (dispatcherHooks?.onFailure) {
         await dispatcherHooks.onFailure({
-          status: HTTP_STATUS.BAD_GATEWAY,
-          error: noImageMessage,
+          status: failure.status,
+          error: failure.message,
           terminalReason: "no_image",
         });
       }
-      return createErrorResult(HTTP_STATUS.BAD_GATEWAY, noImageMessage);
+      return createErrorResult(failure.status, failure.message);
     }
 
     responseBody = {
       created: Math.floor(Date.now() / 1000),
-      data: [{ b64_json: b64 }],
+      data: [{ b64_json: imageB64 }],
     };
   } catch (error) {
     if (upstreamTimedOut) {
