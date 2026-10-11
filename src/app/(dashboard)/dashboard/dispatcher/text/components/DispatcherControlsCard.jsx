@@ -4,32 +4,20 @@ import { useState, useEffect } from "react";
 import { Card, Input, Select, Button, Spinner } from "@/shared/components";
 
 export default function DispatcherControlsCard({
-  snapshot,
+  settings,
   provider,
   providerLabel,
   onRefresh,
-  onSettingsApplied,
 }) {
-  const savedSlots = Number(snapshot?.settings?.dispatcherSlotsPerConnection || 1);
+  const savedSlots = Number(settings?.dispatcherSlotsPerConnection || 1);
   const [collections, setCollections] = useState([]);
   const [collectionId, setCollectionId] = useState(
-    snapshot?.settings?.textDispatcherCollectionId || "",
+    settings?.textDispatcherCollectionId || "",
   );
   const [slots, setSlots] = useState(String(savedSlots));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-
-  useEffect(() => {
-    setCollectionId(snapshot?.settings?.textDispatcherCollectionId || "");
-    setSlots(String(snapshot?.settings?.dispatcherSlotsPerConnection || 1));
-    setError("");
-    setMessage("");
-  }, [
-    provider,
-    snapshot?.settings?.textDispatcherCollectionId,
-    snapshot?.settings?.dispatcherSlotsPerConnection,
-  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,7 +36,7 @@ export default function DispatcherControlsCard({
 
   const collectionChanged =
     provider === "codex" &&
-    collectionId !== (snapshot?.settings?.textDispatcherCollectionId || "");
+    collectionId !== (settings?.textDispatcherCollectionId || "");
   const slotsChanged = Number(slots) !== savedSlots;
   const hasChanges = collectionChanged || slotsChanged;
 
@@ -76,7 +64,6 @@ export default function DispatcherControlsCard({
         throw new Error(data?.error || "Failed to update dispatcher settings");
       }
       setMessage(`${providerLabel} slots updated to ${slots} (isolated pool).`);
-      onSettingsApplied(data);
       await onRefresh();
     } catch (nextError) {
       setError(nextError.message);
@@ -135,7 +122,7 @@ export default function DispatcherControlsCard({
               variant="outline"
               onClick={() => {
                 setCollectionId(
-                  snapshot?.settings?.textDispatcherCollectionId || "",
+                  settings?.textDispatcherCollectionId || "",
                 );
                 setSlots(String(savedSlots));
                 setError("");

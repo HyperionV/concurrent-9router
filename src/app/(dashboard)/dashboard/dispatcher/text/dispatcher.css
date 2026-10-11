@@ -1,0 +1,79 @@
+/*
+ * Dispatcher console tokens. Series colors are the validated categorical
+ * order (light steps on the white surface, dark steps on #242423); status
+ * colors are reserved for outcomes and always ship with a text label.
+ */
+.dispatcher-console {
+  --viz-1: #2a78d6;
+  --viz-2: #eb6834;
+  --viz-3: #1baf7a;
+  --viz-4: #eda100;
+  --status-good: #0ca30c;
+  --status-warning: #d99400;
+  --status-critical: #d03b3b;
+  --status-neutral: #a8a69f;
+  --grid: rgba(56, 55, 51, 0.08);
+  --axis-ink: #75736e;
+  --panel-inset: rgba(0, 0, 0, 0.025);
+  --row-hover: rgba(217, 119, 87, 0.06);
+  --flash: rgba(217, 119, 87, 0.18);
+}
+
+.dark .dispatcher-console {
+  --viz-1: #3987e5;
+  --viz-2: #d95926;
+  --viz-3: #199e70;
+  --viz-4: #c98500;
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-critical: #e66767;
+  --status-neutral: #6f6e69;
+  --grid: rgba(236, 235, 232, 0.07);
+  --axis-ink: #9e9d99;
+  --panel-inset: rgba(255, 255, 255, 0.03);
+  --row-hover: rgba(217, 119, 87, 0.09);
+  --flash: rgba(217, 119, 87, 0.22);
+}
+
+.dispatcher-console .num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.dispatcher-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-soft);
+}
+
+.dispatcher-console .value-tick {
+  transition: color 600ms ease;
+}
+
+@keyframes dispatcher-row-in {
+  from { background-color: var(--flash); }
+  to { background-color: transparent; }
+}
+.dispatcher-console .row-new {
+  animation: dispatcher-row-in 1.6s ease-out;
+}
+
+@keyframes dispatcher-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.85); }
+}
+.dispatcher-console .pulse {
+  animation: dispatcher-pulse 1.8s ease-in-out infinite;
+}
+
+.dispatcher-console .meter > span {
+  transition: width 500ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dispatcher-console .row-new,
+  .dispatcher-console .pulse { animation: none; }
+  .dispatcher-console .meter > span,
+  .dispatcher-console .value-tick { transition: none; }
+}
