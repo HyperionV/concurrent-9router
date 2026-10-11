@@ -81,11 +81,17 @@ function parseTime(value) {
 export function classifyAttemptTimeout(attempt, policy, now = Date.now()) {
   const effectivePolicy = createTimeoutPolicy(policy);
   const queueEnteredAt = parseTime(attempt?.queueEnteredAt);
-  if (queueEnteredAt && now - queueEnteredAt >= effectivePolicy.queueTtlMs) {
+  const leasedAt = parseTime(attempt?.leasedAt);
+  // The queue limit covers waiting for a slot only. Once leased, an attempt is
+  // governed by connect / first-token / idle limits and the attempt deadline.
+  if (
+    !leasedAt &&
+    queueEnteredAt &&
+    now - queueEnteredAt >= effectivePolicy.queueTtlMs
+  ) {
     return DISPATCH_TIMEOUT_KIND.QUEUE_EXPIRED;
   }
 
-  const leasedAt = parseTime(attempt?.leasedAt);
   const connectStartedAt = parseTime(attempt?.connectStartedAt);
   const streamStartedAt = parseTime(attempt?.streamStartedAt);
   const firstProgressAt = parseTime(attempt?.firstProgressAt);
