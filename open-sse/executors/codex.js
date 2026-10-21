@@ -34,27 +34,29 @@ const CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS = [
   "selected model is at capacity",
   "model_at_capacity",
 ];
-const CODEX_SSE_USER_OUTPUT_PATTERNS = [
-  "event: response.output_text.delta",
-  "event: response.function_call_arguments.delta",
-  "event: response.reasoning_summary_text.delta",
-  "event: response.reasoning_text.delta",
-  "event: response.reasoning.delta",
-  "event: response.output_item.added",
-  "event: response.content_part.added",
-  '"type":"response.output_text.delta"',
-  '"type":"response.function_call_arguments.delta"',
-  '"type":"response.reasoning_summary_text.delta"',
-  '"type":"response.reasoning_text.delta"',
-  '"type":"response.reasoning.delta"',
-  '"type":"response.output_item.added"',
-  '"type":"response.content_part.added"',
-];
-const CODEX_SSE_PEEK_BYTES = 4 * 1024;
+// Once one of these reaches the client the request can no longer be retried, so the peek stops.
+const CODEX_SSE_OUTPUT_EVENT_TYPES = new Set([
+  "response.output_text.delta",
+  "response.function_call_arguments.delta",
+  "response.reasoning_summary_text.delta",
+  "response.reasoning_text.delta",
+  "response.reasoning.delta",
+  "response.output_item.added",
+  "response.content_part.added",
+]);
+const CODEX_SSE_TERMINAL_EVENT_TYPES = new Set([
+  "response.completed",
+  "response.incomplete",
+  "response.done",
+]);
+const CODEX_SSE_ERROR_EVENT_TYPES = new Set(["error", "response.failed"]);
+// response.created and response.in_progress each echo the full instructions and tools (13 KB+
+// apiece in production), so an overload error that arrives before any output can sit tens of KB
+// into the stream. The peek reads whole events until output starts; this cap only bounds memory.
+const CODEX_SSE_PEEK_MAX_BYTES = 512 * 1024;
+const SSE_EVENT_SEPARATOR = /\r?\n\r?\n/;
 const CODEX_MODEL_CAPACITY_MESSAGE =
   "Selected model is at capacity. Please try a different model.";
-// Keep legacy name for any external references
-const CODEX_SSE_OVERLOADED_PATTERNS = CODEX_SSE_RETRY_PATTERNS;
 const SESSION_TTL_MS = 60 * 60 * 1000;
 const CODEX_HOSTED_TOOL_TYPES = new Set([
   "image_generation",
@@ -233,6 +235,52 @@ function extractSseErrorMessage(text, fallback) {
   }
 
   return fallback || CODEX_MODEL_CAPACITY_MESSAGE;
+}
+
+/**
+ * What one complete SSE event means for the peek: "capacity" or "retry" for an error event the
+ * router can still recover from, "pass" when the stream must go to the client as it is (output
+ * started, the response ended, or an error the router does not retry), "continue" otherwise.
+ * Only error events are matched, so the instructions echoed in response.created cannot trigger it.
+ */
+function classifyPeekedSseEvent(rawEvent) {
+  let eventName = null;
+  const dataLines = [];
+  for (const line of rawEvent.split(/\r?\n/)) {
+    if (line.startsWith("event:")) eventName = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+  }
+  const dataText = dataLines.join("\n");
+  if (dataText === "[DONE]") return { kind: "pass", matched: null };
+
+  let data = null;
+  try {
+    data = JSON.parse(dataText);
+  } catch {
+    // Non-JSON data lines carry no event type.
+  }
+  const eventType = eventName || data?.type || null;
+  const isErrorEvent =
+    CODEX_SSE_ERROR_EVENT_TYPES.has(eventType) ||
+    (data?.error != null && typeof data.error === "object");
+
+  if (isErrorEvent) {
+    const lowerEvent = rawEvent.toLowerCase();
+    const capacityHit = CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS.find((p) =>
+      lowerEvent.includes(p),
+    );
+    if (capacityHit) return { kind: "capacity", matched: capacityHit };
+    const retryHit = CODEX_SSE_RETRY_PATTERNS.find((p) => lowerEvent.includes(p));
+    if (retryHit) return { kind: "retry", matched: retryHit };
+    return { kind: "pass", matched: null };
+  }
+  if (
+    CODEX_SSE_OUTPUT_EVENT_TYPES.has(eventType) ||
+    CODEX_SSE_TERMINAL_EVENT_TYPES.has(eventType)
+  ) {
+    return { kind: "pass", matched: null };
+  }
+  return { kind: "continue", matched: null };
 }
 
 function codexSseErrorResponse(status, message) {
@@ -581,34 +629,44 @@ export class CodexExecutor extends BaseExecutor {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     const chunks = [];
-    let text = "";
+    let peekedBytes = 0;
+    let pendingText = "";
     let matched = null;
+    let matchedEvent = "";
     let accountFallback = false;
     try {
-      while (text.length < CODEX_SSE_PEEK_BYTES) {
+      peek: while (peekedBytes < CODEX_SSE_PEEK_MAX_BYTES) {
         const { done, value } = await reader.read();
+        if (done) {
+          // The upstream may close right after its last event without the blank line.
+          pendingText += decoder.decode();
+        } else {
+          chunks.push(value);
+          peekedBytes += value.byteLength;
+          pendingText += decoder.decode(value, { stream: true });
+        }
+
+        let separator;
+        while (
+          (separator = SSE_EVENT_SEPARATOR.exec(pendingText)) ||
+          (done && pendingText.trim())
+        ) {
+          const rawEvent = separator
+            ? pendingText.slice(0, separator.index)
+            : pendingText;
+          pendingText = separator
+            ? pendingText.slice(separator.index + separator[0].length)
+            : "";
+          const event = classifyPeekedSseEvent(rawEvent);
+          if (event.kind === "continue") continue;
+          if (event.kind !== "pass") {
+            matched = event.matched;
+            matchedEvent = rawEvent;
+            accountFallback = event.kind === "capacity";
+          }
+          break peek;
+        }
         if (done) break;
-        chunks.push(value);
-        text += decoder.decode(value, { stream: true });
-        const lowerText = text.toLowerCase();
-        const accountHit = CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS.find((p) =>
-          lowerText.includes(p),
-        );
-        if (accountHit) {
-          matched = accountHit;
-          accountFallback = true;
-          break;
-        }
-        const retryHit = CODEX_SSE_RETRY_PATTERNS.find((p) =>
-          lowerText.includes(p),
-        );
-        if (retryHit) {
-          matched = retryHit;
-          break;
-        }
-        if (CODEX_SSE_USER_OUTPUT_PATTERNS.some((p) => lowerText.includes(p))) {
-          break;
-        }
       }
     } catch (readError) {
       // The upstream broke inside the peek window. Hand downstream a body that
@@ -633,7 +691,7 @@ export class CodexExecutor extends BaseExecutor {
     if (matched) {
       return {
         matched,
-        message: extractSseErrorMessage(text, matched),
+        message: extractSseErrorMessage(matchedEvent, matched),
         accountFallback,
         replacementBody: null,
         cancel: async (reason) => {

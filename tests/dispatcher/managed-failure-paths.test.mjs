@@ -7,11 +7,20 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 
 import { OAUTH_ENDPOINTS } from "open-sse/config/appConstants.js";
+import { getExecutor } from "open-sse/executors/index.js";
 import { jsonResponse, sleep, withManagedCodex } from "./managed-codex-harness.mjs";
 
 const NO_HANG_MS = 3000;
+// Captured from production on 2026-10-21 (echoed instructions replaced by filler of the same
+// length): two ~13 KB echo events, then "server_is_overloaded" at byte ~26 KB, before any output.
+const OVERLOADED_BEFORE_OUTPUT_SSE = fs.readFileSync(
+  new URL("./fixtures/codex-overloaded-before-output.sse", import.meta.url),
+  "utf8",
+);
+const NETWORK_CHUNK_BYTES = 1400;
 
 const SSE_CREATED =
   'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_1"}}\n\n';
@@ -39,6 +48,19 @@ function sseResponse(chunks, { thenReset }) {
 }
 
 const brokenStream = () => sseResponse([SSE_CREATED, SSE_DELTA], { thenReset: true });
+/** The captured overload stream, delivered in network-sized chunks; the router cancels it. */
+const overloadedBeforeOutputStream = () => {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      for (let i = 0; i < OVERLOADED_BEFORE_OUTPUT_SSE.length; i += NETWORK_CHUNK_BYTES) {
+        controller.enqueue(encoder.encode(OVERLOADED_BEFORE_OUTPUT_SSE.slice(i, i + NETWORK_CHUNK_BYTES)));
+      }
+      controller.close();
+    },
+  });
+  return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+};
 const healthyStream = () =>
   sseResponse([SSE_CREATED, SSE_DELTA, SSE_COMPLETED], { thenReset: false });
 
@@ -145,6 +167,47 @@ test("a 401 that is fixed by a token refresh and then answered with 429 fails ov
     );
   } finally {
     restoreFetch();
+  }
+});
+
+test("an account that keeps answering overloaded before any output is retried, then the request moves to another account", {
+  timeout: 20_000,
+}, async () => {
+  const executor = getExecutor("codex");
+  const originalRetry = executor.config.retry;
+  executor.config.retry = { 503: { attempts: 1, delayMs: 0 } };
+  try {
+    await withManagedCodex(
+      ["ovl_a", "ovl_b"],
+      (args) =>
+        args.credentials.connectionId === "ovl_a"
+          ? overloadedBeforeOutputStream()
+          : healthyStream(),
+      async (ctx) => {
+        const response = await ctx.send({ body: { stream: true } });
+        const received = await readWithoutHanging(response);
+        await sleep(100);
+
+        assert.equal(response.status, 200);
+        assert.match(received, /"content":"Hel"/, "the client gets the other account's answer");
+        assert.ok(!received.includes("overloaded"), "the overload never reaches the client");
+        assert.deepEqual(
+          ctx.calls.map((call) => call.connectionId),
+          ["ovl_a", "ovl_a", "ovl_b"],
+          "one retry on the overloaded account, then the other account",
+        );
+
+        const overloadedAccount = await ctx.getConnection("ovl_a");
+        assert.ok(overloadedAccount["modelLock_gpt-5-codex"], "the overloaded account cools down");
+        assert.equal(overloadedAccount.isActive, true, "an overload does not deactivate the account");
+        const attempts = ctx.listAttempts();
+        assert.equal(attempts.find((a) => a.connectionId === "ovl_a").state, "failed");
+        assert.equal(attempts.find((a) => a.connectionId === "ovl_b").state, "completed");
+        assertNoSlotHeld(ctx, ["ovl_a", "ovl_b"]);
+      },
+    );
+  } finally {
+    executor.config.retry = originalRetry;
   }
 });
 

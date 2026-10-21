@@ -349,8 +349,8 @@ test("Codex SSE overload retry cancels the disturbed peek reader", async () => {
         controller.enqueue(
           new TextEncoder().encode(
             calls === 1
-              ? 'data: {"error":{"type":"server_is_overloaded"}}\\n\\n'
-              : "data: [DONE]\\n\\n",
+              ? 'data: {"error":{"type":"server_is_overloaded"}}\n\n'
+              : "data: [DONE]\n\n",
           ),
         );
         if (calls !== 1) controller.close();
