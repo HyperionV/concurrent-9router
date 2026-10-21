@@ -7,8 +7,12 @@ import { adjustMaxTokens } from "../helpers/maxTokensHelper.js";
 // Previously "proxy_" was used but this is a detectable fingerprint difference.
 const CLAUDE_OAUTH_TOOL_PREFIX = "";
 
+// The Claude Code identity line is what Claude Code subscription traffic carries. An Anthropic
+// API key is the client's own account, so its system prompt is sent as the client wrote it.
+const PROVIDERS_WITHOUT_CLAUDE_CODE_IDENTITY = new Set(["anthropic"]);
+
 // Convert OpenAI request to Claude format
-export function openaiToClaudeRequest(model, body, stream) {
+export function openaiToClaudeRequest(model, body, stream, credentials = null, provider = null) {
   // Tool name mapping for Claude OAuth (capitalizedName → originalName)
   const toolNameMap = new Map();
   const result = {
@@ -121,16 +125,18 @@ Respond ONLY with the JSON object, no other text.`);
   }
 
   // System with Claude Code prompt and cache_control
-  const claudeCodePrompt = { type: "text", text: CLAUDE_SYSTEM_PROMPT };
+  const identityBlocks = PROVIDERS_WITHOUT_CLAUDE_CODE_IDENTITY.has(provider)
+    ? []
+    : [{ type: "text", text: CLAUDE_SYSTEM_PROMPT }];
 
   if (systemParts.length > 0) {
     const systemText = systemParts.join("\n");
     result.system = [
-      claudeCodePrompt,
+      ...identityBlocks,
       { type: "text", text: systemText, cache_control: { type: "ephemeral", ttl: "1h" } }
     ];
-  } else {
-    result.system = [claudeCodePrompt];
+  } else if (identityBlocks.length > 0) {
+    result.system = identityBlocks;
   }
 
   // Tools - convert from OpenAI format to Claude format with prefix for OAuth
@@ -272,14 +278,23 @@ function getContentBlocksFromMessage(msg, toolNameMap = new Map()) {
   return blocks;
 }
 
+// Claude accepts only these tool_choice types; anything else (such as OpenAI's "function") is a 400.
+const CLAUDE_TOOL_CHOICE_TYPES = new Set(["auto", "any", "tool", "none"]);
+
 // Convert OpenAI tool choice to Claude format
 function convertOpenAIToolChoice(choice) {
-  if (!choice) return { type: "auto" };
-  if (typeof choice === "object" && choice.type) return choice;
-  if (choice === "auto" || choice === "none") return { type: "auto" };
-  if (choice === "required") return { type: "any" };
-  if (typeof choice === "object" && choice.function) {
-    return { type: "tool", name: choice.function.name };
+  if (typeof choice === "string") {
+    if (choice === "required") return { type: "any" };
+    if (choice === "none") return { type: "none" };
+    return { type: "auto" };
+  }
+  if (choice && typeof choice === "object") {
+    // OpenAI forced tool { type: "function", function: { name } } also carries a `.type`,
+    // so it is checked before the Claude-native pass-through.
+    if (choice.function?.name) return { type: "tool", name: choice.function.name };
+    // Responses API forced tool: { type: "function", name }
+    if (choice.type === "function" && choice.name) return { type: "tool", name: choice.name };
+    if (CLAUDE_TOOL_CHOICE_TYPES.has(choice.type)) return choice;
   }
   return { type: "auto" };
 }

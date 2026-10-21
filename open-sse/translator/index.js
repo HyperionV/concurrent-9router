@@ -4,7 +4,10 @@ import {
   ensureToolCallIds,
   fixMissingToolResponses,
 } from "./helpers/toolCallHelper.js";
-import { prepareClaudeRequest } from "./helpers/claudeHelper.js";
+import {
+  applyClaudeReasoningEffort,
+  prepareClaudeRequest,
+} from "./helpers/claudeHelper.js";
 import { cloakClaudeTools } from "../utils/claudeCloaking.js";
 import { filterToOpenAIFormat } from "./helpers/openaiHelper.js";
 import { normalizeThinkingConfig } from "../services/provider.js";
@@ -91,6 +94,8 @@ export function translateRequest(
 ) {
   ensureInitialized();
   let result = body;
+  // Read before translation: the Responses → Chat step drops `reasoning`.
+  const requestedReasoningEffort = body?.reasoning?.effort ?? body?.reasoning_effort;
 
   // Strip explicit content types (opt-in via strip[] in PROVIDER_MODELS entry)
   stripContentTypes(result, stripList);
@@ -122,7 +127,7 @@ export function translateRequest(
         `${FORMATS.OPENAI}:${targetFormat}`,
       );
       if (fromOpenAI) {
-        result = fromOpenAI(model, result, stream, credentials);
+        result = fromOpenAI(model, result, stream, credentials, provider);
       }
     }
   }
@@ -137,6 +142,7 @@ export function translateRequest(
   if (targetFormat === FORMATS.CLAUDE) {
     const apiKey = credentials?.accessToken || credentials?.apiKey || null;
     result = prepareClaudeRequest(result, provider, apiKey, connectionId);
+    result = applyClaudeReasoningEffort(result, model, requestedReasoningEffort);
   }
 
   // Claude cloaking: rename client tools with _cc suffix (anti-ban)

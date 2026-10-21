@@ -311,10 +311,12 @@ export const PROVIDERS = {
     baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
     format: "openai"
   },
+  // API-key accounts are plain Messages API traffic: no Claude Code identity and no beta
+  // flags unless a feature needs one (adaptive thinking and the 1h cache TTL are GA).
   anthropic: {
     baseUrl: "https://api.anthropic.com/v1/messages",
     format: "claude",
-    headers: { ...CLAUDE_API_HEADERS }
+    headers: { "anthropic-version": ANTHROPIC_API_VERSION }
   },
   deepseek: {
     baseUrl: "https://api.deepseek.com/chat/completions",

@@ -449,9 +449,17 @@ export const PROVIDER_MODELS = {
     { id: "gpt-4o-mini-tts", name: "GPT-4o Mini TTS", type: "tts" },
   ],
   anthropic: [
-    { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4" },
-    { id: "claude-opus-4-20250514", name: "Claude Opus 4" },
-    { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet" },
+    // Anthropic API (API key) — current lineup, 2026-10
+    { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+    { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
+    { id: "claude-haiku-5-5", name: "Claude Haiku 5.5" },
+    { id: "claude-fable-5-1", name: "Claude Fable 5.1" },
+    { id: "claude-opus-5", name: "Claude Opus 5" },
+    { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
+    { id: "claude-fable-5", name: "Claude Fable 5" },
+    { id: "claude-opus-4-8", name: "Claude Opus 4.8" },
+    { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+    { id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
   ],
   gemini: [
     // Gemini 3.1 series

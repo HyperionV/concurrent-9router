@@ -4,6 +4,13 @@ import { OAUTH_ENDPOINTS, buildKimiHeaders } from "../config/appConstants.js";
 import { buildClineHeaders } from "../../src/shared/utils/clineAuth.js";
 import { getCachedClaudeHeaders } from "../utils/claudeHeaderCache.js";
 import { deriveStablePrefixCacheKey } from "../utils/cacheKeyDerivation.js";
+import { getTargetFormat } from "../services/provider.js";
+
+// Only the OpenAI API documents prompt_cache_key (Codex and Grok set their own in their
+// executors). Anthropic, Gemini and strict OpenAI-compatible vendors reject unknown fields.
+const PROMPT_CACHE_KEY_PROVIDERS = new Set(["openai"]);
+// Current Claude models answer a non-default sampling value with a 400.
+const CLAUDE_MODEL_PATTERN = /claude/i;
 
 export class DefaultExecutor extends BaseExecutor {
   constructor(provider) {
@@ -12,9 +19,15 @@ export class DefaultExecutor extends BaseExecutor {
 
   transformRequest(model, body) {
     const result = this.applyJsonSchemaFallback(body);
-    if (result && typeof result === "object" && !result.prompt_cache_key) {
+    if (!result || typeof result !== "object") return result;
+
+    if (PROMPT_CACHE_KEY_PROVIDERS.has(this.provider) && !result.prompt_cache_key) {
       const derived = deriveStablePrefixCacheKey(result);
-      if (derived) result.prompt_cache_key = derived;
+      return derived ? { ...result, prompt_cache_key: derived } : result;
+    }
+    if (getTargetFormat(this.provider) === "claude" && CLAUDE_MODEL_PATTERN.test(model)) {
+      const { temperature, top_p, top_k, ...withoutSampling } = result;
+      return withoutSampling;
     }
     return result;
   }
@@ -152,6 +165,7 @@ export class DefaultExecutor extends BaseExecutor {
           : (headers["Authorization"] = `Bearer ${credentials.accessToken}`);
         break;
       }
+      case "anthropic":
       case "glm":
       case "kimi":
       case "minimax":

@@ -4,6 +4,39 @@ import { adjustMaxTokens } from "./maxTokensHelper.js";
 import { applyCloaking } from "../../utils/claudeCloaking.js";
 import { deriveSessionId } from "../../utils/sessionManager.js";
 
+// Claude 4.6 and later think adaptively and take their depth from output_config.effort;
+// older models (Haiku 4.5, Sonnet 4.5, ...) reject effort, so they are left as they are.
+const ADAPTIVE_THINKING_MODEL_PATTERN =
+  /claude-(?:(?:opus|sonnet)-4-[6-9]|(?:opus|sonnet|haiku|fable|mythos)-5)/i;
+// The 4.6 models stop at "max" and have no "xhigh".
+const XHIGH_UNSUPPORTED_MODEL_PATTERN = /claude-(?:opus|sonnet)-4-6/i;
+// OpenAI's "none" and "minimal" have no Claude equivalent: current models cannot turn
+// thinking off at every effort level, so they get the lightest one.
+const OPENAI_TO_CLAUDE_EFFORT = {
+  none: "low",
+  minimal: "low",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  max: "max",
+};
+
+// Carry an OpenAI reasoning effort (Responses `reasoning.effort` or Chat `reasoning_effort`)
+// into Claude's adaptive thinking. A Claude-native thinking or effort setting wins.
+export function applyClaudeReasoningEffort(body, model, requestedEffort) {
+  if (!requestedEffort || body.thinking || body.output_config?.effort) return body;
+  if (!ADAPTIVE_THINKING_MODEL_PATTERN.test(model)) return body;
+  let effort = OPENAI_TO_CLAUDE_EFFORT[String(requestedEffort).toLowerCase()];
+  if (!effort) return body;
+  if (effort === "xhigh" && XHIGH_UNSUPPORTED_MODEL_PATTERN.test(model)) effort = "high";
+  return {
+    ...body,
+    thinking: { type: "adaptive" },
+    output_config: { ...body.output_config, effort },
+  };
+}
+
 // Check if message has valid non-empty content
 export function hasValidContent(msg) {
   if (typeof msg.content === "string" && msg.content.trim()) return true;
