@@ -155,6 +155,23 @@ test("an Anthropic reply reaches a Responses client as reasoning, then the answe
   assert.equal(doneItems[2].arguments, "{\"query\":\"EBITDA\"}");
 });
 
+// LangChain's ChatOpenAI (Brae's Manager) rebuilds the reply from response.completed and fails
+// with "'NoneType' object is not iterable" when response.output is missing.
+test("an Anthropic reply ends with a completed Response that holds every item and the usage", () => {
+  const events = translateReply("openai-responses");
+  const addedIndexes = events
+    .filter((event) => event.event === "response.output_item.added")
+    .map((event) => event.data.output_index);
+  const completed = events.find((event) => event.event === "response.completed").data.response;
+
+  assert.deepEqual(addedIndexes, [0, 1, 2]);
+  assert.deepEqual(completed.output.map((item) => item.type), ["reasoning", "message", "function_call"]);
+  assert.equal(completed.usage.input_tokens, 900);
+  assert.equal(completed.usage.output_tokens, 40);
+  assert.equal(completed.usage.input_tokens_details.cached_tokens, 0);
+  assert.equal(completed.usage.output_tokens_details.reasoning_tokens, 0);
+});
+
 test("Claude Code subscriptions keep their identity line and OpenAI keeps its cache key", () => {
   const claudeBody = translateRequest("openai-responses", "claude", MODEL, responsesRequest(), true, CREDENTIALS, "claude");
   assert.match(claudeBody.system[0].text, /Claude Code/);
